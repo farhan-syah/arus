@@ -16,4 +16,5 @@ cd "$(CDPATH= cd "$(dirname "$0")/.." && pwd)"
 python3 scripts/check_repository.py
 cargo fmt --all -- --check
 cargo check --workspace --all-targets "$@"
+cargo test --workspace --all-features "$@"
 cargo clippy --workspace --all-targets --all-features "$@" -- -D warnings

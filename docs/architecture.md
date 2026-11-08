@@ -1,13 +1,14 @@
-# Scaffold architecture
+# Architecture
 
 ARUS separates browser contracts, forecast orchestration, numerical execution, and independent evaluation for developers.
 
 ## Current implementation
 
-- Applications print scaffold status and exit.
-- Library roots contain module documentation only.
-- Cargo manifests declare internal dependencies without external libraries.
-- No backend traits, data schemas, scientific models, or publication rules exist yet.
+- The CLI checks the public catalog, plans collection, archives responses, and reports acquisition status.
+- `arus-ingest` implements source contracts and collection lifecycle rules.
+- `arus-assets` implements immutable raw blobs, acquisition metadata, and archive locking.
+- Other application entry points and scientific libraries remain scaffold boundaries.
+- No hydraulic models, flood predictions, or forecast publication rules exist yet.
 
 ## Boundaries
 

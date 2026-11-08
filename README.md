@@ -4,12 +4,13 @@ ARUS is a scaffold for location-specific flood forecasting, monitoring, and scen
 
 ## Status
 
-- Scope: Initial repository setup only.
-- Applications: Native executables print scaffold status and exit.
-- Libraries: Responsibility descriptions and declared internal dependency boundaries.
+- Scope: Public data catalog and repeatable raw-data acquisition.
+- CLI: Inspect sources, check recipes, collect snapshots, and report acquisition status.
+- Other applications: Native executables print scaffold status and exit.
 - Forecast scope: Onset, depth evolution, peak, duration, and recession below declared thresholds.
-- Integrations: Dioxus, Axum, NodeDB Lite, GIS, and numerical dependencies remain unconfigured.
-- Capabilities: No feeds, services, forecasts, simulations, or optimisation run yet.
+- Acquisition: Government weather, numerical forecast recipes, and satellite metadata discovery.
+- Product integrations: Dioxus, Axum, NodeDB Lite, GIS, and numerical engines remain unconfigured.
+- Capabilities: No flood predictions, hydraulic simulations, or optimisation run yet.
 
 ## Requirements
 
@@ -24,7 +25,7 @@ ARUS is a scaffold for location-specific flood forecasting, monitoring, and scen
 sh scripts/check.sh
 ```
 
-The script checks repository paths, formatting, workspace compilation, and strict Clippy. Local execution defaults to offline mode.
+The script checks repository paths, formatting, workspace compilation, tests, and strict Clippy. Local execution defaults to offline mode.
 
 Format modified Rust source before running checks.
 
@@ -32,8 +33,25 @@ Format modified Rust source before running checks.
 cargo fmt --all
 ```
 
-The scaffold has no external dependencies. Cargo still requires the pinned toolchain and declared components.
+Offline checks require cached dependencies and the pinned toolchain. Acquisition requires network access to the selected public provider.
 GitHub Actions runs the same script with network access enabled.
+
+## Data acquisition
+
+```sh
+cargo run -p arus-cli -- catalog check
+cargo run -p arus-cli -- data plan
+cargo run -p arus-cli -- data refresh
+cargo run -p arus-cli -- data status
+```
+
+The [source catalog](catalog/README.md) records access, licences, collection recipes, and unresolved data gaps.
+The [acquisition guide](docs/data-acquisition.md) covers historical collection, refresh scheduling, receipts, and recovery.
+
+- Default enabled collections archive official categorical weather forecasts and warnings.
+- Numerical rainfall recipes require an explicit noncommercial-use declaration where provider terms require it.
+- Raw responses and acquisition state stay under ignored `data/acquisition/`.
+- Successful collection does not establish complete coverage or scientific suitability.
 
 ## Layout
 
@@ -71,5 +89,6 @@ cp .cargo/config.toml.example .cargo/config.toml
 ## Next gate
 
 - Audit candidate catchments and source redistribution rights.
-- Resolve dependencies and check native, browser, and numerical builds separately.
+- Check site-specific historical coverage and independent flood observations.
+- Resolve product dependencies and check browser and numerical builds separately.
 - Check NodeDB Lite durability and query capabilities before implementing repositories.

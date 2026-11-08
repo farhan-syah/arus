@@ -1,5 +1,8 @@
-//! Operator command boundary. Data import and replay remain unimplemented.
+//! Operator commands for source discovery and data acquisition.
 
-fn main() {
-    println!("ARUS cli: scaffold only. No application functionality exists yet.");
+mod arguments;
+mod commands;
+
+fn main() -> std::process::ExitCode {
+    commands::execute()
 }

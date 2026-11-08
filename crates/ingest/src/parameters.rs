@@ -1,0 +1,329 @@
+use crate::{Collection, ConnectorKind, Error, Result, Source};
+use serde::Deserialize;
+use sha2::{Digest, Sha256};
+use time::{Date, OffsetDateTime, PrimitiveDateTime, format_description::well_known::Rfc3339};
+
+#[derive(Debug, Clone)]
+pub(crate) struct Prepared {
+    pub url: String,
+    pub fingerprint: String,
+    pub response: ResponseKind,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) enum ResponseKind {
+    Forecast {
+        limit: usize,
+    },
+    Warning {
+        limit: usize,
+    },
+    Hourly {
+        window: Option<(PrimitiveDateTime, PrimitiveDateTime)>,
+        requested_run: Option<String>,
+    },
+    Catalogue {
+        limit: usize,
+    },
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Government {
+    product: Product,
+    #[serde(default = "default_limit")]
+    limit: u32,
+    location_name: Option<String>,
+}
+
+fn default_limit() -> u32 {
+    100
+}
+
+#[derive(Clone, Copy, Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum Product {
+    Forecast,
+    Warning,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Forecast {
+    latitude: f64,
+    longitude: f64,
+    model: String,
+    hourly: Vec<String>,
+    forecast_days: u8,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct SingleRun {
+    latitude: f64,
+    longitude: f64,
+    model: String,
+    hourly: Vec<String>,
+    forecast_days: u8,
+    run: String,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct History {
+    latitude: f64,
+    longitude: f64,
+    model: String,
+    hourly: Vec<String>,
+    start_date: String,
+    end_date: String,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Catalogue {
+    latitude: f64,
+    longitude: f64,
+    start: String,
+    end: String,
+    limit: u32,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Empty {}
+
+fn parse<T: serde::de::DeserializeOwned>(collection: &Collection) -> Result<T> {
+    serde_json::from_value(collection.parameters.clone())
+        .map_err(|error| Error::Config(format!("collection {} parameters: {error}", collection.id)))
+}
+
+fn coordinates(latitude: f64, longitude: f64) -> Result<()> {
+    if !latitude.is_finite()
+        || !longitude.is_finite()
+        || !(-90.0..=90.0).contains(&latitude)
+        || !(-180.0..=180.0).contains(&longitude)
+    {
+        return Err(Error::Config(
+            "latitude/longitude outside valid finite bounds".into(),
+        ));
+    }
+    Ok(())
+}
+
+fn meteo(
+    latitude: f64,
+    longitude: f64,
+    model: &str,
+    hourly: &[String],
+) -> Result<Vec<(String, String)>> {
+    coordinates(latitude, longitude)?;
+    if model != "gfs_global" || hourly != ["precipitation"] {
+        return Err(Error::Config(
+            "Open-Meteo supports model gfs_global and hourly precipitation in this adapter".into(),
+        ));
+    }
+    Ok(vec![
+        ("latitude".into(), latitude.to_string()),
+        ("longitude".into(), longitude.to_string()),
+        ("models".into(), model.into()),
+        ("hourly".into(), hourly.join(",")),
+        ("timezone".into(), "GMT".into()),
+    ])
+}
+
+fn days(value: u8) -> Result<()> {
+    if !(1..=7).contains(&value) {
+        return Err(Error::Config(
+            "forecast_days must be between 1 and 7".into(),
+        ));
+    }
+    Ok(())
+}
+
+fn url(endpoint: &str, query: Vec<(String, String)>) -> Result<String> {
+    let mut url =
+        reqwest::Url::parse(endpoint).map_err(|error| Error::Config(error.to_string()))?;
+    let mut query = query;
+    query.sort();
+    url.query_pairs_mut().extend_pairs(query);
+    Ok(url.into())
+}
+
+pub(crate) fn date(value: &str) -> Result<Date> {
+    let format = time::format_description::parse_borrowed::<2>("[year]-[month]-[day]")
+        .map_err(|error| Error::Config(error.to_string()))?;
+    Date::parse(value, &format).map_err(|error| Error::Config(format!("date {value}: {error}")))
+}
+
+pub(crate) fn prepare(source: &Source, collection: &Collection) -> Result<Option<Prepared>> {
+    let (request, response) = match source.connector {
+        ConnectorKind::CatalogOnly => {
+            let _: Empty = parse(collection)?;
+            return Ok(None);
+        }
+        ConnectorKind::DataGovWeather => {
+            let params: Government = parse(collection)?;
+            if !(1..=1000).contains(&params.limit) {
+                return Err(Error::Config(
+                    "government limit must be between 1 and 1000".into(),
+                ));
+            }
+            let mut query = vec![("limit".into(), params.limit.to_string())];
+            let (product, response) = match params.product {
+                Product::Forecast => (
+                    "forecast",
+                    ResponseKind::Forecast {
+                        limit: params.limit as usize,
+                    },
+                ),
+                Product::Warning => (
+                    "warning",
+                    ResponseKind::Warning {
+                        limit: params.limit as usize,
+                    },
+                ),
+            };
+            if let Some(name) = params.location_name {
+                if !matches!(params.product, Product::Forecast)
+                    || name.trim().is_empty()
+                    || name.len() > 100
+                    || name.contains('@')
+                    || name.chars().any(char::is_control)
+                {
+                    return Err(Error::Config("location_name requires a bounded forecast location without @ or control characters".into()));
+                }
+                query.push(("contains".into(), format!("{name}@location__location_name")));
+            }
+            (
+                url(
+                    &format!("https://api.data.gov.my/weather/{product}/"),
+                    query,
+                )?,
+                response,
+            )
+        }
+        ConnectorKind::OpenMeteoForecast => {
+            let params: Forecast = parse(collection)?;
+            days(params.forecast_days)?;
+            let mut query = meteo(
+                params.latitude,
+                params.longitude,
+                &params.model,
+                &params.hourly,
+            )?;
+            query.push(("forecast_days".into(), params.forecast_days.to_string()));
+            (
+                url("https://api.open-meteo.com/v1/forecast", query)?,
+                ResponseKind::Hourly {
+                    window: None,
+                    requested_run: None,
+                },
+            )
+        }
+        ConnectorKind::OpenMeteoSingleRun => {
+            let params: SingleRun = parse(collection)?;
+            days(params.forecast_days)?;
+            let run_format = time::format_description::parse_borrowed::<2>(
+                "[year]-[month]-[day]T[hour]:[minute]",
+            )
+            .map_err(|error| Error::Config(error.to_string()))?;
+            let run = PrimitiveDateTime::parse(&params.run, &run_format)
+                .map_err(|error| Error::Config(format!("run {}: {error}", params.run)))?;
+            if run.minute() != 0 || ![0, 6, 12, 18].contains(&run.hour()) {
+                return Err(Error::Config(
+                    "GFS run must identify a 00, 06, 12, or 18 UTC cycle".into(),
+                ));
+            }
+            let mut query = meteo(
+                params.latitude,
+                params.longitude,
+                &params.model,
+                &params.hourly,
+            )?;
+            query.push(("run".into(), params.run.clone()));
+            query.push(("forecast_days".into(), params.forecast_days.to_string()));
+            (
+                url("https://single-runs-api.open-meteo.com/v1/forecast", query)?,
+                ResponseKind::Hourly {
+                    window: None,
+                    requested_run: Some(params.run),
+                },
+            )
+        }
+        ConnectorKind::OpenMeteoHistory => {
+            let params: History = parse(collection)?;
+            let start = date(&params.start_date)?;
+            let end = date(&params.end_date)?;
+            if end < start || (end - start).whole_days() >= 7 {
+                return Err(Error::Config(
+                    "historical window must contain between 1 and 7 calendar days".into(),
+                ));
+            }
+            let mut query = meteo(
+                params.latitude,
+                params.longitude,
+                &params.model,
+                &params.hourly,
+            )?;
+            query.extend([
+                ("start_date".into(), params.start_date),
+                ("end_date".into(), params.end_date),
+            ]);
+            (
+                url(
+                    "https://historical-forecast-api.open-meteo.com/v1/forecast",
+                    query,
+                )?,
+                ResponseKind::Hourly {
+                    window: Some((
+                        start.midnight(),
+                        end.with_hms(23, 0, 0)
+                            .map_err(|error| Error::Config(error.to_string()))?,
+                    )),
+                    requested_run: None,
+                },
+            )
+        }
+        ConnectorKind::CdseCatalogue => {
+            let params: Catalogue = parse(collection)?;
+            coordinates(params.latitude, params.longitude)?;
+            let start = OffsetDateTime::parse(&params.start, &Rfc3339)
+                .map_err(|error| Error::Config(format!("catalogue start: {error}")))?;
+            let end = OffsetDateTime::parse(&params.end, &Rfc3339)
+                .map_err(|error| Error::Config(format!("catalogue end: {error}")))?;
+            if end <= start
+                || (end - start) > time::Duration::days(31)
+                || !(1..=20).contains(&params.limit)
+            {
+                return Err(Error::Config(
+                    "catalogue query needs a positive window at most 31 days and limit 1..20"
+                        .into(),
+                ));
+            }
+            let filter = format!(
+                "Collection/Name eq 'SENTINEL-1' and ContentDate/Start ge {} and ContentDate/Start lt {} and OData.CSC.Intersects(area=geography'SRID=4326;POINT({} {})')",
+                params.start, params.end, params.longitude, params.latitude
+            );
+            (
+                url(
+                    "https://catalogue.dataspace.copernicus.eu/odata/v1/Products",
+                    vec![
+                        ("$filter".into(), filter),
+                        ("$orderby".into(), "ContentDate/Start".into()),
+                        ("$top".into(), params.limit.to_string()),
+                    ],
+                )?,
+                ResponseKind::Catalogue {
+                    limit: params.limit as usize,
+                },
+            )
+        }
+    };
+    let identity = format!("v1\n{}\n{:?}\n{}", source.id, source.connector, request);
+    Ok(Some(Prepared {
+        url: request,
+        fingerprint: format!("{:x}", Sha256::digest(identity.as_bytes())),
+        response,
+    }))
+}

@@ -1,0 +1,11 @@
+[Unit]
+Description=Check ARUS data refresh every fifteen minutes
+
+[Timer]
+OnCalendar=*-*-* *:00/15:00
+RandomizedDelaySec=30s
+Persistent=true
+Unit=arus-data-refresh.service
+
+[Install]
+WantedBy=timers.target

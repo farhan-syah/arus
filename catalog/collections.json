@@ -1,0 +1,58 @@
+{
+  "schema_version": 1,
+  "collections": [
+    {
+      "id": "selangor-general-forecast",
+      "source_id": "met-weather-forecast",
+      "description": "Daily categorical forecast snapshots filtered by the Selangor location name.",
+      "enabled": true,
+      "accept_noncommercial": false,
+      "parameters": {
+        "product": "forecast",
+        "limit": 100,
+        "location_name": "Selangor"
+      }
+    },
+    {
+      "id": "malaysia-weather-warnings",
+      "source_id": "met-weather-warning",
+      "description": "National warning snapshots. An empty response can be valid.",
+      "enabled": true,
+      "accept_noncommercial": false,
+      "parameters": {
+        "product": "warning",
+        "limit": 100
+      }
+    },
+    {
+      "id": "puncak-alam-reference-forecast",
+      "source_id": "openmeteo-gfs-forecast",
+      "description": "Approximate regional reference point. This is not a surveyed site or catchment.",
+      "enabled": false,
+      "accept_noncommercial": false,
+      "parameters": {
+        "latitude": 3.22,
+        "longitude": 101.44,
+        "model": "gfs_global",
+        "hourly": [
+          "precipitation"
+        ],
+        "forecast_days": 3
+      }
+    },
+    {
+      "id": "puncak-alam-reference-scenes",
+      "source_id": "sentinel1-catalogue",
+      "description": "Historical metadata discovery around an approximate regional reference point. This is not a catchment.",
+      "enabled": false,
+      "accept_noncommercial": false,
+      "parameters": {
+        "latitude": 3.22,
+        "longitude": 101.44,
+        "start": "2026-11-01T00:00:00Z",
+        "end": "2026-11-08T00:00:00Z",
+        "limit": 20
+      }
+    }
+  ]
+}

@@ -1,0 +1,87 @@
+{
+  "schema_version": 1,
+  "collections": [
+    {
+      "id": "mosque-reference-run-20261103",
+      "source_id": "openmeteo-gfs-single-run",
+      "description": "Acquisition candidate for the 4 November mosque event. Approximate regional reference point, not a surveyed event site or catchment.",
+      "enabled": false,
+      "accept_noncommercial": false,
+      "parameters": {
+        "latitude": 3.22,
+        "longitude": 101.44,
+        "model": "gfs_global",
+        "hourly": [
+          "precipitation"
+        ],
+        "forecast_days": 3,
+        "run": "2026-11-03T00:00"
+      }
+    },
+    {
+      "id": "uitm-reference-run-20261104",
+      "source_id": "openmeteo-gfs-single-run",
+      "description": "Acquisition candidate for the 5 November UiTM event. Approximate regional reference point, not a surveyed event site or catchment.",
+      "enabled": false,
+      "accept_noncommercial": false,
+      "parameters": {
+        "latitude": 3.22,
+        "longitude": 101.44,
+        "model": "gfs_global",
+        "hourly": [
+          "precipitation"
+        ],
+        "forecast_days": 3,
+        "run": "2026-11-04T00:00"
+      }
+    },
+    {
+      "id": "subang-reference-run-20261106",
+      "source_id": "openmeteo-gfs-single-run",
+      "description": "Acquisition candidate for the 7 November Subang event. Approximate regional reference point, not a surveyed event site or catchment.",
+      "enabled": false,
+      "accept_noncommercial": false,
+      "parameters": {
+        "latitude": 3.22,
+        "longitude": 101.44,
+        "model": "gfs_global",
+        "hourly": [
+          "precipitation"
+        ],
+        "forecast_days": 3,
+        "run": "2026-11-06T00:00"
+      }
+    },
+    {
+      "id": "regional-stitched-history-20261101",
+      "source_id": "openmeteo-gfs-history",
+      "description": "Stitched forecast history for an approximate regional reference point. Exclude from original-run skill claims.",
+      "enabled": false,
+      "accept_noncommercial": false,
+      "parameters": {
+        "latitude": 3.22,
+        "longitude": 101.44,
+        "model": "gfs_global",
+        "hourly": [
+          "precipitation"
+        ],
+        "start_date": "2026-11-01",
+        "end_date": "2026-11-07"
+      }
+    },
+    {
+      "id": "regional-sentinel-scenes-20261101",
+      "source_id": "sentinel1-catalogue",
+      "description": "Scene metadata candidates around an approximate regional reference point. Local event coverage remains unchecked.",
+      "enabled": false,
+      "accept_noncommercial": false,
+      "parameters": {
+        "latitude": 3.22,
+        "longitude": 101.44,
+        "start": "2026-11-01T00:00:00Z",
+        "end": "2026-11-08T00:00:00Z",
+        "limit": 20
+      }
+    }
+  ]
+}
