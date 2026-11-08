@@ -1,0 +1,35 @@
+# Build outputs
+/target/
+**/target/
+/dist/
+**/node_modules/
+
+# Machine config and session state
+/.cargo/config.toml
+/.agents/prep/
+/.codex/prep/
+/.local/
+/.aws/
+/reference/
+/resource/
+/resources/
+/resouce/
+.env
+.env.*
+!.env.example
+
+# Local datasets, database files, and generated results
+/data/
+/artifacts/
+/scratch/
+*.log
+*.profraw
+*.profdata
+
+# Editor and operating-system files
+/.idea/
+/.vscode/
+*.swp
+*~
+.DS_Store
+Thumbs.db

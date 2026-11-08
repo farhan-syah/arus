@@ -1,0 +1,54 @@
+[workspace]
+members = [
+    "apps/api",
+    "apps/cli",
+    "apps/web",
+    "apps/worker",
+    "crates/api-types",
+    "crates/assets",
+    "crates/domain",
+    "crates/evaluation",
+    "crates/forecasting",
+    "crates/geo",
+    "crates/hydraulics",
+    "crates/hydrology",
+    "crates/ingest",
+    "crates/jobs",
+    "crates/ml",
+    "crates/model-api",
+    "crates/optimisation",
+    "crates/scenarios",
+    "crates/storage",
+]
+resolver = "3"
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.96"
+publish = false
+
+[workspace.dependencies]
+arus-api-types = { path = "crates/api-types" }
+arus-assets = { path = "crates/assets" }
+arus-domain = { path = "crates/domain" }
+arus-evaluation = { path = "crates/evaluation" }
+arus-forecasting = { path = "crates/forecasting" }
+arus-geo = { path = "crates/geo" }
+arus-hydraulics = { path = "crates/hydraulics" }
+arus-hydrology = { path = "crates/hydrology" }
+arus-ingest = { path = "crates/ingest" }
+arus-jobs = { path = "crates/jobs" }
+arus-ml = { path = "crates/ml" }
+arus-model-api = { path = "crates/model-api" }
+arus-optimisation = { path = "crates/optimisation" }
+arus-scenarios = { path = "crates/scenarios" }
+arus-storage = { path = "crates/storage" }
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+
+[workspace.lints.clippy]
+unwrap_used = "deny"
+expect_used = "deny"
+panic = "deny"

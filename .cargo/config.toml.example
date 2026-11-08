@@ -1,0 +1,14 @@
+# Copy to .cargo/config.toml for ignored machine config.
+[alias]
+check-all = "check --workspace --all-targets --locked --offline"
+
+# Activate overrides only when adding and checking their dependencies.
+# NodeDB Lite requires additional local development-package overrides.
+# [patch.crates-io]
+# nodedb-lite = { path = "/path/to/NodeDB/nodedb-lite/nodedb-lite" }
+# numr = { path = "/path/to/rust-llm/numr" }
+# solvr = { path = "/path/to/rust-llm/solvr" }
+# boostr = { path = "/path/to/rust-llm/boostr" }
+# treeboost = { path = "/path/to/rust-llm/TreeBoost" }
+
+# solvr requires numr 0.14. The local numr checkout supplies 0.15.2.

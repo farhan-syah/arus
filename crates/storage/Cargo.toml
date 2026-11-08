@@ -1,0 +1,13 @@
+[package]
+name = "arus-storage"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[dependencies]
+arus-assets.workspace = true
+arus-domain.workspace = true
+
+[lints]
+workspace = true

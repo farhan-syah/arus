@@ -1,0 +1,15 @@
+[package]
+name = "arus-cli"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[dependencies]
+arus-evaluation.workspace = true
+arus-ingest.workspace = true
+arus-jobs.workspace = true
+arus-storage.workspace = true
+
+[lints]
+workspace = true
