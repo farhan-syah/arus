@@ -136,6 +136,8 @@ version = "0.1.0"
 dependencies = [
  "arus-assets",
  "arus-domain",
+ "serde",
+ "thiserror",
 ]
 
 [[package]]
@@ -222,6 +224,8 @@ version = "0.1.0"
 dependencies = [
  "arus-domain",
  "arus-model-api",
+ "serde",
+ "thiserror",
 ]
 
 [[package]]
