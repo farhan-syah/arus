@@ -1,0 +1,45 @@
+{
+  "run_id": "bench-pervious-green-ampt",
+  "classification": "numerical-demonstration",
+  "terrain": {
+    "grid": {
+      "columns": 3,
+      "rows": 3,
+      "dx_m": 10.0,
+      "dy_m": 10.0
+    },
+    "reference": {
+      "projected_crs": "synthetic-metric-plane",
+      "vertical_datum": "synthetic-datum",
+      "origin_m": [0.0, 0.0]
+    },
+    "source_provenance": "analytical-benchmark-pervious-green-ampt",
+    "cells": [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+    "conditioning_history": []
+  },
+  "uniform_manning_n": 0.03,
+  "land": {
+    "kind": "uniform-modified-green-ampt",
+    "suction_m": 0.11,
+    "conductivity_m_per_s": 0.00001,
+    "maximum_deficit": 0.35
+  },
+  "initial_depth_m": 0.0,
+  "open_faces": [],
+  "forcing": [
+    {
+      "start_s": 0.0,
+      "end_s": 60.0,
+      "uniform_rain_m_per_s": 0.0001,
+      "boundaries": []
+    }
+  ],
+  "target_time_s": 60.0,
+  "max_steps": 500,
+  "probes": [
+    { "id": "center", "x_m": 15.0, "y_m": 15.0 }
+  ],
+  "threshold_m": 0.001,
+  "hysteresis_m": 0.0002,
+  "recession_persistence_s": 10.0
+}

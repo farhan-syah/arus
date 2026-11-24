@@ -1,0 +1,59 @@
+{
+  "run_id": "bench-open-stage-drainage",
+  "classification": "numerical-demonstration",
+  "terrain": {
+    "grid": {
+      "columns": 4,
+      "rows": 2,
+      "dx_m": 10.0,
+      "dy_m": 10.0
+    },
+    "reference": {
+      "projected_crs": "synthetic-metric-plane",
+      "vertical_datum": "synthetic-datum",
+      "origin_m": [0.0, 0.0]
+    },
+    "source_provenance": "analytical-benchmark-open-stage-drainage",
+    "cells": [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+    "conditioning_history": []
+  },
+  "uniform_manning_n": 0.03,
+  "land": {
+    "kind": "uniform-impervious"
+  },
+  "initial_depth_m": 0.4,
+  "open_faces": [
+    { "axis": "x", "column": 4, "row": 0 },
+    { "axis": "x", "column": 4, "row": 1 }
+  ],
+  "forcing": [
+    {
+      "start_s": 0.0,
+      "end_s": 20.0,
+      "uniform_rain_m_per_s": 0.0,
+      "boundaries": [
+        {
+          "kind": "stage",
+          "face": { "axis": "x", "column": 4, "row": 0 },
+          "elevation_m": 0.3,
+          "inflow_tangential_velocity_m_s": null
+        },
+        {
+          "kind": "stage",
+          "face": { "axis": "x", "column": 4, "row": 1 },
+          "elevation_m": 0.3,
+          "inflow_tangential_velocity_m_s": null
+        }
+      ]
+    }
+  ],
+  "target_time_s": 20.0,
+  "max_steps": 500,
+  "probes": [
+    { "id": "upstream", "x_m": 5.0, "y_m": 5.0 },
+    { "id": "outlet", "x_m": 35.0, "y_m": 5.0 }
+  ],
+  "threshold_m": 0.1,
+  "hysteresis_m": 0.01,
+  "recession_persistence_s": 5.0
+}

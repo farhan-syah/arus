@@ -44,8 +44,34 @@ async fn api_serves_health_runs_and_outlooks_from_archive() -> Result<(), String
         })
         .map_err(|e| e.to_string())?;
 
-    let state = ApiState::open(temp.path()).map_err(|e| e.to_string())?;
+    let catalog_path =
+        std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../catalog/sources.json");
+    let state = ApiState::open(temp.path())
+        .map_err(|e| e.to_string())?
+        .with_catalog(catalog_path);
     let app = router(state);
+
+    let catalog_resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/api/v1/catalog/sources")
+                .body(Body::empty())
+                .map_err(|e| e.to_string())?,
+        )
+        .await
+        .map_err(|e| e.to_string())?;
+    assert_eq!(catalog_resp.status(), StatusCode::OK);
+    let catalog_bytes = to_bytes(catalog_resp.into_body(), 1024 * 1024)
+        .await
+        .map_err(|e| e.to_string())?;
+    let catalog_json: serde_json::Value =
+        serde_json::from_slice(&catalog_bytes).map_err(|e| e.to_string())?;
+    assert!(
+        catalog_json["sources"]
+            .as_array()
+            .is_some_and(|arr| arr.len() >= 10)
+    );
 
     let health_resp = app
         .clone()

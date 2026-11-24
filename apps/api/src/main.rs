@@ -19,7 +19,10 @@ async fn main() -> ExitCode {
 }
 
 async fn serve(args: ApiArgs) -> Result<(), String> {
-    let state = ApiState::open(&args.archive).map_err(|error| error.to_string())?;
+    let mut state = ApiState::open(&args.archive).map_err(|error| error.to_string())?;
+    if args.catalog.exists() {
+        state = state.with_catalog(args.catalog);
+    }
     let listener = TcpListener::bind(&args.bind)
         .await
         .map_err(|error| format!("bind {} failed: {error}", args.bind))?;

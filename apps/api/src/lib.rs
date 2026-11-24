@@ -5,6 +5,7 @@ use std::sync::Arc;
 
 use arus_api_types::{API_SCHEMA_VERSION, ApiLocationOutlook};
 use arus_assets::Archive;
+use arus_ingest::Catalog;
 use arus_storage::{PublishedPointer, RunIndex, RunRecord, RunStore};
 use arus_web::{Locale, render_index_page_html, render_run_page_html};
 use axum::extract::{Path, Query, State};
@@ -18,6 +19,7 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone)]
 pub struct ApiState {
     archive: Arc<Archive>,
+    catalog_path: Option<PathBuf>,
 }
 
 impl ApiState {
@@ -25,7 +27,15 @@ impl ApiState {
     pub fn open(archive_root: &std::path::Path) -> Result<Self, arus_assets::Error> {
         Ok(Self {
             archive: Arc::new(Archive::open(archive_root)?),
+            catalog_path: None,
         })
+    }
+
+    /// Attaches a public source catalog JSON path served at `/api/v1/catalog/sources`.
+    #[must_use]
+    pub fn with_catalog(mut self, catalog_path: PathBuf) -> Self {
+        self.catalog_path = Some(catalog_path);
+        self
     }
 }
 
@@ -50,12 +60,25 @@ pub fn router(state: ApiState) -> Router {
     Router::new()
         .route("/", get(render_index_html))
         .route("/health", get(health))
+        .route("/api/v1/catalog/sources", get(get_catalog_sources))
         .route("/api/v1/published", get(get_published))
         .route("/api/v1/runs", get(list_runs))
         .route("/api/v1/runs/{run_id}", get(get_run))
         .route("/api/v1/runs/{run_id}/outlook", get(get_run_outlook))
         .route("/runs/{run_id}", get(render_run_html))
         .with_state(state)
+}
+
+async fn get_catalog_sources(
+    State(state): State<ApiState>,
+) -> Result<Json<Catalog>, (StatusCode, Json<ErrorResponse>)> {
+    let Some(path) = state.catalog_path.as_deref() else {
+        return Err(not_found(
+            "no public source catalog is configured".to_owned(),
+        ));
+    };
+    let catalog = Catalog::load(path).map_err(internal_error)?;
+    Ok(Json(catalog))
 }
 
 async fn render_index_html(
@@ -186,6 +209,9 @@ pub struct ApiArgs {
     /// Archive directory containing persisted runs and outlook blobs.
     #[arg(long, default_value = "data/runs")]
     pub archive: PathBuf,
+    /// Optional public source catalog JSON file served at `/api/v1/catalog/sources`.
+    #[arg(long, default_value = "catalog/sources.json")]
+    pub catalog: PathBuf,
     /// Socket address to bind.
     #[arg(long, default_value = "127.0.0.1:8080")]
     pub bind: String,

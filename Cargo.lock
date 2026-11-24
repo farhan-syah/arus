@@ -502,6 +502,7 @@ dependencies = [
  "hydr",
  "numr",
  "serde",
+ "serde_json",
  "tempfile",
 ]
 
