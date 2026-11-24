@@ -109,6 +109,8 @@ fn history_kind() -> TestResult<ResponseKind> {
     Ok(ResponseKind::Hourly {
         window: Some((start, end)),
         requested_run: None,
+        models: vec!["gfs_global".into()],
+        hourly: vec!["precipitation".into()],
     })
 }
 
@@ -144,6 +146,8 @@ fn single_run_initialization_is_not_claimed_as_checked() -> TestResult {
         &ResponseKind::Hourly {
             window: None,
             requested_run: Some("2026-11-03T18:00".into()),
+            models: vec!["gfs_global".into()],
+            hourly: vec!["precipitation".into()],
         },
     )?;
     assert_eq!(summary.coverage_complete, None);

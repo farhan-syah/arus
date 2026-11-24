@@ -21,6 +21,8 @@ pub(crate) enum ResponseKind {
     Hourly {
         window: Option<(PrimitiveDateTime, PrimitiveDateTime)>,
         requested_run: Option<String>,
+        models: Vec<String>,
+        hourly: Vec<String>,
     },
     Catalogue {
         limit: usize,
@@ -52,9 +54,14 @@ enum Product {
 struct Forecast {
     latitude: f64,
     longitude: f64,
-    model: String,
+    #[serde(default)]
+    model: Option<String>,
+    #[serde(default)]
+    models: Vec<String>,
     hourly: Vec<String>,
     forecast_days: u8,
+    #[serde(default)]
+    past_days: Option<u8>,
 }
 
 #[derive(Deserialize)]
@@ -111,22 +118,83 @@ fn coordinates(latitude: f64, longitude: f64) -> Result<()> {
     Ok(())
 }
 
+const ALLOWED_OPEN_METEO_MODELS: &[&str] = &[
+    "gfs_global",
+    "ecmwf_ifs025",
+    "icon_seamless",
+    "gem_global",
+    "jma_seamless",
+];
+
+const ALLOWED_OPEN_METEO_HOURLY: &[&str] = &[
+    "precipitation",
+    "soil_moisture_0_to_7cm",
+    "soil_moisture_0_to_1cm",
+];
+
+fn resolve_models(model: Option<String>, models: Vec<String>) -> Result<Vec<String>> {
+    let list = if !models.is_empty() {
+        if model.is_some() {
+            return Err(Error::Config(
+                "specify either `model` or `models`, not both".into(),
+            ));
+        }
+        models
+    } else if let Some(single) = model {
+        vec![single]
+    } else {
+        return Err(Error::Config(
+            "Open-Meteo collection requires `model` or non-empty `models`".into(),
+        ));
+    };
+    for m in &list {
+        if !ALLOWED_OPEN_METEO_MODELS.contains(&m.as_str()) {
+            return Err(Error::Config(format!(
+                "unsupported Open-Meteo model `{m}`; allowed: {}",
+                ALLOWED_OPEN_METEO_MODELS.join(", ")
+            )));
+        }
+    }
+    Ok(list)
+}
+
 fn meteo(
     latitude: f64,
     longitude: f64,
-    model: &str,
+    models: &[String],
     hourly: &[String],
 ) -> Result<Vec<(String, String)>> {
     coordinates(latitude, longitude)?;
-    if model != "gfs_global" || hourly != ["precipitation"] {
+    if models.is_empty() {
         return Err(Error::Config(
-            "Open-Meteo supports model gfs_global and hourly precipitation in this adapter".into(),
+            "Open-Meteo requires at least one model".into(),
         ));
+    }
+    for m in models {
+        if !ALLOWED_OPEN_METEO_MODELS.contains(&m.as_str()) {
+            return Err(Error::Config(format!(
+                "unsupported Open-Meteo model `{m}`; allowed: {}",
+                ALLOWED_OPEN_METEO_MODELS.join(", ")
+            )));
+        }
+    }
+    if hourly.is_empty() || !hourly.iter().any(|v| v == "precipitation") {
+        return Err(Error::Config(
+            "Open-Meteo hourly variables must include `precipitation`".into(),
+        ));
+    }
+    for var in hourly {
+        if !ALLOWED_OPEN_METEO_HOURLY.contains(&var.as_str()) {
+            return Err(Error::Config(format!(
+                "unsupported Open-Meteo hourly variable `{var}`; allowed: {}",
+                ALLOWED_OPEN_METEO_HOURLY.join(", ")
+            )));
+        }
     }
     Ok(vec![
         ("latitude".into(), latitude.to_string()),
         ("longitude".into(), longitude.to_string()),
-        ("models".into(), model.into()),
+        ("models".into(), models.join(",")),
         ("hourly".into(), hourly.join(",")),
         ("timezone".into(), "GMT".into()),
     ])
@@ -206,18 +274,22 @@ pub(crate) fn prepare(source: &Source, collection: &Collection) -> Result<Option
         ConnectorKind::OpenMeteoForecast => {
             let params: Forecast = parse(collection)?;
             days(params.forecast_days)?;
-            let mut query = meteo(
-                params.latitude,
-                params.longitude,
-                &params.model,
-                &params.hourly,
-            )?;
+            let models = resolve_models(params.model, params.models)?;
+            let mut query = meteo(params.latitude, params.longitude, &models, &params.hourly)?;
             query.push(("forecast_days".into(), params.forecast_days.to_string()));
+            if let Some(past) = params.past_days {
+                if past > 7 {
+                    return Err(Error::Config("past_days must be between 0 and 7".into()));
+                }
+                query.push(("past_days".into(), past.to_string()));
+            }
             (
                 url("https://api.open-meteo.com/v1/forecast", query)?,
                 ResponseKind::Hourly {
                     window: None,
                     requested_run: None,
+                    models,
+                    hourly: params.hourly,
                 },
             )
         }
@@ -235,12 +307,8 @@ pub(crate) fn prepare(source: &Source, collection: &Collection) -> Result<Option
                     "GFS run must identify a 00, 06, 12, or 18 UTC cycle".into(),
                 ));
             }
-            let mut query = meteo(
-                params.latitude,
-                params.longitude,
-                &params.model,
-                &params.hourly,
-            )?;
+            let models = vec![params.model];
+            let mut query = meteo(params.latitude, params.longitude, &models, &params.hourly)?;
             query.push(("run".into(), params.run.clone()));
             query.push(("forecast_days".into(), params.forecast_days.to_string()));
             (
@@ -248,6 +316,8 @@ pub(crate) fn prepare(source: &Source, collection: &Collection) -> Result<Option
                 ResponseKind::Hourly {
                     window: None,
                     requested_run: Some(params.run),
+                    models,
+                    hourly: params.hourly,
                 },
             )
         }
@@ -260,12 +330,8 @@ pub(crate) fn prepare(source: &Source, collection: &Collection) -> Result<Option
                     "historical window must contain between 1 and 7 calendar days".into(),
                 ));
             }
-            let mut query = meteo(
-                params.latitude,
-                params.longitude,
-                &params.model,
-                &params.hourly,
-            )?;
+            let models = vec![params.model];
+            let mut query = meteo(params.latitude, params.longitude, &models, &params.hourly)?;
             query.extend([
                 ("start_date".into(), params.start_date),
                 ("end_date".into(), params.end_date),
@@ -282,6 +348,8 @@ pub(crate) fn prepare(source: &Source, collection: &Collection) -> Result<Option
                             .map_err(|error| Error::Config(error.to_string()))?,
                     )),
                     requested_run: None,
+                    models,
+                    hourly: params.hourly,
                 },
             )
         }

@@ -12,14 +12,18 @@ use arus_domain::{Provenance, RunClassification};
 use arus_evaluation::{BudgetAssessment, assess_water_budget};
 use arus_forecasting::{
     ApprovalStatus, EpisodePolicy, EpisodeTracker, LocationEvolution, LocationSupportStatus,
-    OnsetStatus, PublicationCandidate, PublicationDecision, RecessionStatus, evaluate_publication,
+    ModelForecastMember, OnsetStatus, PublicationCandidate, PublicationDecision, RecessionStatus,
+    evaluate_publication, summarize_ensemble,
 };
 use arus_hydraulics::{
     CoupledRunSpec, LocationProbe, NativePipeRunSpec, PoolStructureRunSpec, SurfaceEngine,
     SurfaceF32RunSpec, SurfaceRunSpec, SwmmDrainageSpec, all_component_capabilities,
     package_from_bytes, run_closed_basin_demo, run_native_worker_demo, surface_capabilities,
 };
-use arus_hydrology::RunoffRunSpec;
+use arus_hydrology::{
+    RunoffRunSpec, build_runoff_spec_from_hourly, derive_antecedent_state, detect_peak_window,
+};
+use arus_ingest::parse_open_meteo_hourly;
 use arus_jobs::{CancellationToken, StepBudget};
 use arus_model_api::{AdvanceOutcome, PersistedCheckpoint};
 use arus_scenarios::{ScenarioManifest, ScenarioRunSummary, compare_paired_runs};
@@ -103,6 +107,28 @@ enum Command {
         /// Path to the JSON `SurfaceF32RunSpec` manifest file.
         #[arg(long)]
         spec: PathBuf,
+    },
+    /// Translate an archived multi-model Open-Meteo hourly JSON blob into 1D hydrology runs,
+    /// peak 3-6h window detection, and multi-model ensemble agreement summary.
+    ForecastBridge {
+        /// Path to an archived Open-Meteo single-model or multi-model hourly JSON blob.
+        #[arg(long)]
+        blob: PathBuf,
+        /// Basin identifier attached to the generated runoff runs.
+        #[arg(long, default_value = "catchment-1")]
+        basin_id: String,
+        /// Catchment contributing area in km².
+        #[arg(long, default_value_t = 25.0)]
+        area_km2: f64,
+        /// Impervious fraction in [0.02, 0.95].
+        #[arg(long, default_value_t = 0.15)]
+        impervious_fraction: f64,
+        /// Leading antecedent hours (`past_days * 24`) used to initialize Green-Ampt soil deficit.
+        #[arg(long, default_value_t = 48)]
+        past_hours: usize,
+        /// Peak runoff window length in hours for 2D hydr refinement trigger (e.g. 6).
+        #[arg(long, default_value_t = 6)]
+        window_hours: usize,
     },
     /// Execute a pure-Rust Preissmann-slot pressurized storm-drain network manifest (`hydr 0.2.0`).
     Pipes {
@@ -243,6 +269,21 @@ fn execute(command: Command) -> Result<(), String> {
         Command::Coupled { spec } => run_coupled_spec(spec),
         Command::Pools { spec } => run_pools_spec(spec),
         Command::SurfaceF32 { spec } => run_surface_f32_spec(spec),
+        Command::ForecastBridge {
+            blob,
+            basin_id,
+            area_km2,
+            impervious_fraction,
+            past_hours,
+            window_hours,
+        } => run_forecast_bridge(
+            blob,
+            basin_id,
+            area_km2,
+            impervious_fraction,
+            past_hours,
+            window_hours,
+        ),
         Command::Pipes { spec } => run_native_pipes_spec(spec),
         Command::DrainageCheck { spec } => run_drainage_check(spec),
         Command::Resume { archive, from_run } => run_resume_check(archive, from_run),
@@ -761,6 +802,81 @@ fn run_native_pipes_spec(spec_path: PathBuf) -> Result<(), String> {
         .map_err(|error| format!("parse {} failed: {error}", spec_path.display()))?;
     let report = spec.execute().map_err(|error| error.to_string())?;
     let json = serde_json::to_string_pretty(&report).map_err(|error| error.to_string())?;
+    println!("{json}");
+    Ok(())
+}
+
+fn run_forecast_bridge(
+    blob_path: PathBuf,
+    basin_id: String,
+    area_km2: f64,
+    impervious_fraction: f64,
+    past_hours: usize,
+    window_hours: usize,
+) -> Result<(), String> {
+    let bytes = std::fs::read(&blob_path)
+        .map_err(|error| format!("read {} failed: {error}", blob_path.display()))?;
+    let parsed = parse_open_meteo_hourly(&bytes).map_err(|error| error.to_string())?;
+    let mut members = Vec::with_capacity(parsed.series.len());
+
+    for s in &parsed.series {
+        let split = past_hours.min(s.precipitation_mm.len().saturating_sub(1));
+        let past_rain_mm: f64 = s.precipitation_mm[..split].iter().filter_map(|v| *v).sum();
+        let latest_soil = s.soil_moisture_0_to_7cm[..=split]
+            .iter()
+            .rev()
+            .find_map(|v| *v);
+        let antecedent = derive_antecedent_state(past_rain_mm, latest_soil, 0.30);
+
+        let forecast_rain = &s.precipitation_mm[split..];
+        let missing_precip_hours = forecast_rain.iter().filter(|v| v.is_none()).count();
+        let spec = build_runoff_spec_from_hourly(
+            format!("{}-{}", basin_id, s.model),
+            basin_id.clone(),
+            area_km2,
+            impervious_fraction,
+            forecast_rain,
+            antecedent,
+        )
+        .map_err(|error| error.to_string())?;
+        let report = spec.execute().map_err(|error| error.to_string())?;
+        let peak_win =
+            detect_peak_window(&report, forecast_rain, window_hours).map_err(|e| e.to_string())?;
+
+        let total_rain_mm: f64 = forecast_rain.iter().filter_map(|v| *v).sum();
+        let peak_hourly_mm = forecast_rain
+            .iter()
+            .filter_map(|v| *v)
+            .fold(0.0_f64, f64::max);
+        let mut peak_24h_mm = 0.0_f64;
+        let win24 = 24.min(forecast_rain.len());
+        if win24 > 0 {
+            for start in 0..=(forecast_rain.len() - win24) {
+                let sum: f64 = forecast_rain[start..start + win24]
+                    .iter()
+                    .filter_map(|v| *v)
+                    .sum();
+                if sum > peak_24h_mm {
+                    peak_24h_mm = sum;
+                }
+            }
+        }
+
+        members.push(ModelForecastMember {
+            model: s.model.clone(),
+            total_rain_mm,
+            peak_24h_mm,
+            peak_hourly_mm,
+            total_runoff_m3: report.total_outlet_m3,
+            peak_window_start_h: peak_win.start_hour,
+            peak_window_end_h: peak_win.end_hour,
+            missing_precip_hours,
+            antecedent_deficit: antecedent.effective_maximum_deficit,
+        });
+    }
+
+    let summary = summarize_ensemble(members);
+    let json = serde_json::to_string_pretty(&summary).map_err(|error| error.to_string())?;
     println!("{json}");
     Ok(())
 }

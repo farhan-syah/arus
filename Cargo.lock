@@ -626,6 +626,7 @@ dependencies = [
  "arus-geo",
  "arus-hydraulics",
  "arus-hydrology",
+ "arus-ingest",
  "arus-jobs",
  "arus-model-api",
  "arus-scenarios",
@@ -635,6 +636,7 @@ dependencies = [
  "serde_json",
  "sha2 0.10.9",
  "tempfile",
+ "time",
 ]
 
 [[package]]

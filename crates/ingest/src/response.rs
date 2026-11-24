@@ -94,7 +94,15 @@ pub(crate) fn check(bytes: &[u8], kind: &ResponseKind) -> Result<ValidationSumma
         ResponseKind::Hourly {
             window,
             requested_run,
-        } => hourly(&value, *window, requested_run.as_deref()),
+            models,
+            hourly: hourly_vars,
+        } => hourly(
+            &value,
+            *window,
+            requested_run.as_deref(),
+            models,
+            hourly_vars,
+        ),
         ResponseKind::Catalogue { limit } => {
             let rows = value
                 .get("value")
@@ -125,6 +133,8 @@ fn hourly(
     value: &Value,
     window: Option<(time::PrimitiveDateTime, time::PrimitiveDateTime)>,
     requested_run: Option<&str>,
+    models: &[String],
+    hourly_vars: &[String],
 ) -> Result<ValidationSummary> {
     for (key, low, high) in [("latitude", -90.0, 90.0), ("longitude", -180.0, 180.0)] {
         if !value
@@ -140,24 +150,40 @@ fn hourly(
             value.get("timezone").and_then(Value::as_str),
             Some("GMT" | "UTC")
         )
-        || value
-            .pointer("/hourly_units/precipitation")
-            .and_then(Value::as_str)
-            != Some("mm")
     {
-        return Err(invalid("expected UTC timestamps and precipitation in mm"));
+        return Err(invalid("expected UTC timestamps"));
     }
-    let times = value
-        .pointer("/hourly/time")
+    let units = value
+        .get("hourly_units")
+        .and_then(Value::as_object)
+        .ok_or_else(|| invalid("missing hourly_units object"))?;
+    let hourly_obj = value
+        .get("hourly")
+        .and_then(Value::as_object)
+        .ok_or_else(|| invalid("missing hourly object"))?;
+    let times = hourly_obj
+        .get("time")
         .and_then(Value::as_array)
         .ok_or_else(|| invalid("missing hourly time array"))?;
-    let rain = value
-        .pointer("/hourly/precipitation")
-        .and_then(Value::as_array)
-        .ok_or_else(|| invalid("missing hourly precipitation array"))?;
-    if times.is_empty() || times.len() != rain.len() {
-        return Err(invalid("empty or misaligned hourly arrays"));
+    if times.is_empty() {
+        return Err(invalid("empty hourly time array"));
     }
+
+    // Build expected precipitation keys: single model uses "precipitation", multi-model uses "precipitation_<model>"
+    let precip_keys: Vec<String> = if models.len() <= 1 {
+        vec!["precipitation".to_owned()]
+    } else {
+        models
+            .iter()
+            .map(|m| format!("precipitation_{m}"))
+            .collect()
+    };
+    for key in &precip_keys {
+        if units.get(key).and_then(Value::as_str) != Some("mm") {
+            return Err(invalid(format!("expected `{key}` unit in mm")));
+        }
+    }
+
     let format =
         time::format_description::parse_borrowed::<2>("[year]-[month]-[day]T[hour]:[minute]")
             .map_err(|error| invalid(error.to_string()))?;
@@ -190,21 +216,64 @@ fn hourly(
         }
         previous = Some(parsed);
     }
+
     let mut missing = 0;
-    for entry in rain {
-        if entry.is_null() {
-            missing += 1;
-        } else if !entry
-            .as_f64()
-            .is_some_and(|number| number.is_finite() && number >= 0.0)
-        {
-            return Err(invalid(
-                "precipitation must be nonnegative or explicit null",
-            ));
+    for key in &precip_keys {
+        let rain = hourly_obj
+            .get(key)
+            .and_then(Value::as_array)
+            .ok_or_else(|| invalid(format!("missing hourly `{key}` array")))?;
+        if rain.len() != times.len() {
+            return Err(invalid(format!("misaligned hourly `{key}` array")));
         }
+        let mut series_missing = 0;
+        for entry in rain {
+            if entry.is_null() {
+                series_missing += 1;
+            } else if !entry
+                .as_f64()
+                .is_some_and(|number| number.is_finite() && number >= 0.0)
+            {
+                return Err(invalid(format!(
+                    "`{key}` must be nonnegative or explicit null"
+                )));
+            }
+        }
+        if series_missing == rain.len() {
+            return Err(invalid(format!("all `{key}` values are missing")));
+        }
+        missing += series_missing;
     }
-    if missing == rain.len() {
-        return Err(invalid("all precipitation values are missing"));
+
+    // Validate optional soil moisture arrays (explicit nulls preserved, never coerced to 0.0)
+    for var in hourly_vars {
+        if var == "precipitation" {
+            continue;
+        }
+        let keys: Vec<String> = if models.len() <= 1 {
+            vec![var.clone()]
+        } else {
+            models.iter().map(|m| format!("{var}_{m}")).collect()
+        };
+        for key in keys {
+            if let Some(arr) = hourly_obj.get(&key).and_then(Value::as_array) {
+                if arr.len() != times.len() {
+                    return Err(invalid(format!("misaligned hourly `{key}` array")));
+                }
+                for entry in arr {
+                    if entry.is_null() {
+                        missing += 1;
+                    } else if !entry
+                        .as_f64()
+                        .is_some_and(|number| number.is_finite() && number >= 0.0)
+                    {
+                        return Err(invalid(format!(
+                            "`{key}` must be nonnegative or explicit null"
+                        )));
+                    }
+                }
+            }
+        }
     }
     let coverage_complete = window.map(|(start, end)| {
         first == Some(start)
