@@ -6,7 +6,7 @@ use std::sync::Arc;
 use arus_api_types::{API_SCHEMA_VERSION, ApiLocationOutlook};
 use arus_assets::Archive;
 use arus_storage::{PublishedPointer, RunIndex, RunRecord, RunStore};
-use arus_web::{Locale, render_outlook_html};
+use arus_web::{Locale, render_index_page_html, render_run_page_html};
 use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use axum::response::Html;
@@ -48,6 +48,7 @@ struct LangQuery {
 /// Builds the Axum router with all public ARUS JSON and HTML endpoints.
 pub fn router(state: ApiState) -> Router {
     Router::new()
+        .route("/", get(render_index_html))
         .route("/health", get(health))
         .route("/api/v1/published", get(get_published))
         .route("/api/v1/runs", get(list_runs))
@@ -55,6 +56,30 @@ pub fn router(state: ApiState) -> Router {
         .route("/api/v1/runs/{run_id}/outlook", get(get_run_outlook))
         .route("/runs/{run_id}", get(render_run_html))
         .with_state(state)
+}
+
+async fn render_index_html(
+    State(state): State<ApiState>,
+    Query(query): Query<LangQuery>,
+) -> Result<Html<String>, (StatusCode, Json<ErrorResponse>)> {
+    let store = RunStore::new(&state.archive);
+    let index = store.load_index().map_err(internal_error)?;
+    let published = store.load_published().map_err(internal_error)?;
+    let locale = parse_locale(query.lang.as_deref());
+    let html = render_index_page_html(
+        &index.run_ids,
+        index.latest_run_id.as_deref(),
+        published.as_ref().map(|p| p.run_id.as_str()),
+        locale,
+    );
+    Ok(Html(html))
+}
+
+fn parse_locale(lang: Option<&str>) -> Locale {
+    match lang {
+        Some("bm" | "ms") => Locale::BahasaMalaysia,
+        _ => Locale::English,
+    }
 }
 
 async fn get_published(
@@ -134,19 +159,8 @@ async fn render_run_html(
         .map_err(internal_error)?;
     let outlooks: Vec<ApiLocationOutlook> =
         serde_json::from_slice(&bytes).map_err(internal_error)?;
-    let locale = match query.lang.as_deref() {
-        Some("bm" | "ms") => Locale::BahasaMalaysia,
-        _ => Locale::English,
-    };
-    let cards: String = outlooks
-        .iter()
-        .map(|outlook| render_outlook_html(outlook, locale))
-        .collect();
-    let html = format!(
-        "<!doctype html><html><head><meta charset=\"utf-8\"><title>ARUS {run_id}</title></head>\
-         <body><main>{cards}</main></body></html>"
-    );
-    Ok(Html(html))
+    let locale = parse_locale(query.lang.as_deref());
+    Ok(Html(render_run_page_html(&run_id, &outlooks, locale)))
 }
 
 fn not_found(message: String) -> (StatusCode, Json<ErrorResponse>) {
