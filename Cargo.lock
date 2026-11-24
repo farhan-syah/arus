@@ -69,6 +69,8 @@ name = "arus-api-types"
 version = "0.1.0"
 dependencies = [
  "arus-domain",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]
@@ -113,6 +115,8 @@ version = "0.1.0"
 dependencies = [
  "arus-domain",
  "arus-model-api",
+ "serde",
+ "thiserror",
 ]
 
 [[package]]
