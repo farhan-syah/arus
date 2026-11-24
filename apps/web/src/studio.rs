@@ -50,10 +50,13 @@ fn StudioShell() -> Element {
                 }
                 button { id: "btn-2d3d", class: "btn active", "3D" }
                 button { id: "btn-sources", class: "btn", "Sources" }
+                button { id: "btn-snap", class: "btn", title: "Save PNG snapshot", "PNG" }
+                button { id: "btn-rec", class: "btn", title: "Record WebM video", "Rec" }
                 button { id: "btn-export-asc", class: "btn", ".ASC" }
                 button { id: "btn-export-csv", class: "btn", ".CSV" }
             }
         }
+        div { id: "director-caption", class: "hud director-caption hidden" }
 
         // Left Scenario & Tools Drawer
         aside { id: "drawer", class: "hud drawer",

@@ -102,6 +102,7 @@ function initMap() {
     pitch: 48,
     bearing: -16,
     antialias: true,
+    preserveDrawingBuffer: true,
   });
 
   map.addControl(new maplibregl.ScaleControl({ maxWidth: 110, unit: 'metric' }), 'bottom-left');
@@ -1216,6 +1217,8 @@ function wireUi() {
   $('btn-export-csv').addEventListener('click', () => {
     if (state.runId) window.open(`/api/v1/runs/${state.runId}/export/outlooks.csv`, '_blank');
   });
+  $('btn-snap').addEventListener('click', captureSnapshotPng);
+  $('btn-rec').addEventListener('click', toggleVideoRecording);
 
   $('btn-sources').addEventListener('click', openSourcesModal);
   $('btn-sources-close').addEventListener('click', () => $('sources-modal').classList.add('hidden'));
@@ -1240,6 +1243,162 @@ function wireUi() {
     runSimulation(false);
   });
 }
+
+let activeRecorder = null;
+let recordedChunks = [];
+
+function downloadBlob(blob, filename) {
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = filename;
+  a.click();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+
+function captureSnapshotPng() {
+  if (!map) return;
+  map.getCanvas().toBlob((blob) => {
+    if (blob) downloadBlob(blob, `arus-${state.runId || 'view'}.png`);
+  }, 'image/png');
+}
+
+function toggleVideoRecording() {
+  const btn = $('btn-rec');
+  if (activeRecorder && activeRecorder.state === 'recording') {
+    activeRecorder.stop();
+    btn.classList.remove('recording');
+    btn.textContent = 'Rec';
+    return;
+  }
+  if (!map || typeof MediaRecorder === 'undefined') return;
+  const stream = map.getCanvas().captureStream(30);
+  const mime = MediaRecorder.isTypeSupported('video/webm;codecs=vp9')
+    ? 'video/webm;codecs=vp9'
+    : 'video/webm';
+  recordedChunks = [];
+  activeRecorder = new MediaRecorder(stream, { mimeType: mime, videoBitsPerSecond: 4_000_000 });
+  activeRecorder.ondataavailable = (e) => {
+    if (e.data && e.data.size > 0) recordedChunks.push(e.data);
+  };
+  activeRecorder.onstop = () => {
+    const blob = new Blob(recordedChunks, { type: mime });
+    downloadBlob(blob, `arus-${state.runId || 'recording'}.webm`);
+    recordedChunks = [];
+  };
+  activeRecorder.start();
+  btn.classList.add('recording');
+  btn.textContent = 'Stop';
+}
+
+// Public Director API for declarative storyboard scripts (scripts/record_storyboard.py)
+window.arusDirector = {
+  isReady: () => Boolean(state.grid && state.frames.length > 0),
+  getState: () => ({
+    runId: state.runId,
+    basemap: state.basemap,
+    layer: state.layer,
+    frameIdx: state.frameIdx,
+    frameCount: state.frames.length,
+    center: state.center,
+    interventions: state.interventions.length,
+  }),
+  flyTo: (lat, lon, zoom = 14.3, pitch = 48, bearing = -16, duration = 900) => {
+    state.center = { lat, lon };
+    state.cachedDem = null;
+    map.flyTo({ center: [lon, lat], zoom, pitch, bearing, duration });
+  },
+  setBasemap: (mode) => setBasemap(mode),
+  setLayer: (layer) => setLayer(layer),
+  setPlaying: (playing) => {
+    state.playing = Boolean(playing);
+    $('btn-play').textContent = state.playing ? '❚❚' : '▶';
+  },
+  setFrame: (idx) => {
+    if (!state.frames.length) return;
+    state.playing = false;
+    $('btn-play').textContent = '▶';
+    state.frameIdx = Math.max(0, Math.min(state.frames.length - 1, idx));
+    $('scrubber').value = String(state.frameIdx);
+    updateTimeReadout();
+    if (state.xsecPts.length === 2) renderCrossSectionInspector();
+    else if (state.selectedCell) renderHydrographInspector();
+    renderFloodCanvas(true);
+  },
+  setScenario: (opts = {}) => {
+    if (typeof opts.rainfall_mm_per_hr === 'number') {
+      $('ctl-rain').value = String(opts.rainfall_mm_per_hr);
+      $('val-rain').textContent = `${opts.rainfall_mm_per_hr} mm/hr`;
+    }
+    if (typeof opts.duration_s === 'number') {
+      $('ctl-dur').value = String(opts.duration_s);
+      $('val-dur').textContent = `${opts.duration_s} s`;
+    }
+    if (typeof opts.wind_x_m_per_s === 'number') {
+      $('ctl-wind').value = String(opts.wind_x_m_per_s);
+      $('val-wind').textContent = `${opts.wind_x_m_per_s} m/s`;
+    }
+    if (typeof opts.manning_n === 'number') {
+      $('ctl-manning').value = String(opts.manning_n);
+      $('val-manning').textContent = Number(opts.manning_n).toFixed(3);
+    }
+    if (opts.hyetograph) $('ctl-hyeto').value = opts.hyetograph;
+    if (opts.soil) $('ctl-soil').value = opts.soil;
+    if (opts.boundary) $('ctl-boundary').value = opts.boundary;
+  },
+  runSimulation: () => runSimulation(false),
+  compare: () => runSimulation(true),
+  fetchNwp: () => fetchLiveMultiModelNwp(),
+  crossSectionLatLon: (aLat, aLon, bLat, bLon) => {
+    const ca = lngLatToCell(aLon, aLat);
+    const cb = lngLatToCell(bLon, bLat);
+    if (!ca || !cb) return false;
+    state.xsecPts = [{ col: ca.col, row: ca.row }, { col: cb.col, row: cb.row }];
+    renderCrossSectionInspector();
+    renderFloodCanvas(false);
+    return true;
+  },
+  clearInspector: () => {
+    $('inspector').classList.add('hidden');
+    state.xsecPts = [];
+    state.selectedCell = null;
+    renderFloodCanvas(false);
+  },
+  addInterventionLatLon: (kind, points) => {
+    const delta = kind === 'pond' ? -0.8 : 0.8;
+    const reason = kind === 'pond' ? 'detention pond' : 'raised flood bund';
+    for (const [lat, lon] of points) {
+      const hit = lngLatToCell(lon, lat);
+      if (!hit) continue;
+      for (let dr = 0; dr <= 1; dr++) {
+        for (let dc = 0; dc <= 1; dc++) {
+          const c = hit.col + dc;
+          const r = hit.row + dr;
+          if (c < state.grid.metadata.cols && r < state.grid.metadata.rows) {
+            state.interventions.push({ col: c, row: r, delta_m: delta, reason });
+          }
+        }
+      }
+    }
+    updateInterventionBar();
+    renderFloodCanvas(false);
+  },
+  clearInterventions: () => {
+    state.interventions = [];
+    updateInterventionBar();
+    renderFloodCanvas(false);
+  },
+  setCaption: (text) => {
+    const el = $('director-caption');
+    if (!text) {
+      el.classList.add('hidden');
+      el.textContent = '';
+    } else {
+      el.textContent = text;
+      el.classList.remove('hidden');
+    }
+  },
+};
 
 window.addEventListener('DOMContentLoaded', () => {
   initMap();

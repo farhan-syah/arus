@@ -674,6 +674,23 @@ input[type="range"] {
 }
 .src-badge.pub { background: rgba(22, 163, 74, 0.14); color: var(--ok); }
 
+.btn.recording {
+  background: rgba(225, 29, 72, 0.16);
+  border-color: var(--danger);
+  color: var(--danger);
+}
+.director-caption {
+  top: 66px;
+  left: 50%;
+  transform: translateX(-50%);
+  padding: 6px 14px;
+  font-size: 12.5px;
+  font-weight: 500;
+  color: var(--ink-1);
+  pointer-events: none;
+  max-width: 520px;
+  text-align: center;
+}
 .spinner {
   display: inline-block;
   width: 11px;

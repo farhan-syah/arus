@@ -1,0 +1,23 @@
+{
+  "name": "arus-pilot-storyboard",
+  "viewport": { "width": 1280, "height": 720 },
+  "steps": [
+    { "action": "caption", "text": "1. Baseline storm on live Terrarium 30m DEM", "wait_s": 0.4 },
+    { "action": "set_frame", "frame": 38, "wait_s": 0.6 },
+    { "action": "screenshot", "file": "01-baseline.png" },
+    { "action": "play", "seconds": 2.5 },
+    { "action": "caption", "text": "2. Cross-section profile A → B across flooded corridor" },
+    { "action": "cross_section", "a": [3.033, 101.531], "b": [3.029, 101.539], "wait_s": 1.0 },
+    { "action": "screenshot", "file": "02-profile.png" },
+    { "action": "clear_inspector" },
+    { "action": "caption", "text": "3. Add +0.8 m flood bund and compare vs baseline" },
+    {
+      "action": "add_intervention",
+      "kind": "bund",
+      "points": [[3.0315, 101.534], [3.0312, 101.535], [3.0309, 101.536]]
+    },
+    { "action": "compare", "wait_s": 1.8 },
+    { "action": "screenshot", "file": "03-diff.png" },
+    { "action": "caption", "text": "" }
+  ]
+}
