@@ -1,0 +1,70 @@
+{
+  "run_id": "bench-coupled-pools-gate-and-pump",
+  "classification": "numerical-demonstration",
+  "vertical_datum": "synthetic-datum",
+  "pools": [
+    {
+      "id": "detention-pond",
+      "provenance": "synthetic rectangular detention pond",
+      "knots": [
+        { "volume_m3": 0.0, "stage_m": 0.0 },
+        { "volume_m3": 1000.0, "stage_m": 5.0 }
+      ],
+      "initial_volume_m3": 600.0
+    },
+    {
+      "id": "wet-well",
+      "provenance": "synthetic pump wet well",
+      "knots": [
+        { "volume_m3": 0.0, "stage_m": 0.0 },
+        { "volume_m3": 1000.0, "stage_m": 5.0 }
+      ],
+      "initial_volume_m3": 300.0
+    },
+    {
+      "id": "outfall-basin",
+      "provenance": "synthetic elevated outfall basin",
+      "knots": [
+        { "volume_m3": 0.0, "stage_m": 0.0 },
+        { "volume_m3": 1000.0, "stage_m": 5.0 }
+      ],
+      "initial_volume_m3": 500.0
+    }
+  ],
+  "structures": [
+    {
+      "id": "sluice-gate-1",
+      "from_pool": "detention-pond",
+      "from_bed_elevation_m": 0.0,
+      "to_pool": "wet-well",
+      "to_bed_elevation_m": 0.0,
+      "law": {
+        "kind": "gate",
+        "width_m": 2.0,
+        "sill_m": 0.5,
+        "maximum_opening_m": 1.5,
+        "opening_m": 0.5,
+        "discharge_coefficient": 0.62
+      }
+    },
+    {
+      "id": "lift-pump-1",
+      "from_pool": "wet-well",
+      "from_bed_elevation_m": 0.0,
+      "to_pool": "outfall-basin",
+      "to_bed_elevation_m": 0.0,
+      "law": {
+        "kind": "pump",
+        "minimum_suction_stage_m": 0.2,
+        "knots": [
+          { "head_m": 0.0, "discharge_m3_per_s": 2.0 },
+          { "head_m": 4.0, "discharge_m3_per_s": 0.5 }
+        ],
+        "running_speed_ratio": 1.0
+      }
+    }
+  ],
+  "target_time_s": 20.0,
+  "max_steps": 200,
+  "maximum_step_s": 2.0
+}

@@ -9,6 +9,7 @@ pub mod codec;
 pub mod coupled;
 pub mod coupled_spec;
 pub mod demo;
+pub mod pools;
 pub mod runtime;
 pub mod spec;
 pub mod surface;
@@ -21,6 +22,11 @@ pub use coupled_spec::{
 };
 pub use demo::{
     ClosedBasinDemoReport, NativeWorkerDemoReport, run_closed_basin_demo, run_native_worker_demo,
+};
+pub use pools::{
+    CoupledPoolsEngine, LevelPoolSpec, PoolFinalState, PoolKnotSpec, PoolStructureRunReport,
+    PoolStructureRunSpec, PoolStructureSpec, PumpKnotSpec, StructureLawSpec,
+    StructureTransferSummary,
 };
 pub use spec::{
     BoundaryAxisSpec, BoundaryFaceSpec, BoundaryForcingSpec, LandSpec, ProbeSpec, RainIntervalSpec,

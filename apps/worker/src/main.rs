@@ -15,8 +15,9 @@ use arus_forecasting::{
     OnsetStatus, PublicationCandidate, PublicationDecision, RecessionStatus, evaluate_publication,
 };
 use arus_hydraulics::{
-    CoupledRunSpec, LocationProbe, SurfaceEngine, SurfaceRunSpec, all_component_capabilities,
-    package_from_bytes, run_closed_basin_demo, run_native_worker_demo, surface_capabilities,
+    CoupledRunSpec, LocationProbe, PoolStructureRunSpec, SurfaceEngine, SurfaceRunSpec,
+    all_component_capabilities, package_from_bytes, run_closed_basin_demo, run_native_worker_demo,
+    surface_capabilities,
 };
 use arus_hydrology::RunoffRunSpec;
 use arus_jobs::{CancellationToken, StepBudget};
@@ -88,6 +89,12 @@ enum Command {
     /// Execute a JSON `CoupledRunSpec` 2D surface + 1D channel manifest and emit its JSON report.
     Coupled {
         /// Path to the JSON `CoupledRunSpec` manifest file.
+        #[arg(long)]
+        spec: PathBuf,
+    },
+    /// Execute a JSON `PoolStructureRunSpec` level-pool + structures (weir/orifice/gate/pump) manifest.
+    Pools {
+        /// Path to the JSON `PoolStructureRunSpec` manifest file.
         #[arg(long)]
         spec: PathBuf,
     },
@@ -216,6 +223,7 @@ fn execute(command: Command) -> Result<(), String> {
         } => run_paired_comparison(baseline, intervention),
         Command::Runoff { spec } => run_runoff_spec(spec),
         Command::Coupled { spec } => run_coupled_spec(spec),
+        Command::Pools { spec } => run_pools_spec(spec),
         Command::Resume { archive, from_run } => run_resume_check(archive, from_run),
         Command::Publish {
             archive,
@@ -271,6 +279,17 @@ fn run_coupled_spec(spec_path: PathBuf) -> Result<(), String> {
             budget_assessment.reasons
         ));
     }
+    Ok(())
+}
+
+fn run_pools_spec(spec_path: PathBuf) -> Result<(), String> {
+    let raw = std::fs::read_to_string(&spec_path)
+        .map_err(|error| format!("read {}: {error}", spec_path.display()))?;
+    let spec: PoolStructureRunSpec = serde_json::from_str(&raw)
+        .map_err(|error| format!("parse {}: {error}", spec_path.display()))?;
+    let report = spec.execute().map_err(|error| error.to_string())?;
+    let json = serde_json::to_string_pretty(&report).map_err(|error| error.to_string())?;
+    println!("{json}");
     Ok(())
 }
 

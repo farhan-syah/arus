@@ -10,3 +10,4 @@ Reproducible `SurfaceRunSpec` manifests checked by `crates/hydraulics/tests/anal
 | `open_stage_drainage.json` | Initial `0.4 m` ponded water draining across subcritical `0.3 m` stage faces for `20 s` | Positive outflow (`outputs_m3 > 0`), depth drops below `0.4 m`, water budget passes |
 | `subcatchment_urban_runoff.json` | Three-subarea urban subcatchment with Modified Green-Ampt soil (`arus-worker runoff`) | Positive infiltration and outlet runoff over `120 s`, residual `< 1e-9 m^3` |
 | `coupled_surface_channel_bank_weir.json` | Coupled 2D floodplain + 1D rectangular channel over bank weir (`arus-worker coupled`) | Positive surface-to-channel bank transfer over `1 s`, composite water budget passes |
+| `coupled_pools_structures.json` | 3 detention pools connected by sluice gate + lift pump (`arus-worker pools`) | Gate drains detention pond, pump lifts to outfall basin, total volume residual `< 1e-9 m^3` |
