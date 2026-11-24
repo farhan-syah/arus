@@ -479,6 +479,138 @@
       "refresh_seconds": null,
       "provider_min_interval_seconds": 1,
       "max_response_bytes": 1048576
+    },
+    {
+      "id": "openmeteo-marine-forecast",
+      "title": "Open-Meteo Marine wave and sea-level forecast",
+      "provider": "open-meteo",
+      "description": "Hourly coastal wave height, sea-level height MSL, and surface currents for storm-surge boundary screening.",
+      "data_class": "forecast",
+      "access": "public",
+      "connector": "open_meteo_marine",
+      "documentation_urls": [
+        "https://open-meteo.com/en/docs/marine-weather-api"
+      ],
+      "license": {
+        "name": "Open-Meteo free-service terms (CC BY 4.0 noncommercial)",
+        "url": "https://open-meteo.com/en/terms",
+        "noncommercial_only": true,
+        "redistribution": "Free tier is noncommercial only; commercial deployment requires a paid Open-Meteo plan or direct marine NWP feeds."
+      },
+      "coverage": "Global coastal ocean grid.",
+      "limitations": [
+        "Coarse coastal resolution (~5-8 km); nearshore surge still requires local bathymetry and tidal gauge validation."
+      ],
+      "reviewed_on": "2026-11-24",
+      "refresh_seconds": 21600,
+      "provider_min_interval_seconds": 5,
+      "max_response_bytes": 4194304
+    },
+    {
+      "id": "openmeteo-glofas-flood",
+      "title": "Open-Meteo GloFAS global river discharge forecast",
+      "provider": "open-meteo",
+      "description": "Daily GloFAS ensemble river discharge (m3/s) for multi-day basin screening.",
+      "data_class": "forecast",
+      "access": "public",
+      "connector": "open_meteo_flood",
+      "documentation_urls": [
+        "https://open-meteo.com/en/docs/flood-api"
+      ],
+      "license": {
+        "name": "Open-Meteo free-service terms (CC BY 4.0 noncommercial)",
+        "url": "https://open-meteo.com/en/terms",
+        "noncommercial_only": true,
+        "redistribution": "Free tier is noncommercial only; underlying Copernicus GloFAS data is CC BY 4.0."
+      },
+      "coverage": "Global 5 km river network.",
+      "limitations": [
+        "5 km river routing cannot resolve small urban drains or unmapped local diversions without calibration."
+      ],
+      "reviewed_on": "2026-11-24",
+      "refresh_seconds": 43200,
+      "provider_min_interval_seconds": 5,
+      "max_response_bytes": 4194304
+    },
+    {
+      "id": "ecmwf-open-data",
+      "title": "ECMWF Open Data (IFS HRES & 51-member ENS)",
+      "provider": "ecmwf",
+      "description": "Commercial-safe direct 0.25-degree global deterministic and 51-member ensemble GRIB2 forecasts.",
+      "data_class": "forecast",
+      "access": "public",
+      "connector": "catalog_only",
+      "documentation_urls": [
+        "https://www.ecmwf.int/en/forecasts/datasets/open-data",
+        "https://registry.opendata.aws/ecmwf-forecasts/"
+      ],
+      "license": {
+        "name": "CC BY 4.0",
+        "url": "https://creativecommons.org/licenses/by/4.0/",
+        "noncommercial_only": false,
+        "redistribution": "Commercial-safe under CC BY 4.0 with ECMWF attribution."
+      },
+      "coverage": "Global 0.25-degree grid, 6-hourly cycles.",
+      "limitations": [
+        "Requires GRIB2 subsetting in the deployment pipeline; cataloged here for commercial-safe production migration."
+      ],
+      "reviewed_on": "2026-11-24",
+      "refresh_seconds": 21600,
+      "provider_min_interval_seconds": 5,
+      "max_response_bytes": 16777216
+    },
+    {
+      "id": "noaa-gefs-aws",
+      "title": "NOAA GFS & GEFS (31-member ensemble) on AWS Open Data",
+      "provider": "noaa",
+      "description": "Commercial-safe direct public-domain GFS 0.25-degree and GEFS ensemble GRIB2 forecasts.",
+      "data_class": "forecast",
+      "access": "public",
+      "connector": "catalog_only",
+      "documentation_urls": [
+        "https://registry.opendata.aws/noaa-gfs-bdp-pds/",
+        "https://registry.opendata.aws/noaa-gefs/"
+      ],
+      "license": {
+        "name": "U.S. Government Public Domain",
+        "url": "https://www.noaa.gov/disclaimer",
+        "noncommercial_only": false,
+        "redistribution": "Public domain; unrestricted commercial and noncommercial use."
+      },
+      "coverage": "Global 0.25-degree / 0.5-degree grid, 6-hourly cycles.",
+      "limitations": [
+        "Prone to isolated convective rainfall spikes in tropical basins; always evaluate alongside ECMWF and ICON."
+      ],
+      "reviewed_on": "2026-11-24",
+      "refresh_seconds": 21600,
+      "provider_min_interval_seconds": 5,
+      "max_response_bytes": 16777216
+    },
+    {
+      "id": "dwd-icon-open-data",
+      "title": "DWD ICON Global Open Data (13 km)",
+      "provider": "dwd",
+      "description": "Commercial-safe direct 13 km global icosahedral numerical weather forecast from Deutscher Wetterdienst.",
+      "data_class": "forecast",
+      "access": "public",
+      "connector": "catalog_only",
+      "documentation_urls": [
+        "https://opendata.dwd.de/weather/nwp/icon/"
+      ],
+      "license": {
+        "name": "CC BY 4.0 (DWD GeoNutzV)",
+        "url": "https://creativecommons.org/licenses/by/4.0/",
+        "noncommercial_only": false,
+        "redistribution": "Commercial-safe with DWD source attribution."
+      },
+      "coverage": "Global ~13 km grid, 6-hourly cycles.",
+      "limitations": [
+        "Requires GRIB2 regridding from icosahedral or regular lat-lon files."
+      ],
+      "reviewed_on": "2026-11-24",
+      "refresh_seconds": 21600,
+      "provider_min_interval_seconds": 5,
+      "max_response_bytes": 16777216
     }
   ]
 }

@@ -14,7 +14,10 @@ use arus_hydraulics::{
     BoundaryAxisSpec, BoundaryFaceSpec, BoundaryForcingSpec, LandSpec, RainIntervalSpec,
     SurfaceRunSpec,
 };
-use arus_ingest::{Catalog, Collections, parse_open_meteo_hourly, plan};
+use arus_ingest::{
+    Catalog, Collections, parse_open_meteo_flood, parse_open_meteo_hourly, parse_open_meteo_marine,
+    plan,
+};
 use arus_jobs::StepBudget;
 use tempfile::TempDir;
 
@@ -356,4 +359,112 @@ fn tc06_shadow_forecast_scoring_rejects_hindsight_leakage() {
     assert!(report.rain_mae_mm > 25.0);
     // Keep AgreementLevel imported/used cleanly
     assert_ne!(AgreementLevel::Low, AgreementLevel::High);
+}
+
+#[test]
+fn marine_glofas_and_commercial_nwp_catalog_entries_plan_and_parse() {
+    let raw_catalog = include_str!("../../../catalog/sources.json");
+    let catalog: Catalog =
+        serde_json::from_str(raw_catalog).unwrap_or_else(|e| unreachable!("catalog: {e}"));
+
+    // Verify commercial-safe direct NWP entries exist and are marked commercial-safe
+    for id in ["ecmwf-open-data", "noaa-gefs-aws", "dwd-icon-open-data"] {
+        let src = catalog
+            .sources
+            .iter()
+            .find(|s| s.id == id)
+            .unwrap_or_else(|| unreachable!("missing catalog source `{id}`"));
+        assert!(!src.license.noncommercial_only);
+    }
+
+    let collections: Collections = serde_json::from_value(serde_json::json!({
+        "schema_version": 1,
+        "collections": [
+            {
+                "id": "coastal-marine-5d",
+                "source_id": "openmeteo-marine-forecast",
+                "description": "Coastal wave height and MSL surge screening",
+                "enabled": true,
+                "accept_noncommercial": true,
+                "parameters": {
+                    "latitude": 5.62,
+                    "longitude": 102.75,
+                    "hourly": ["wave_height", "sea_level_height_msl"],
+                    "forecast_days": 5,
+                    "past_days": 1
+                }
+            },
+            {
+                "id": "basin-glofas-14d",
+                "source_id": "openmeteo-glofas-flood",
+                "description": "GloFAS ensemble river discharge screening",
+                "enabled": true,
+                "accept_noncommercial": true,
+                "parameters": {
+                    "latitude": 5.4853,
+                    "longitude": 102.6861,
+                    "daily": ["river_discharge", "river_discharge_max"],
+                    "forecast_days": 14,
+                    "past_days": 2
+                }
+            }
+        ]
+    }))
+    .unwrap_or_else(|e| unreachable!("collections: {e}"));
+
+    let temp = TempDir::new().unwrap_or_else(|e| unreachable!("tempdir: {e}"));
+    let archive =
+        arus_assets::Archive::open(temp.path()).unwrap_or_else(|e| unreachable!("archive: {e}"));
+    let planned = plan(
+        &catalog,
+        &collections,
+        &archive,
+        time::OffsetDateTime::UNIX_EPOCH,
+    )
+    .unwrap_or_else(|e| unreachable!("plan marine+flood: {e}"));
+    assert_eq!(planned.len(), 2);
+    assert!(
+        planned[0]
+            .request_url
+            .as_deref()
+            .unwrap_or("")
+            .contains("marine-api.open-meteo.com")
+    );
+    assert!(
+        planned[1]
+            .request_url
+            .as_deref()
+            .unwrap_or("")
+            .contains("flood-api.open-meteo.com")
+    );
+
+    let marine_blob = serde_json::to_vec(&serde_json::json!({
+        "latitude": 5.62,
+        "longitude": 102.75,
+        "hourly": {
+            "time": ["2026-11-24T00:00", "2026-11-24T01:00"],
+            "wave_height": [1.4, null],
+            "sea_level_height_msl": [0.35, 0.42]
+        }
+    }))
+    .unwrap_or_else(|e| unreachable!("marine json: {e}"));
+    let marine =
+        parse_open_meteo_marine(&marine_blob).unwrap_or_else(|e| unreachable!("parse marine: {e}"));
+    assert_eq!(marine.wave_height_m, vec![Some(1.4), None]);
+    assert_eq!(marine.sea_level_height_msl_m, vec![Some(0.35), Some(0.42)]);
+
+    let flood_blob = serde_json::to_vec(&serde_json::json!({
+        "latitude": 5.4853,
+        "longitude": 102.6861,
+        "daily": {
+            "time": ["2026-11-25", "2026-11-26"],
+            "river_discharge": [42.5, 68.0],
+            "river_discharge_max": [null, 112.0]
+        }
+    }))
+    .unwrap_or_else(|e| unreachable!("flood json: {e}"));
+    let flood =
+        parse_open_meteo_flood(&flood_blob).unwrap_or_else(|e| unreachable!("parse flood: {e}"));
+    assert_eq!(flood.river_discharge_m3_per_s, vec![Some(42.5), Some(68.0)]);
+    assert_eq!(flood.river_discharge_max_m3_per_s, vec![None, Some(112.0)]);
 }

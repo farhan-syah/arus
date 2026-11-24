@@ -147,6 +147,20 @@ fn StudioShell() -> Element {
                 button { id: "btn-run", class: "btn primary", "Run Simulation" }
                 button { id: "btn-compare", class: "btn compare hidden", disabled: true, "Compare vs Baseline" }
             }
+
+            div { class: "divider" }
+
+            div { class: "sec-head",
+                span { class: "sec-title", "Multi-Model NWP" }
+                button { id: "btn-nwp", class: "btn btn-xs", "Fetch Live" }
+            }
+            div { id: "nwp-card", class: "nwp-card hidden",
+                div { class: "nwp-head",
+                    span { id: "nwp-agree", class: "nwp-badge", "Agreement" }
+                    button { id: "btn-nwp-apply", class: "upload-link", "Apply Peak" }
+                }
+                div { id: "nwp-rows", class: "nwp-rows" }
+            }
         }
 
         // Top-Right Layer & Legend Card

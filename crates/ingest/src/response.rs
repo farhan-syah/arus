@@ -103,6 +103,10 @@ pub(crate) fn check(bytes: &[u8], kind: &ResponseKind) -> Result<ValidationSumma
             models,
             hourly_vars,
         ),
+        ResponseKind::Marine {
+            hourly: marine_vars,
+        } => marine_hourly(&value, marine_vars),
+        ResponseKind::Flood { daily: flood_vars } => flood_daily(&value, flood_vars),
         ResponseKind::Catalogue { limit } => {
             let rows = value
                 .get("value")
@@ -302,6 +306,94 @@ fn hourly(
         time_gaps: gaps,
         first_valid_time: times.first().and_then(Value::as_str).map(str::to_owned),
         last_valid_time: times.last().and_then(Value::as_str).map(str::to_owned),
+        ..Default::default()
+    })
+}
+
+fn marine_hourly(value: &Value, vars: &[String]) -> Result<ValidationSummary> {
+    let hourly_obj = value
+        .get("hourly")
+        .and_then(Value::as_object)
+        .ok_or_else(|| invalid("missing marine hourly object"))?;
+    let times = hourly_obj
+        .get("time")
+        .and_then(Value::as_array)
+        .ok_or_else(|| invalid("missing marine hourly.time"))?;
+    if times.is_empty() {
+        return Err(invalid("empty marine hourly.time"));
+    }
+    let mut missing = 0;
+    for var in vars {
+        let arr = hourly_obj
+            .get(var)
+            .and_then(Value::as_array)
+            .ok_or_else(|| invalid(format!("missing marine `{var}` array")))?;
+        if arr.len() != times.len() {
+            return Err(invalid(format!("misaligned marine `{var}` array")));
+        }
+        for entry in arr {
+            if entry.is_null() {
+                missing += 1;
+            } else if !entry.as_f64().is_some_and(f64::is_finite) {
+                return Err(invalid(format!(
+                    "marine `{var}` must be finite or explicit null"
+                )));
+            }
+        }
+    }
+    Ok(ValidationSummary {
+        records: times.len(),
+        missing_values: missing,
+        first_valid_time: times.first().and_then(Value::as_str).map(str::to_owned),
+        last_valid_time: times.last().and_then(Value::as_str).map(str::to_owned),
+        coverage_assessment: "provider_times_only".into(),
+        ..Default::default()
+    })
+}
+
+fn flood_daily(value: &Value, vars: &[String]) -> Result<ValidationSummary> {
+    let daily_obj = value
+        .get("daily")
+        .and_then(Value::as_object)
+        .ok_or_else(|| invalid("missing flood daily object"))?;
+    let dates = daily_obj
+        .get("time")
+        .and_then(Value::as_array)
+        .ok_or_else(|| invalid("missing flood daily.time"))?;
+    if dates.is_empty() {
+        return Err(invalid("empty flood daily.time"));
+    }
+    for d in dates {
+        let raw = d
+            .as_str()
+            .ok_or_else(|| invalid("non-string date in flood daily.time"))?;
+        crate::parameters::date(raw).map_err(|_| invalid(format!("invalid flood date {raw}")))?;
+    }
+    let mut missing = 0;
+    for var in vars {
+        let arr = daily_obj
+            .get(var)
+            .and_then(Value::as_array)
+            .ok_or_else(|| invalid(format!("missing flood `{var}` array")))?;
+        if arr.len() != dates.len() {
+            return Err(invalid(format!("misaligned flood `{var}` array")));
+        }
+        for entry in arr {
+            if entry.is_null() {
+                missing += 1;
+            } else if !entry.as_f64().is_some_and(|n| n.is_finite() && n >= 0.0) {
+                return Err(invalid(format!(
+                    "flood `{var}` must be nonnegative or explicit null"
+                )));
+            }
+        }
+    }
+    Ok(ValidationSummary {
+        records: dates.len(),
+        missing_values: missing,
+        first_valid_time: dates.first().and_then(Value::as_str).map(str::to_owned),
+        last_valid_time: dates.last().and_then(Value::as_str).map(str::to_owned),
+        coverage_assessment: "provider_times_only".into(),
         ..Default::default()
     })
 }

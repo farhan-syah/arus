@@ -31,6 +31,7 @@ const state = {
   selectedCell: null,
   uploadedDem: null,
   cachedDem: null,
+  nwpPeakMmHr: null,
   particles: [],
 };
 
@@ -1017,6 +1018,69 @@ function animationLoop(now) {
   requestAnimationFrame(animationLoop);
 }
 
+async function fetchLiveMultiModelNwp() {
+  const btn = $('btn-nwp');
+  const card = $('nwp-card');
+  const badge = $('nwp-agree');
+  const rows = $('nwp-rows');
+  btn.disabled = true;
+  btn.textContent = 'Fetching…';
+  try {
+    const { lat, lon } = state.center;
+    const url = `https://api.open-meteo.com/v1/forecast?latitude=${lat.toFixed(4)}&longitude=${lon.toFixed(4)}&models=ecmwf_ifs025,gfs_global,icon_seamless&hourly=precipitation,soil_moisture_0_to_7cm&past_days=2&forecast_days=5&timezone=GMT`;
+    const resp = await fetch(url);
+    if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+    const data = await resp.json();
+    const h = data.hourly || {};
+    const models = [
+      { id: 'ecmwf_ifs025', label: 'ECMWF' },
+      { id: 'gfs_global', label: 'GFS' },
+      { id: 'icon_seamless', label: 'ICON' },
+    ];
+    const stats = models.map((m) => {
+      const arr = (h[`precipitation_${m.id}`] || []).slice(48);
+      const total = arr.reduce((acc, v) => acc + (typeof v === 'number' ? v : 0), 0);
+      let peak24 = 0;
+      for (let i = 0; i + 24 <= arr.length; i++) {
+        let s = 0;
+        for (let j = i; j < i + 24; j++) s += typeof arr[j] === 'number' ? arr[j] : 0;
+        if (s > peak24) peak24 = s;
+      }
+      const peakHr = arr.reduce((mx, v) => (typeof v === 'number' && v > mx ? v : mx), 0);
+      const smArr = h[`soil_moisture_0_to_7cm_${m.id}`] || [];
+      let latestSm = null;
+      for (let i = Math.min(48, smArr.length - 1); i >= 0; i--) {
+        if (typeof smArr[i] === 'number') { latestSm = smArr[i]; break; }
+      }
+      return { ...m, total, peak24, peakHr, latestSm };
+    });
+
+    const peaks = stats.map((s) => s.peak24);
+    const maxP = Math.max(...peaks);
+    const minP = Math.min(...peaks);
+    const spread = maxP - minP;
+    const ratio = maxP > 1e-6 ? spread / maxP : 0;
+    const level = ratio >= 0.5 && spread >= 25 ? 'low' : ratio >= 0.25 && spread >= 10 ? 'moderate' : 'high';
+    state.nwpPeakMmHr = Math.max(...stats.map((s) => s.peakHr));
+
+    badge.className = `nwp-badge ${level}`;
+    badge.textContent = `${level[0].toUpperCase()}${level.slice(1)} agreement`;
+    rows.innerHTML = stats.map((s) => {
+      const smTxt = s.latestSm !== null ? ` · SM ${s.latestSm.toFixed(2)}` : '';
+      return `<div class="nwp-row"><span>${s.label}${smTxt}</span><strong>${s.total.toFixed(0)}mm (24h ${s.peak24.toFixed(0)})</strong></div>`;
+    }).join('');
+    card.classList.remove('hidden');
+  } catch (err) {
+    badge.className = 'nwp-badge low';
+    badge.textContent = 'Offline / Error';
+    rows.innerHTML = `<div class="nwp-row"><span>${String(err.message).slice(0, 36)}</span></div>`;
+    card.classList.remove('hidden');
+  } finally {
+    btn.disabled = false;
+    btn.textContent = 'Fetch Live';
+  }
+}
+
 async function openSourcesModal() {
   $('sources-modal').classList.remove('hidden');
   const grid = $('sources-grid');
@@ -1136,6 +1200,15 @@ function wireUi() {
   $('btn-iv-clear').addEventListener('click', () => { state.interventions = []; updateInterventionBar(); renderFloodCanvas(false); });
   $('btn-run').addEventListener('click', () => runSimulation(false));
   $('btn-compare').addEventListener('click', () => runSimulation(true));
+  $('btn-nwp').addEventListener('click', fetchLiveMultiModelNwp);
+  $('btn-nwp-apply').addEventListener('click', () => {
+    if (state.nwpPeakMmHr !== null) {
+      const clamped = Math.min(400, Math.max(40, Math.round(state.nwpPeakMmHr / 10) * 10));
+      $('ctl-rain').value = String(clamped);
+      $('val-rain').textContent = `${clamped} mm/hr`;
+      runSimulation(false);
+    }
+  });
 
   $('btn-export-asc').addEventListener('click', () => {
     if (state.runId) window.open(`/api/v1/runs/${state.runId}/export/max-depth.asc`, '_blank');

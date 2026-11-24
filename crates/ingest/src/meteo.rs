@@ -151,3 +151,124 @@ pub fn parse_open_meteo_hourly(bytes: &[u8]) -> Result<MultiModelHourlyForecast>
         series,
     })
 }
+
+/// Parsed Open-Meteo Marine hourly forecast preserving `None` for missing entries.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct MarineHourlyForecast {
+    pub latitude: f64,
+    pub longitude: f64,
+    pub times: Vec<String>,
+    pub wave_height_m: Vec<Option<f64>>,
+    pub sea_level_height_msl_m: Vec<Option<f64>>,
+}
+
+/// Parses an archived Open-Meteo Marine hourly JSON blob.
+pub fn parse_open_meteo_marine(bytes: &[u8]) -> Result<MarineHourlyForecast> {
+    let value: Value = serde_json::from_slice(bytes)
+        .map_err(|e| Error::Acquisition(format!("invalid marine JSON: {e}")))?;
+    let latitude = value
+        .get("latitude")
+        .and_then(Value::as_f64)
+        .filter(|v| v.is_finite())
+        .ok_or_else(|| Error::Acquisition("missing marine latitude".to_owned()))?;
+    let longitude = value
+        .get("longitude")
+        .and_then(Value::as_f64)
+        .filter(|v| v.is_finite())
+        .ok_or_else(|| Error::Acquisition("missing marine longitude".to_owned()))?;
+    let hourly = value
+        .get("hourly")
+        .and_then(Value::as_object)
+        .ok_or_else(|| Error::Acquisition("missing marine hourly object".to_owned()))?;
+    let times_val = hourly
+        .get("time")
+        .and_then(Value::as_array)
+        .ok_or_else(|| Error::Acquisition("missing marine hourly.time".to_owned()))?;
+    let mut times = Vec::with_capacity(times_val.len());
+    for t in times_val {
+        let s = t
+            .as_str()
+            .ok_or_else(|| Error::Acquisition("non-string marine time".to_owned()))?;
+        times.push(s.to_owned());
+    }
+    let parse_signed = |key: &str| -> Result<Vec<Option<f64>>> {
+        match hourly.get(key).and_then(Value::as_array) {
+            Some(arr) if arr.len() == times.len() => arr
+                .iter()
+                .map(|v| {
+                    if v.is_null() {
+                        Ok(None)
+                    } else if let Some(n) = v.as_f64().filter(|n| n.is_finite()) {
+                        Ok(Some(n))
+                    } else {
+                        Err(Error::Acquisition(format!("invalid `{key}` value")))
+                    }
+                })
+                .collect(),
+            Some(_) => Err(Error::Acquisition(format!("misaligned `{key}` array"))),
+            None => Ok(vec![None; times.len()]),
+        }
+    };
+    Ok(MarineHourlyForecast {
+        latitude,
+        longitude,
+        wave_height_m: parse_signed("wave_height")?,
+        sea_level_height_msl_m: parse_signed("sea_level_height_msl")?,
+        times,
+    })
+}
+
+/// Parsed Open-Meteo GloFAS daily river-discharge forecast preserving `None` for missing entries.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct FloodDailyForecast {
+    pub latitude: f64,
+    pub longitude: f64,
+    pub dates: Vec<String>,
+    pub river_discharge_m3_per_s: Vec<Option<f64>>,
+    pub river_discharge_max_m3_per_s: Vec<Option<f64>>,
+}
+
+/// Parses an archived Open-Meteo GloFAS daily JSON blob.
+pub fn parse_open_meteo_flood(bytes: &[u8]) -> Result<FloodDailyForecast> {
+    let value: Value = serde_json::from_slice(bytes)
+        .map_err(|e| Error::Acquisition(format!("invalid flood JSON: {e}")))?;
+    let latitude = value
+        .get("latitude")
+        .and_then(Value::as_f64)
+        .filter(|v| v.is_finite())
+        .ok_or_else(|| Error::Acquisition("missing flood latitude".to_owned()))?;
+    let longitude = value
+        .get("longitude")
+        .and_then(Value::as_f64)
+        .filter(|v| v.is_finite())
+        .ok_or_else(|| Error::Acquisition("missing flood longitude".to_owned()))?;
+    let daily = value
+        .get("daily")
+        .and_then(Value::as_object)
+        .ok_or_else(|| Error::Acquisition("missing flood daily object".to_owned()))?;
+    let dates_val = daily
+        .get("time")
+        .and_then(Value::as_array)
+        .ok_or_else(|| Error::Acquisition("missing flood daily.time".to_owned()))?;
+    let mut dates = Vec::with_capacity(dates_val.len());
+    for d in dates_val {
+        let s = d
+            .as_str()
+            .ok_or_else(|| Error::Acquisition("non-string flood date".to_owned()))?;
+        dates.push(s.to_owned());
+    }
+    let parse_opt = |key: &str| -> Result<Vec<Option<f64>>> {
+        match daily.get(key).and_then(Value::as_array) {
+            Some(arr) if arr.len() == dates.len() => parse_opt_f64_array(arr, key),
+            Some(_) => Err(Error::Acquisition(format!("misaligned `{key}` array"))),
+            None => Ok(vec![None; dates.len()]),
+        }
+    };
+    Ok(FloodDailyForecast {
+        latitude,
+        longitude,
+        river_discharge_m3_per_s: parse_opt("river_discharge")?,
+        river_discharge_max_m3_per_s: parse_opt("river_discharge_max")?,
+        dates,
+    })
+}

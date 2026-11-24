@@ -67,6 +67,8 @@ pub enum ConnectorKind {
     OpenMeteoForecast,
     OpenMeteoSingleRun,
     OpenMeteoHistory,
+    OpenMeteoMarine,
+    OpenMeteoFlood,
     CdseCatalogue,
     CatalogOnly,
 }

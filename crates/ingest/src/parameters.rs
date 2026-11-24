@@ -24,6 +24,12 @@ pub(crate) enum ResponseKind {
         models: Vec<String>,
         hourly: Vec<String>,
     },
+    Marine {
+        hourly: Vec<String>,
+    },
+    Flood {
+        daily: Vec<String>,
+    },
     Catalogue {
         limit: usize,
     },
@@ -88,6 +94,28 @@ struct History {
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
+struct Marine {
+    latitude: f64,
+    longitude: f64,
+    hourly: Vec<String>,
+    forecast_days: u8,
+    #[serde(default)]
+    past_days: Option<u8>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Flood {
+    latitude: f64,
+    longitude: f64,
+    daily: Vec<String>,
+    forecast_days: u16,
+    #[serde(default)]
+    past_days: Option<u8>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 struct Catalogue {
     latitude: f64,
     longitude: f64,
@@ -130,6 +158,22 @@ const ALLOWED_OPEN_METEO_HOURLY: &[&str] = &[
     "precipitation",
     "soil_moisture_0_to_7cm",
     "soil_moisture_0_to_1cm",
+];
+
+const ALLOWED_MARINE_HOURLY: &[&str] = &[
+    "wave_height",
+    "sea_level_height_msl",
+    "ocean_current_velocity",
+];
+
+const ALLOWED_FLOOD_DAILY: &[&str] = &[
+    "river_discharge",
+    "river_discharge_mean",
+    "river_discharge_median",
+    "river_discharge_max",
+    "river_discharge_min",
+    "river_discharge_p25",
+    "river_discharge_p75",
 ];
 
 fn resolve_models(model: Option<String>, models: Vec<String>) -> Result<Vec<String>> {
@@ -350,6 +394,85 @@ pub(crate) fn prepare(source: &Source, collection: &Collection) -> Result<Option
                     requested_run: None,
                     models,
                     hourly: params.hourly,
+                },
+            )
+        }
+        ConnectorKind::OpenMeteoMarine => {
+            let params: Marine = parse(collection)?;
+            coordinates(params.latitude, params.longitude)?;
+            days(params.forecast_days)?;
+            if params.hourly.is_empty() {
+                return Err(Error::Config(
+                    "Open-Meteo Marine requires at least one hourly variable".into(),
+                ));
+            }
+            for var in &params.hourly {
+                if !ALLOWED_MARINE_HOURLY.contains(&var.as_str()) {
+                    return Err(Error::Config(format!(
+                        "unsupported marine hourly variable `{var}`; allowed: {}",
+                        ALLOWED_MARINE_HOURLY.join(", ")
+                    )));
+                }
+            }
+            let mut query = vec![
+                ("latitude".into(), params.latitude.to_string()),
+                ("longitude".into(), params.longitude.to_string()),
+                ("hourly".into(), params.hourly.join(",")),
+                ("forecast_days".into(), params.forecast_days.to_string()),
+                ("timezone".into(), "GMT".into()),
+            ];
+            if let Some(past) = params.past_days {
+                if past > 7 {
+                    return Err(Error::Config("past_days must be between 0 and 7".into()));
+                }
+                query.push(("past_days".into(), past.to_string()));
+            }
+            (
+                url("https://marine-api.open-meteo.com/v1/marine", query)?,
+                ResponseKind::Marine {
+                    hourly: params.hourly,
+                },
+            )
+        }
+        ConnectorKind::OpenMeteoFlood => {
+            let params: Flood = parse(collection)?;
+            coordinates(params.latitude, params.longitude)?;
+            if !(1..=183).contains(&params.forecast_days) {
+                return Err(Error::Config(
+                    "GloFAS flood forecast_days must be between 1 and 183".into(),
+                ));
+            }
+            if params.daily.is_empty() {
+                return Err(Error::Config(
+                    "Open-Meteo GloFAS requires at least one daily variable".into(),
+                ));
+            }
+            for var in &params.daily {
+                if !ALLOWED_FLOOD_DAILY.contains(&var.as_str()) {
+                    return Err(Error::Config(format!(
+                        "unsupported flood daily variable `{var}`; allowed: {}",
+                        ALLOWED_FLOOD_DAILY.join(", ")
+                    )));
+                }
+            }
+            let mut query = vec![
+                ("latitude".into(), params.latitude.to_string()),
+                ("longitude".into(), params.longitude.to_string()),
+                ("daily".into(), params.daily.join(",")),
+                ("forecast_days".into(), params.forecast_days.to_string()),
+            ];
+            if let Some(past) = params.past_days {
+                if past > 92 {
+                    return Err(Error::Config(
+                        "GloFAS past_days must be between 0 and 92".into(),
+                    ));
+                }
+                query.push(("past_days".into(), past.to_string()));
+            }
+            (
+                url("https://flood-api.open-meteo.com/v1/flood", query)?,
+                ResponseKind::Flood {
+                    daily: params.daily,
                 },
             )
         }

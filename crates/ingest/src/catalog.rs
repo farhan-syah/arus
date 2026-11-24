@@ -120,9 +120,10 @@ pub fn validate(catalog: &Catalog, collections: &Collections) -> Result<()> {
             ConnectorKind::DataGovWeather => {
                 Some(("data-gov-weather", crate::DataClass::GeneralGuidance))
             }
-            ConnectorKind::OpenMeteoForecast | ConnectorKind::OpenMeteoSingleRun => {
-                Some(("open-meteo", crate::DataClass::Forecast))
-            }
+            ConnectorKind::OpenMeteoForecast
+            | ConnectorKind::OpenMeteoSingleRun
+            | ConnectorKind::OpenMeteoMarine
+            | ConnectorKind::OpenMeteoFlood => Some(("open-meteo", crate::DataClass::Forecast)),
             ConnectorKind::OpenMeteoHistory => {
                 Some(("open-meteo", crate::DataClass::StitchedForecastHistory))
             }

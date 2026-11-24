@@ -15,7 +15,10 @@ mod state;
 pub use catalog::validate;
 pub use collector::{SyncItem, SyncOptions, SyncReport, sync};
 pub use error::{Error, Result};
-pub use meteo::{HourlyModelSeries, MultiModelHourlyForecast, parse_open_meteo_hourly};
+pub use meteo::{
+    FloodDailyForecast, HourlyModelSeries, MarineHourlyForecast, MultiModelHourlyForecast,
+    parse_open_meteo_flood, parse_open_meteo_hourly, parse_open_meteo_marine,
+};
 pub use models::{
     AccessClass, Catalog, Collection, Collections, ConnectorKind, DataClass, License, Source,
 };
