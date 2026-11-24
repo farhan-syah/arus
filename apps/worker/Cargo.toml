@@ -6,12 +6,20 @@ rust-version.workspace = true
 publish.workspace = true
 
 [dependencies]
+arus-api-types.workspace = true
 arus-assets.workspace = true
+arus-domain.workspace = true
+arus-evaluation.workspace = true
+arus-forecasting.workspace = true
 arus-hydraulics.workspace = true
 arus-jobs.workspace = true
 arus-model-api.workspace = true
 clap.workspace = true
+serde.workspace = true
 serde_json.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
 
 [lints]
 workspace = true

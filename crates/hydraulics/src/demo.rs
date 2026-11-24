@@ -55,14 +55,8 @@ pub struct NativeWorkerDemoReport {
     pub persisted_checkpoint: Option<PersistedCheckpoint>,
 }
 
-/// Runs a 5x5 closed basin under constant rainfall for 60 s and verifies conservation
-/// plus exact checkpoint round-trip.
-pub fn run_closed_basin_demo() -> Result<ClosedBasinDemoReport> {
-    let capabilities = check_surface_admission(
-        &[BoundaryKind::Wall],
-        &[SourceKind::Rain, SourceKind::ImperviousLand],
-    )?;
-
+/// Builds the 5x5 closed-basin 60 s constant-rain demonstration engine.
+pub(crate) fn build_closed_basin_60s_engine() -> Result<SurfaceEngine> {
     let grid = CartesianGrid::new(5, 5, 10.0, 10.0)
         .map_err(|error| ModelError::InvalidInput(error.to_string()))?;
     let n = grid.cell_count();
@@ -104,7 +98,7 @@ pub fn run_closed_basin_demo() -> Result<ClosedBasinDemoReport> {
     )
     .map_err(|error| ModelError::InvalidInput(error.to_string()))?;
 
-    let mut engine = SurfaceEngine::new(
+    SurfaceEngine::new(
         SolverSetup {
             domain,
             land,
@@ -117,7 +111,18 @@ pub fn run_closed_basin_demo() -> Result<ClosedBasinDemoReport> {
             flow,
             soil,
         },
+    )
+}
+
+/// Runs a 5x5 closed basin under constant rainfall for 60 s and verifies conservation
+/// plus exact checkpoint round-trip.
+pub fn run_closed_basin_demo() -> Result<ClosedBasinDemoReport> {
+    let capabilities = check_surface_admission(
+        &[BoundaryKind::Wall],
+        &[SourceKind::Rain, SourceKind::ImperviousLand],
     )?;
+
+    let mut engine = build_closed_basin_60s_engine()?;
 
     let summary = engine.advance_to(60.0, StepBudget::new(MAX_STEPS))?;
     if summary.outcome != AdvanceOutcome::ReachedTarget {

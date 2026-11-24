@@ -47,6 +47,12 @@ impl SurfaceEngine {
         })
     }
 
+    /// Builds a synthetic 5x5 closed-basin demonstration engine (60 s constant rain) without
+    /// exposing `hydr` setup types to application callers.
+    pub fn demo_closed_basin_60s() -> Result<Self> {
+        crate::demo::build_closed_basin_60s_engine()
+    }
+
     /// Resumes an engine from an exact binary checkpoint package under `forcing`.
     pub fn resume(package: &CheckpointPackage, forcing: ForcingSchedule) -> Result<Self> {
         let data = decode_snapshot(package)?;

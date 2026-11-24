@@ -158,6 +158,9 @@ name = "arus-hydrology"
 version = "0.1.0"
 dependencies = [
  "arus-domain",
+ "arus-model-api",
+ "hydr",
+ "numr",
 ]
 
 [[package]]
@@ -240,12 +243,18 @@ dependencies = [
 name = "arus-worker"
 version = "0.1.0"
 dependencies = [
+ "arus-api-types",
  "arus-assets",
+ "arus-domain",
+ "arus-evaluation",
+ "arus-forecasting",
  "arus-hydraulics",
  "arus-jobs",
  "arus-model-api",
  "clap",
+ "serde",
  "serde_json",
+ "tempfile",
 ]
 
 [[package]]
