@@ -7,7 +7,7 @@ use arus_api_types::{
     API_SCHEMA_VERSION, ApiEpisodeSummary, ApiLocationOutlook, ApiLocationStatus,
 };
 use arus_assets::Archive;
-use arus_domain::RunClassification;
+use arus_domain::{Provenance, RunClassification};
 use arus_evaluation::{BudgetAssessment, assess_water_budget};
 use arus_forecasting::{
     EpisodePolicy, EpisodeTracker, LocationEvolution, LocationSupportStatus, OnsetStatus,
@@ -19,6 +19,7 @@ use arus_hydraulics::{
 };
 use arus_jobs::{CancellationToken, StepBudget};
 use arus_model_api::PersistedCheckpoint;
+use arus_storage::{RunRecord, RunStore};
 use clap::{Parser, Subcommand};
 use serde::Serialize;
 
@@ -46,10 +47,13 @@ enum Command {
     /// Run a synthetic CPU F64 surface demonstration and emit JSON API location outlooks
     /// and numerical budget assessment.
     Outlook {
+        /// Stable run identifier used when persisting into an archive.
+        #[arg(long, default_value = "demo-outlook-001")]
+        run_id: String,
         /// Depth exceedance threshold in metres.
         #[arg(long, default_value_t = 0.003)]
         threshold_m: f64,
-        /// Optional archive directory for persisting the exact binary checkpoint.
+        /// Optional archive directory for persisting checkpoint, outlook JSON, and run receipt.
         #[arg(long)]
         archive: Option<PathBuf>,
     },
@@ -57,6 +61,7 @@ enum Command {
 
 #[derive(Debug, Serialize)]
 struct OutlookEnvelope {
+    run_id: String,
     classification: RunClassification,
     budget_assessment: BudgetAssessment,
     checkpoint: Option<PersistedCheckpoint>,
@@ -127,13 +132,18 @@ fn execute(command: Command) -> Result<(), String> {
             Ok(())
         }
         Command::Outlook {
+            run_id,
             threshold_m,
             archive,
-        } => run_outlook_demo(threshold_m, archive),
+        } => run_outlook_demo(run_id, threshold_m, archive),
     }
 }
 
-fn run_outlook_demo(threshold_m: f64, archive: Option<PathBuf>) -> Result<(), String> {
+fn run_outlook_demo(
+    run_id: String,
+    threshold_m: f64,
+    archive: Option<PathBuf>,
+) -> Result<(), String> {
     let policy = EpisodePolicy::new(threshold_m, 0.0, 10.0).map_err(|error| error.to_string())?;
     let mut engine = SurfaceEngine::demo_closed_basin_60s().map_err(|error| error.to_string())?;
     let probes = vec![
@@ -183,24 +193,46 @@ fn run_outlook_demo(threshold_m: f64, archive: Option<PathBuf>) -> Result<(), St
     }
 
     let budget_assessment = assess_water_budget(engine.water_budget());
-    let checkpoint = match archive {
-        Some(path) => {
-            let opened = Archive::open(&path).map_err(|error| error.to_string())?;
-            let package = engine.checkpoint().map_err(|error| error.to_string())?;
-            Some(
-                package
-                    .persist(&opened)
-                    .map_err(|error| error.to_string())?,
-            )
-        }
-        None => None,
-    };
-    let outlooks = trackers
+    let outlooks: Vec<ApiLocationOutlook> = trackers
         .into_iter()
         .map(|tracker| to_api_outlook(tracker.finish(), RunClassification::NumericalDemonstration))
         .collect();
 
+    let checkpoint = match archive {
+        Some(path) => {
+            let opened = Archive::open(&path).map_err(|error| error.to_string())?;
+            let package = engine.checkpoint().map_err(|error| error.to_string())?;
+            let persisted = package
+                .persist(&opened)
+                .map_err(|error| error.to_string())?;
+            let outlook_bytes = serde_json::to_vec(&outlooks).map_err(|error| error.to_string())?;
+            let outlook_blob = opened
+                .put_blob(&outlook_bytes)
+                .map_err(|error| error.to_string())?;
+            let caps = surface_capabilities();
+            let store = RunStore::new(&opened);
+            store
+                .record_run(&RunRecord {
+                    run_id: run_id.clone(),
+                    provenance: Provenance {
+                        backend: caps.backend,
+                        contract: caps.contract,
+                        classification: RunClassification::NumericalDemonstration,
+                        note: "Synthetic CPU F64 closed-basin outlook demonstration".to_owned(),
+                    },
+                    accepted_time_s: engine.time_s(),
+                    conservation_passed: budget_assessment.passed,
+                    checkpoint_blob: Some(persisted.blob.clone()),
+                    outlook_blob: Some(outlook_blob),
+                })
+                .map_err(|error| error.to_string())?;
+            Some(persisted)
+        }
+        None => None,
+    };
+
     let envelope = OutlookEnvelope {
+        run_id,
         classification: RunClassification::NumericalDemonstration,
         budget_assessment,
         checkpoint,

@@ -198,6 +198,8 @@ version = "0.1.0"
 dependencies = [
  "arus-domain",
  "arus-model-api",
+ "serde",
+ "thiserror",
 ]
 
 [[package]]
@@ -217,6 +219,8 @@ dependencies = [
  "arus-domain",
  "arus-model-api",
  "arus-scenarios",
+ "serde",
+ "thiserror",
 ]
 
 [[package]]
@@ -259,6 +263,7 @@ dependencies = [
  "arus-hydraulics",
  "arus-jobs",
  "arus-model-api",
+ "arus-storage",
  "clap",
  "serde",
  "serde_json",
