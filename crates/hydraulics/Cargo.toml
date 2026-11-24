@@ -13,6 +13,7 @@ arus-jobs.workspace = true
 arus-model-api.workspace = true
 hydr.workspace = true
 numr.workspace = true
+serde.workspace = true
 
 [dev-dependencies]
 arus-evaluation.workspace = true

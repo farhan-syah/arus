@@ -14,8 +14,8 @@ use arus_forecasting::{
     RecessionStatus,
 };
 use arus_hydraulics::{
-    LocationProbe, SurfaceEngine, all_component_capabilities, run_closed_basin_demo,
-    run_native_worker_demo, surface_capabilities,
+    LocationProbe, SurfaceEngine, SurfaceRunSpec, all_component_capabilities,
+    run_closed_basin_demo, run_native_worker_demo, surface_capabilities,
 };
 use arus_jobs::{CancellationToken, StepBudget};
 use arus_model_api::PersistedCheckpoint;
@@ -53,6 +53,15 @@ enum Command {
         /// Depth exceedance threshold in metres.
         #[arg(long, default_value_t = 0.003)]
         threshold_m: f64,
+        /// Optional archive directory for persisting checkpoint, outlook JSON, and run receipt.
+        #[arg(long)]
+        archive: Option<PathBuf>,
+    },
+    /// Execute a JSON `SurfaceRunSpec` manifest and emit/persist location outlooks and budget assessment.
+    Run {
+        /// Path to the JSON `SurfaceRunSpec` manifest file.
+        #[arg(long)]
+        spec: PathBuf,
         /// Optional archive directory for persisting checkpoint, outlook JSON, and run receipt.
         #[arg(long)]
         archive: Option<PathBuf>,
@@ -136,7 +145,34 @@ fn execute(command: Command) -> Result<(), String> {
             threshold_m,
             archive,
         } => run_outlook_demo(run_id, threshold_m, archive),
+        Command::Run { spec, archive } => run_from_spec(spec, archive),
     }
+}
+
+fn run_from_spec(spec_path: PathBuf, archive: Option<PathBuf>) -> Result<(), String> {
+    let raw = std::fs::read(&spec_path)
+        .map_err(|error| format!("read spec {}: {error}", spec_path.display()))?;
+    let spec: SurfaceRunSpec = serde_json::from_slice(&raw)
+        .map_err(|error| format!("parse spec {}: {error}", spec_path.display()))?;
+    let policy = EpisodePolicy::new(
+        spec.threshold_m,
+        spec.hysteresis_m,
+        spec.recession_persistence_s,
+    )
+    .map_err(|error| error.to_string())?;
+    let mut engine = spec.build_engine().map_err(|error| error.to_string())?;
+    let probes = spec.location_probes();
+    execute_surface_outlook(
+        &mut engine,
+        spec.run_id,
+        spec.classification,
+        &probes,
+        policy,
+        spec.target_time_s,
+        spec.max_steps,
+        archive,
+        "Manifest-driven CPU F64 surface run",
+    )
 }
 
 fn run_outlook_demo(
@@ -158,6 +194,31 @@ fn run_outlook_demo(
             y_m: 25.0,
         },
     ];
+    execute_surface_outlook(
+        &mut engine,
+        run_id,
+        RunClassification::NumericalDemonstration,
+        &probes,
+        policy,
+        60.0,
+        10_000,
+        archive,
+        "Synthetic CPU F64 closed-basin outlook demonstration",
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn execute_surface_outlook(
+    engine: &mut SurfaceEngine,
+    run_id: String,
+    classification: RunClassification,
+    probes: &[LocationProbe],
+    policy: EpisodePolicy,
+    target_time_s: f64,
+    max_steps: usize,
+    archive: Option<PathBuf>,
+    note: &str,
+) -> Result<(), String> {
     let mut trackers: Vec<EpisodeTracker> = probes
         .iter()
         .map(|probe| EpisodeTracker::new(probe.id.clone(), policy))
@@ -175,10 +236,10 @@ fn run_outlook_demo(
     let mut callback_error: Option<String> = None;
     engine
         .advance_with_probes(
-            60.0,
-            StepBudget::new(10_000),
+            target_time_s,
+            StepBudget::new(max_steps),
             &token,
-            &probes,
+            probes,
             |_, samples| {
                 for (tracker, sample) in trackers.iter_mut().zip(samples.iter()) {
                     if let Err(error) = tracker.observe(sample.time_s, sample.sample) {
@@ -195,7 +256,7 @@ fn run_outlook_demo(
     let budget_assessment = assess_water_budget(engine.water_budget());
     let outlooks: Vec<ApiLocationOutlook> = trackers
         .into_iter()
-        .map(|tracker| to_api_outlook(tracker.finish(), RunClassification::NumericalDemonstration))
+        .map(|tracker| to_api_outlook(tracker.finish(), classification))
         .collect();
 
     let checkpoint = match archive {
@@ -217,8 +278,8 @@ fn run_outlook_demo(
                     provenance: Provenance {
                         backend: caps.backend,
                         contract: caps.contract,
-                        classification: RunClassification::NumericalDemonstration,
-                        note: "Synthetic CPU F64 closed-basin outlook demonstration".to_owned(),
+                        classification,
+                        note: note.to_owned(),
                     },
                     accepted_time_s: engine.time_s(),
                     conservation_passed: budget_assessment.passed,
@@ -233,7 +294,7 @@ fn run_outlook_demo(
 
     let envelope = OutlookEnvelope {
         run_id,
-        classification: RunClassification::NumericalDemonstration,
+        classification,
         budget_assessment,
         checkpoint,
         outlooks,

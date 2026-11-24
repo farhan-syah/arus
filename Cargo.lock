@@ -162,6 +162,7 @@ dependencies = [
  "arus-model-api",
  "hydr",
  "numr",
+ "serde",
  "tempfile",
 ]
 
@@ -271,6 +272,7 @@ dependencies = [
  "arus-domain",
  "arus-evaluation",
  "arus-forecasting",
+ "arus-geo",
  "arus-hydraulics",
  "arus-jobs",
  "arus-model-api",
