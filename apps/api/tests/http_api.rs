@@ -121,11 +121,30 @@ async fn api_serves_health_runs_and_outlooks_from_archive() -> Result<(), String
         serde_json::from_slice(&outlook_body).map_err(|e| e.to_string())?;
     assert_eq!(decoded, outlooks);
 
-    let index_resp = app
+    let studio_resp = app
         .clone()
         .oneshot(
             Request::builder()
                 .uri("/?lang=en")
+                .body(Body::empty())
+                .map_err(|e| e.to_string())?,
+        )
+        .await
+        .map_err(|e| e.to_string())?;
+    assert_eq!(studio_resp.status(), StatusCode::OK);
+    let studio_bytes = to_bytes(studio_resp.into_body(), 1024 * 1024)
+        .await
+        .map_err(|e| e.to_string())?;
+    let studio_html = String::from_utf8(studio_bytes.to_vec()).map_err(|e| e.to_string())?;
+    assert!(studio_html.contains("id=\"map\""));
+    assert!(studio_html.contains("/assets/maplibre-gl.js"));
+    assert!(studio_html.contains("/assets/studio.js"));
+
+    let index_resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/archive?lang=en")
                 .body(Body::empty())
                 .map_err(|e| e.to_string())?,
         )
@@ -197,5 +216,160 @@ async fn api_serves_health_runs_and_outlooks_from_archive() -> Result<(), String
         .await
         .map_err(|e| e.to_string())?;
     assert_eq!(pub_resp.status(), StatusCode::NOT_FOUND);
+    Ok(())
+}
+
+#[tokio::test]
+async fn interactive_simulation_frames_compare_exports_and_bounds_work() -> Result<(), String> {
+    let temp = TempDir::new().map_err(|e| e.to_string())?;
+    let state = ApiState::open(temp.path()).map_err(|e| e.to_string())?;
+    let app = router(state);
+
+    // 1. Rejects F32 interactive streaming cleanly with 422.
+    let bad_f32 = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/simulations")
+                .header("content-type", "application/json")
+                .body(Body::from(r#"{"precision":"f32"}"#))
+                .map_err(|e| e.to_string())?,
+        )
+        .await
+        .map_err(|e| e.to_string())?;
+    assert_eq!(bad_f32.status(), StatusCode::UNPROCESSABLE_ENTITY);
+
+    // 2. Rejects oversized grid (> 16384 cells) cleanly with 422.
+    let bad_size = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/simulations")
+                .header("content-type", "application/json")
+                .body(Body::from(r#"{"cols":200,"rows":200}"#))
+                .map_err(|e| e.to_string())?,
+        )
+        .await
+        .map_err(|e| e.to_string())?;
+    assert_eq!(bad_size.status(), StatusCode::UNPROCESSABLE_ENTITY);
+
+    // 3. Runs a bounded 10x10 F64 peak-storm simulation and fetches grid, binary frames, and exports.
+    let sim_resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/simulations")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    r#"{"center_lon":101.535,"center_lat":3.031,"cols":10,"rows":10,"dx_m":20.0,"rainfall_mm_per_hr":180.0,"hyetograph":"peak-storm","duration_s":30.0,"boundary":{"kind":"closed"}}"#,
+                ))
+                .map_err(|e| e.to_string())?,
+        )
+        .await
+        .map_err(|e| e.to_string())?;
+    assert_eq!(sim_resp.status(), StatusCode::CREATED);
+    let sim_bytes = to_bytes(sim_resp.into_body(), 1024 * 1024)
+        .await
+        .map_err(|e| e.to_string())?;
+    let sim_json: serde_json::Value =
+        serde_json::from_slice(&sim_bytes).map_err(|e| e.to_string())?;
+    assert_eq!(sim_json["classification"], "numerical-demonstration");
+    assert_eq!(sim_json["budget_assessment"]["passed"], true);
+    let run_id = sim_json["run_id"]
+        .as_str()
+        .ok_or_else(|| "missing run_id".to_owned())?
+        .to_owned();
+    let frame_count = sim_json["frame_count"]
+        .as_u64()
+        .ok_or_else(|| "missing frame_count".to_owned())? as usize;
+    assert!(frame_count >= 2);
+
+    let grid_resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri(format!("/api/v1/runs/{run_id}/grid"))
+                .body(Body::empty())
+                .map_err(|e| e.to_string())?,
+        )
+        .await
+        .map_err(|e| e.to_string())?;
+    assert_eq!(grid_resp.status(), StatusCode::OK);
+
+    let bin_resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri(format!("/api/v1/runs/{run_id}/frames.bin"))
+                .body(Body::empty())
+                .map_err(|e| e.to_string())?,
+        )
+        .await
+        .map_err(|e| e.to_string())?;
+    assert_eq!(bin_resp.status(), StatusCode::OK);
+    let bin_bytes = to_bytes(bin_resp.into_body(), 8 * 1024 * 1024)
+        .await
+        .map_err(|e| e.to_string())?;
+    assert_eq!(&bin_bytes[0..8], b"ARUSFRM1");
+    assert_eq!(bin_bytes.len(), 20 + frame_count * (4 + 100 * 3 * 4));
+
+    let asc_resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri(format!("/api/v1/runs/{run_id}/export/max-depth.asc"))
+                .body(Body::empty())
+                .map_err(|e| e.to_string())?,
+        )
+        .await
+        .map_err(|e| e.to_string())?;
+    assert_eq!(asc_resp.status(), StatusCode::OK);
+
+    let csv_resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri(format!("/api/v1/runs/{run_id}/export/outlooks.csv"))
+                .body(Body::empty())
+                .map_err(|e| e.to_string())?,
+        )
+        .await
+        .map_err(|e| e.to_string())?;
+    assert_eq!(csv_resp.status(), StatusCode::OK);
+
+    // 4. Paired baseline vs intervention comparison computes cut/fill earthwork and delta_max_depth_m.
+    let cmp_resp = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/compare")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    r#"{"cols":8,"rows":8,"dx_m":20.0,"rainfall_mm_per_hr":180.0,"duration_s":20.0,"boundary":{"kind":"closed"},"interventions":[{"col":3,"row":3,"delta_m":-0.5,"reason":"detention pond"},{"col":4,"row":4,"delta_m":0.6,"reason":"flood bund"}]}"#,
+                ))
+                .map_err(|e| e.to_string())?,
+        )
+        .await
+        .map_err(|e| e.to_string())?;
+    assert_eq!(cmp_resp.status(), StatusCode::OK);
+    let cmp_bytes = to_bytes(cmp_resp.into_body(), 1024 * 1024)
+        .await
+        .map_err(|e| e.to_string())?;
+    let cmp_json: serde_json::Value =
+        serde_json::from_slice(&cmp_bytes).map_err(|e| e.to_string())?;
+    assert_eq!(cmp_json["conservation_valid"], true);
+    assert!(
+        cmp_json["earthwork"]["cut_volume_m3"]
+            .as_f64()
+            .is_some_and(|v| v > 0.0)
+    );
+    assert!(
+        cmp_json["earthwork"]["fill_volume_m3"]
+            .as_f64()
+            .is_some_and(|v| v > 0.0)
+    );
     Ok(())
 }

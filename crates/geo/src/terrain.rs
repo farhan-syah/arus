@@ -46,6 +46,14 @@ pub struct ConditioningRecord {
     pub previous_elevation_m: Option<f64>,
 }
 
+/// Cut-and-fill earthwork volumes produced by a batch of terrain conditioning edits.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct EarthworkSummary {
+    pub cut_volume_m3: f64,
+    pub fill_volume_m3: f64,
+    pub net_volume_m3: f64,
+}
+
 impl TerrainGrid {
     /// Constructs a checked terrain grid.
     ///
@@ -158,55 +166,80 @@ impl TerrainGrid {
 
     /// Applies a single audited conditioning edit, returning a new immutable `TerrainGrid`.
     pub fn apply_edit(&self, edit: TerrainEdit) -> Result<Self> {
+        let (next, _) = self.apply_edits(vec![edit])?;
+        Ok(next)
+    }
+
+    /// Applies a batch of audited conditioning edits in one clone and computes cut/fill earthwork volumes.
+    pub fn apply_edits(&self, edits: Vec<TerrainEdit>) -> Result<(Self, EarthworkSummary)> {
         let mut next = self.clone();
-        match &edit {
-            TerrainEdit::CellElevationOverride {
-                cell,
-                new_elevation_m,
-                reason,
-            } => {
-                if reason.trim().is_empty() {
-                    return Err(GeoError::InvalidEdit(
-                        "conditioning edit requires a non-empty reason".to_owned(),
-                    ));
+        let cell_area = self.grid.dx_m * self.grid.dy_m;
+        let mut cut_volume_m3 = 0.0_f64;
+        let mut fill_volume_m3 = 0.0_f64;
+
+        for edit in edits {
+            match &edit {
+                TerrainEdit::CellElevationOverride {
+                    cell,
+                    new_elevation_m,
+                    reason,
+                } => {
+                    if reason.trim().is_empty() {
+                        return Err(GeoError::InvalidEdit(
+                            "conditioning edit requires a non-empty reason".to_owned(),
+                        ));
+                    }
+                    if !new_elevation_m.is_finite() {
+                        return Err(GeoError::InvalidEdit(format!(
+                            "new_elevation_m={new_elevation_m} must be finite"
+                        )));
+                    }
+                    let slot = next.cells.get_mut(*cell).ok_or_else(|| {
+                        GeoError::InvalidEdit(format!("cell index {cell} out of bounds"))
+                    })?;
+                    let previous_elevation_m = *slot;
+                    if let Some(prev) = previous_elevation_m {
+                        let delta = *new_elevation_m - prev;
+                        if delta > 0.0 {
+                            fill_volume_m3 += delta * cell_area;
+                        } else if delta < 0.0 {
+                            cut_volume_m3 += (-delta) * cell_area;
+                        }
+                    }
+                    *slot = Some(*new_elevation_m);
+                    next.conditioning_history.push(ConditioningRecord {
+                        edit,
+                        previous_elevation_m,
+                    });
                 }
-                if !new_elevation_m.is_finite() {
-                    return Err(GeoError::InvalidEdit(format!(
-                        "new_elevation_m={new_elevation_m} must be finite"
-                    )));
+                TerrainEdit::MaskExclusion { cell, reason } => {
+                    if reason.trim().is_empty() {
+                        return Err(GeoError::InvalidEdit(
+                            "mask exclusion requires a non-empty reason".to_owned(),
+                        ));
+                    }
+                    let slot = next.cells.get_mut(*cell).ok_or_else(|| {
+                        GeoError::InvalidEdit(format!("cell index {cell} out of bounds"))
+                    })?;
+                    let previous_elevation_m = *slot;
+                    *slot = None;
+                    if next.active_count() == 0 {
+                        return Err(GeoError::InvalidEdit(
+                            "cannot exclude the final active terrain cell".to_owned(),
+                        ));
+                    }
+                    next.conditioning_history.push(ConditioningRecord {
+                        edit,
+                        previous_elevation_m,
+                    });
                 }
-                let slot = next.cells.get_mut(*cell).ok_or_else(|| {
-                    GeoError::InvalidEdit(format!("cell index {cell} out of bounds"))
-                })?;
-                let previous_elevation_m = *slot;
-                *slot = Some(*new_elevation_m);
-                next.conditioning_history.push(ConditioningRecord {
-                    edit,
-                    previous_elevation_m,
-                });
-            }
-            TerrainEdit::MaskExclusion { cell, reason } => {
-                if reason.trim().is_empty() {
-                    return Err(GeoError::InvalidEdit(
-                        "mask exclusion requires a non-empty reason".to_owned(),
-                    ));
-                }
-                let slot = next.cells.get_mut(*cell).ok_or_else(|| {
-                    GeoError::InvalidEdit(format!("cell index {cell} out of bounds"))
-                })?;
-                let previous_elevation_m = *slot;
-                *slot = None;
-                if next.active_count() == 0 {
-                    return Err(GeoError::InvalidEdit(
-                        "cannot exclude the final active terrain cell".to_owned(),
-                    ));
-                }
-                next.conditioning_history.push(ConditioningRecord {
-                    edit,
-                    previous_elevation_m,
-                });
             }
         }
-        Ok(next)
+        let summary = EarthworkSummary {
+            cut_volume_m3,
+            fill_volume_m3,
+            net_volume_m3: fill_volume_m3 - cut_volume_m3,
+        };
+        Ok((next, summary))
     }
 }

@@ -37,7 +37,8 @@ ARUS separates browser contracts, forecast orchestration, numerical execution, a
 - Forecast orchestration depends on job and model boundaries.
 - Evaluation depends on model contracts independently of operational forecast publication.
 - Storage depends on domain concepts and asset references.
-- Numerical adapters keep upstream engine types outside shared domain and browser contracts.
+- `apps/api` may invoke `arus-hydraulics` and `arus-geo` inside bounded `spawn_blocking` tasks for interactive numerical demonstrations, keeping results in a bounded in-memory cache separate from the immutable `Archive`.
+- Numerical adapters keep upstream engine types outside shared domain and browser contracts (`arus-domain`, `arus-api-types`, `apps/web`).
 
 The manifests declare these boundaries. They do not enforce future scientific correctness or implement runtime isolation.
 

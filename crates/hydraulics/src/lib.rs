@@ -10,6 +10,7 @@ pub mod coupled;
 pub mod coupled_spec;
 pub mod demo;
 pub mod drainage;
+pub mod frames;
 pub mod pools;
 pub mod runtime;
 pub mod spec;
@@ -28,6 +29,10 @@ pub use demo::{
 pub use drainage::{
     DrainageControlSpec, DrainageSurchargeSpec, SwmmDrainageCheckReport, SwmmDrainageEngine,
     SwmmDrainageSpec,
+};
+pub use frames::{
+    EnvelopeSummary, FRAME_STREAM_MAGIC, FrameCaptureConfig, FrameSeries, GridFrame, GridMetadata,
+    VELOCITY_DRY_CUTOFF_M,
 };
 pub use pools::{
     CoupledPoolsEngine, CulvertBarrelSpec, LevelPoolSpec, PoolFinalState, PoolKnotSpec,

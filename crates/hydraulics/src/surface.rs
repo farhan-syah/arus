@@ -248,6 +248,44 @@ impl SurfaceEngine {
         map_water_budget(self.solver.ledger(), self.solver.config())
     }
 
+    pub(crate) fn domain(&self) -> &Domain {
+        self.solver.domain()
+    }
+
+    pub(crate) fn current_cells(&self) -> Result<Vec<hydr::model::CellState>> {
+        self.solver
+            .state()
+            .map(|flow| flow.cells().to_vec())
+            .map_err(|error| ModelError::Engine(error.to_string()))
+    }
+
+    pub(crate) fn advance_raw_steps<F>(
+        &mut self,
+        target_s: f64,
+        budget: StepBudget,
+        token: &CancellationToken,
+        mut on_step: F,
+    ) -> Result<AdvanceSummary>
+    where
+        F: FnMut(f64, &[hydr::model::CellState]),
+    {
+        let mut step_counter = self.observed_steps;
+        let report = self
+            .solver
+            .advance_controlled(
+                target_s,
+                budget.max_steps,
+                || token.is_cancelled(),
+                |step, cells| {
+                    step_counter += 1;
+                    on_step(step.end, cells);
+                },
+            )
+            .map_err(|error| ModelError::Engine(error.to_string()))?;
+        self.observed_steps = step_counter;
+        Ok(map_advance_report(report))
+    }
+
     /// Queries the containing cell at projected `(x_m, y_m)` without interpolation.
     pub fn cell_at(&self, x_m: f64, y_m: f64) -> Result<CellSample> {
         let sample = self

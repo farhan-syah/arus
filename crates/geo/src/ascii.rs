@@ -18,6 +18,23 @@ pub fn parse_esri_ascii(
     vertical_datum: impl Into<String>,
     source_provenance: impl Into<String>,
 ) -> Result<TerrainGrid> {
+    parse_esri_ascii_bounded(
+        content,
+        projected_crs,
+        vertical_datum,
+        source_provenance,
+        1_000_000,
+    )
+}
+
+/// Parses an ESRI ASCII Grid (`.asc`) enforcing `ncols * nrows <= max_cells` before collecting data.
+pub fn parse_esri_ascii_bounded(
+    content: &str,
+    projected_crs: impl Into<String>,
+    vertical_datum: impl Into<String>,
+    source_provenance: impl Into<String>,
+    max_cells: usize,
+) -> Result<TerrainGrid> {
     let mut ncols: Option<usize> = None;
     let mut nrows: Option<usize> = None;
     let mut xllcorner: Option<f64> = None;
@@ -95,8 +112,25 @@ pub fn parse_esri_ascii(
                 }
             }
             in_data = true;
+            let cols =
+                ncols.ok_or_else(|| GeoError::InvalidGrid("missing ncols header".to_owned()))?;
+            let rows =
+                nrows.ok_or_else(|| GeoError::InvalidGrid("missing nrows header".to_owned()))?;
+            let total = cols
+                .checked_mul(rows)
+                .ok_or_else(|| GeoError::InvalidGrid("grid dimensions overflow".to_owned()))?;
+            if total > max_cells {
+                return Err(GeoError::InvalidGrid(format!(
+                    "grid cell count {total} exceeds maximum allowed {max_cells}"
+                )));
+            }
         }
         data_tokens.extend(line.split_whitespace());
+        if data_tokens.len() > max_cells {
+            return Err(GeoError::InvalidGrid(format!(
+                "raster token count exceeds maximum allowed {max_cells}"
+            )));
+        }
     }
 
     let cols = ncols.ok_or_else(|| GeoError::InvalidGrid("missing ncols header".to_owned()))?;

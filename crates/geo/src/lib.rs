@@ -6,5 +6,7 @@
 pub mod ascii;
 pub mod terrain;
 
-pub use ascii::{parse_esri_ascii, write_esri_ascii};
-pub use terrain::{ConditioningRecord, GeoError, Result, TerrainEdit, TerrainGrid};
+pub use ascii::{parse_esri_ascii, parse_esri_ascii_bounded, write_esri_ascii};
+pub use terrain::{
+    ConditioningRecord, EarthworkSummary, GeoError, Result, TerrainEdit, TerrainGrid,
+};

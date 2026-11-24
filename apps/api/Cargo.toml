@@ -8,9 +8,14 @@ publish.workspace = true
 [dependencies]
 arus-api-types.workspace = true
 arus-assets.workspace = true
+arus-domain.workspace = true
+arus-evaluation.workspace = true
 arus-forecasting.workspace = true
+arus-geo.workspace = true
+arus-hydraulics.workspace = true
 arus-ingest.workspace = true
 arus-jobs.workspace = true
+arus-model-api.workspace = true
 arus-scenarios.workspace = true
 arus-storage.workspace = true
 arus-web.workspace = true
