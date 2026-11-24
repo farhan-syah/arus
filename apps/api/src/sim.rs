@@ -576,7 +576,7 @@ fn execute_blocking(
     };
 
     let initial_depth_m = if terrain_provenance == "BrowserTerrariumScreening" {
-        0.08
+        0.0
     } else {
         0.14
     };

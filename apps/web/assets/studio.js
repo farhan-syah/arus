@@ -1,44 +1,43 @@
-// ARUS 2026 SOTA Global 3D Flood Simulation Studio Client
+// ARUS 2026 Flood Simulation Studio Client
 // Driven by real hydr 0.1.0 binary Float32 frames (/api/v1/runs/{id}/grid & frames.bin).
 
 const PRESETS = [
-  { id: 'shah-alam', name: 'Shah Alam / Taman Sri Muda (MY)', lon: 101.535, lat: 3.031, zoom: 14.4 },
-  { id: 'kl', name: 'Kuala Lumpur / Sg. Klang (MY)', lon: 101.696, lat: 3.149, zoom: 14.4 },
-  { id: 'kota-bharu', name: 'Kota Bharu / Sg. Kelantan (MY)', lon: 102.238, lat: 6.125, zoom: 14.0 },
-  { id: 'jakarta', name: 'Jakarta / Ciliwung (ID)', lon: 106.845, lat: -6.208, zoom: 14.2 },
-  { id: 'rotterdam', name: 'Rotterdam / Nieuwe Maas (NL)', lon: 4.477, lat: 51.924, zoom: 14.0 },
-  { id: 'houston', name: 'Houston / Buffalo Bayou (US)', lon: -95.369, lat: 29.760, zoom: 14.0 },
+  { id: 'shah-alam', name: 'Shah Alam · Taman Sri Muda (MY)', lon: 101.535, lat: 3.031, zoom: 14.3 },
+  { id: 'kl', name: 'Kuala Lumpur · Sg. Klang (MY)', lon: 101.696, lat: 3.149, zoom: 14.3 },
+  { id: 'kota-bharu', name: 'Kota Bharu · Sg. Kelantan (MY)', lon: 102.238, lat: 6.125, zoom: 14.0 },
+  { id: 'jakarta', name: 'Jakarta · Ciliwung (ID)', lon: 106.845, lat: -6.208, zoom: 14.1 },
+  { id: 'rotterdam', name: 'Rotterdam · Nieuwe Maas (NL)', lon: 4.477, lat: 51.924, zoom: 14.0 },
+  { id: 'houston', name: 'Houston · Buffalo Bayou (US)', lon: -95.369, lat: 29.760, zoom: 14.0 },
 ];
 
 const state = {
+  basemap: 'topo', // topo | sat | dark
   center: { lon: 101.535, lat: 3.031 },
   tool: 'inspect', // inspect | pick | bund | pond | xsection
   layer: 'depth',  // depth | velocity | hazard | diff
   envelopeMode: false,
   particlesOn: true,
   is3D: true,
-  publicMode: false,
   playing: true,
   speed: 1,
   frameIdx: 0,
   lastTickMs: 0,
   runId: null,
-  grid: null,      // RunGridResponse JSON
-  frames: [],      // [{ time_s, depth: Float32Array, vx: Float32Array, vy: Float32Array }]
-  diffData: null,  // CompareSimulationsResponse
-  interventions: [], // [{ col, row, delta_m, reason }]
-  xsecPts: [],     // [{ col, row }]
-  selectedCell: null, // { col, row }
-  uploadedDem: null, // { ascii_content, projected_crs, vertical_datum, wgs84_bounds }
-  cachedDem: null,   // { key, elevations }
+  grid: null,
+  frames: [],
+  diffData: null,
+  interventions: [],
+  xsecPts: [],
+  selectedCell: null,
+  uploadedDem: null,
+  cachedDem: null,
   particles: [],
 };
 
-// Offscreen high-resolution canvas rendered smoothly with bilinear interpolation
-// and pushed to MapLibre via ImageSource.updateImage (zero WebGL CanvasSource tile artifacts).
+// High-resolution offscreen water raster canvas pushed via MapLibre ImageSource
 const rasterCanvas = document.createElement('canvas');
-rasterCanvas.width = 256;
-rasterCanvas.height = 256;
+rasterCanvas.width = 384;
+rasterCanvas.height = 384;
 const rasterCtx = rasterCanvas.getContext('2d');
 let lastRasterKey = '';
 
@@ -48,26 +47,59 @@ let initialSimTriggered = false;
 
 function $(id) { return document.getElementById(id); }
 
+function getBasemapStyle(mode) {
+  if (mode === 'dark') return 'https://tiles.openfreemap.org/styles/dark';
+  if (mode === 'sat') {
+    return {
+      version: 8,
+      sources: {
+        esriSat: {
+          type: 'raster',
+          tiles: ['https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}'],
+          tileSize: 256,
+          maxzoom: 18,
+        },
+        esriLabels: {
+          type: 'raster',
+          tiles: ['https://services.arcgisonline.com/ArcGIS/rest/services/Reference/World_Boundaries_and_Places/MapServer/tile/{z}/{y}/{x}'],
+          tileSize: 256,
+          maxzoom: 18,
+        },
+      },
+      layers: [
+        { id: 'sat-imagery', type: 'raster', source: 'esriSat' },
+        { id: 'sat-labels', type: 'raster', source: 'esriLabels', paint: { 'raster-opacity': 0.9 } },
+      ],
+    };
+  }
+  return 'https://tiles.openfreemap.org/styles/positron';
+}
+
 function buildOfflineStyle() {
   return {
     version: 8,
-    projection: { type: 'globe' },
     sources: {},
-    layers: [
-      { id: 'bg', type: 'background', paint: { 'background-color': '#07101f' } },
-    ],
+    layers: [{ id: 'bg', type: 'background', paint: { 'background-color': '#e2e8f0' } }],
   };
 }
 
+function findFirstLabelLayerId() {
+  if (!map) return undefined;
+  const style = map.getStyle();
+  if (!style || !style.layers) return undefined;
+  if (state.basemap === 'sat') return 'sat-labels';
+  const sym = style.layers.find((l) => l.type === 'symbol');
+  return sym ? sym.id : undefined;
+}
+
 function initMap() {
-  const onlineStyle = 'https://tiles.openfreemap.org/styles/dark';
   map = new maplibregl.Map({
     container: 'map',
-    style: onlineStyle,
+    style: getBasemapStyle(state.basemap),
     center: [state.center.lon, state.center.lat],
-    zoom: 14.1,
-    pitch: 56,
-    bearing: -20,
+    zoom: 14.3,
+    pitch: 48,
+    bearing: -16,
     antialias: true,
   });
 
@@ -76,7 +108,6 @@ function initMap() {
 
   let fellBack = false;
   map.on('error', (e) => {
-    // Only fall back to offline blank style if the base style itself fails, never on a single DEM tile miss.
     if (!fellBack && !map.isStyleLoaded() && (!e || !e.sourceId)) {
       fellBack = true;
       map.setStyle(buildOfflineStyle());
@@ -84,11 +115,8 @@ function initMap() {
   });
 
   map.on('style.load', () => {
-    try {
-      if (typeof map.setProjection === 'function') {
-        map.setProjection({ type: 'globe' });
-      }
-    } catch (_) { /* projection unsupported */ }
+    layersReady = false;
+    lastRasterKey = '';
     ensureMapLayers();
     if (state.grid) {
       updateDomainOutline(state.grid.metadata.wgs84_bounds);
@@ -111,41 +139,83 @@ function initMap() {
   map.on('click', (e) => handleMapClick(e.lngLat.lng, e.lngLat.lat));
 }
 
+function setBasemap(mode) {
+  if (state.basemap === mode) return;
+  state.basemap = mode;
+  document.documentElement.dataset.theme = mode === 'topo' ? 'light' : 'dark';
+  document.querySelectorAll('[data-basemap]').forEach((el) => {
+    el.classList.toggle('active', el.dataset.basemap === mode);
+  });
+  map.setStyle(getBasemapStyle(mode));
+}
+
 function ensureMapLayers() {
   if (!map || !map.isStyleLoaded() || map.getSource('arus-particles')) return;
   const empty = { type: 'FeatureCollection', features: [] };
-
-  map.addSource('arus-particles', { type: 'geojson', data: empty });
-  map.addLayer({
-    id: 'arus-particles-line',
-    type: 'line',
-    source: 'arus-particles',
-    paint: {
-      'line-color': ['get', 'color'],
-      'line-width': 2.2,
-      'line-opacity': ['get', 'opacity'],
-    },
-    layout: { 'line-cap': 'round' },
-  });
-
-  map.addSource('arus-overlays', { type: 'geojson', data: empty });
-  map.addLayer({
-    id: 'arus-overlays-line',
-    type: 'line',
-    source: 'arus-overlays',
-    paint: {
-      'line-color': ['get', 'color'],
-      'line-width': 3,
-      'line-dasharray': [2, 1.5],
-    },
-  });
+  const beforeLabels = findFirstLabelLayerId();
+  const isDark = state.basemap !== 'topo';
 
   map.addSource('arus-domain-box', { type: 'geojson', data: empty });
+  map.addLayer(
+    {
+      id: 'arus-domain-outline',
+      type: 'line',
+      source: 'arus-domain-box',
+      paint: {
+        'line-color': isDark ? 'rgba(148, 163, 184, 0.5)' : 'rgba(15, 23, 42, 0.30)',
+        'line-width': 1.2,
+        'line-dasharray': [4, 3],
+      },
+    },
+    beforeLabels,
+  );
+
+  map.addSource('arus-particles', { type: 'geojson', data: empty });
+  map.addLayer(
+    {
+      id: 'arus-particles-line',
+      type: 'line',
+      source: 'arus-particles',
+      paint: {
+        'line-color': ['get', 'color'],
+        'line-width': 1.8,
+        'line-opacity': ['get', 'opacity'],
+      },
+      layout: { 'line-cap': 'round' },
+    },
+    beforeLabels,
+  );
+
+  map.addSource('arus-iv-polys', { type: 'geojson', data: empty });
   map.addLayer({
-    id: 'arus-domain-outline',
+    id: 'arus-iv-fill',
+    type: 'fill',
+    source: 'arus-iv-polys',
+    paint: {
+      'fill-color': ['get', 'color'],
+      'fill-opacity': 0.38,
+    },
+  });
+  map.addLayer({
+    id: 'arus-iv-stroke',
     type: 'line',
-    source: 'arus-domain-box',
-    paint: { 'line-color': '#38bdf8', 'line-width': 1.8, 'line-opacity': 0.75, 'line-dasharray': [4, 3] },
+    source: 'arus-iv-polys',
+    paint: {
+      'line-color': ['get', 'color'],
+      'line-width': 1.6,
+    },
+  });
+
+  map.addSource('arus-xsec', { type: 'geojson', data: empty });
+  map.addLayer({
+    id: 'arus-xsec-line',
+    type: 'line',
+    source: 'arus-xsec',
+    paint: {
+      'line-color': isDark ? '#f8fafc' : '#0f172a',
+      'line-width': 2.5,
+      'line-dasharray': [3, 2],
+    },
   });
 
   layersReady = true;
@@ -161,12 +231,6 @@ function updateDomainOutline(bounds) {
       coordinates: [[[minLon, minLat], [maxLon, minLat], [maxLon, maxLat], [minLon, maxLat], [minLon, minLat]]],
     },
   });
-}
-
-function attachFloodCanvasSource(bounds) {
-  ensureMapLayers();
-  updateDomainOutline(bounds);
-  lastRasterKey = '';
 }
 
 function decodeFramesBin(buffer) {
@@ -195,7 +259,7 @@ function decodeFramesBin(buffer) {
 
 function seedParticles() {
   state.particles = [];
-  for (let i = 0; i < 420; i++) {
+  for (let i = 0; i < 360; i++) {
     state.particles.push({
       x: Math.random(),
       y: Math.random(),
@@ -205,42 +269,63 @@ function seedParticles() {
   }
 }
 
-function colorForDepth(h, thresh) {
-  if (h < 0.005) return null;
-  const t = Math.min(1, h / Math.max(thresh * 2.2, 0.22));
-  if (t < 0.35) {
-    const k = t / 0.35;
-    return [14 + k * 42, 165 + k * 35, 233 + k * 22, 155 + k * 60];
+// Hydrological blue depth ramp: dry/shallow (< 0.025m) is 100% transparent
+function colorForDepth(h) {
+  if (h < 0.025) return null;
+  const fade = Math.min(1, (h - 0.025) / 0.055);
+  const stops = [
+    [0.025, 186, 230, 253, 120], // #bae6fd pale sky
+    [0.12,   56, 189, 248, 178], // #38bdf8 cyan-blue
+    [0.32,    2, 132, 199, 212], // #0284c7 river blue
+    [0.65,   29,  78, 216, 230], // #1d4ed8 cobalt
+    [1.20,   30,  27,  75, 242], // #1e1b4b deep indigo
+  ];
+  if (h >= stops[stops.length - 1][0]) {
+    const last = stops[stops.length - 1];
+    return [last[1], last[2], last[3], last[4]];
   }
-  if (t < 0.7) {
-    const k = (t - 0.35) / 0.35;
-    return [56 + k * 189, 200 - k * 42, 255 - k * 244, 215 + k * 25];
+  for (let i = 0; i < stops.length - 1; i++) {
+    const a = stops[i];
+    const b = stops[i + 1];
+    if (h <= b[0]) {
+      const k = (h - a[0]) / (b[0] - a[0]);
+      return [
+        a[1] + k * (b[1] - a[1]),
+        a[2] + k * (b[2] - a[2]),
+        a[3] + k * (b[3] - a[3]),
+        (a[4] + k * (b[4] - a[4])) * fade,
+      ];
+    }
   }
-  const k = (t - 0.7) / 0.3;
-  return [245 - k * 1, 158 - k * 95, 11 + k * 83, 242];
+  return null;
 }
 
 function colorForVelocity(v) {
-  if (v < 0.02) return null;
-  const t = Math.min(1, v / 1.5);
-  return [45 + t * 200, 212 - t * 140, 191 - t * 90, 185 + t * 55];
+  if (v < 0.04) return null;
+  const t = Math.min(1, v / 1.4);
+  if (t < 0.5) {
+    const k = t / 0.5;
+    return [45 - k * 43, 212 - k * 80, 191 + k * 8, 155 + k * 55];
+  }
+  const k = (t - 0.5) / 0.5;
+  return [2 + k * 77, 132 - k * 62, 199 + k * 30, 210 + k * 30];
 }
 
 // DEFRA FD2320 Flood Hazard: HR = h * (v + 0.5)
 function colorForHazard(hr) {
-  if (hr < 0.02) return null;
-  if (hr < 0.75) return [56, 189, 248, 175];   // Low
-  if (hr < 1.25) return [250, 204, 21, 210];   // Moderate
-  if (hr < 2.0)  return [249, 115, 22, 230];   // Significant
-  return [244, 63, 94, 245];                   // Extreme
+  if (hr < 0.04) return null;
+  if (hr < 0.75) return [56, 189, 248, 165];
+  if (hr < 1.25) return [250, 204, 21, 195];
+  if (hr < 2.0)  return [249, 115, 22, 215];
+  return [225, 29, 72, 232];
 }
 
-// Colorblind-safe diverging Teal (protected < 0) <-> Orange/Purple (worsened > 0)
+// Colorblind-safe diverging Teal (safer < 0) <-> Crimson (worse > 0)
 function colorForDiff(d) {
-  if (Math.abs(d) < 0.002) return null;
-  const mag = Math.min(1, Math.abs(d) / 0.15);
-  if (d < 0) return [20, 184 + mag * 40, 166 + mag * 40, 120 + mag * 120];
-  return [249, 115 - mag * 55, 22 + mag * 110, 130 + mag * 115];
+  if (Math.abs(d) < 0.012) return null;
+  const mag = Math.min(1, Math.abs(d) / 0.14);
+  if (d < 0) return [13, 148, 136, 110 + mag * 125];
+  return [225, 29, 72, 110 + mag * 125];
 }
 
 function sampleBilinear(arr, active, cols, rows, fx, fy) {
@@ -288,7 +373,7 @@ function updateSmoothWaterImage(meta, env, frame) {
 
       if (!meta.active_mask[rNearest * cols + cNearest]) {
         if (((px + py) % 10) < 2) {
-          data[out] = 244; data[out + 1] = 63; data[out + 2] = 94; data[out + 3] = 125;
+          data[out] = 225; data[out + 1] = 29; data[out + 2] = 72; data[out + 3] = 110;
         }
         continue;
       }
@@ -297,7 +382,7 @@ function updateSmoothWaterImage(meta, env, frame) {
       if (state.layer === 'depth') {
         const src = state.envelopeMode ? env.max_depth_m : frame.depth;
         const h = sampleBilinear(src, meta.active_mask, cols, rows, fx, fy);
-        if (h !== null) rgba = colorForDepth(h, env.threshold_m);
+        if (h !== null) rgba = colorForDepth(h);
       } else if (state.layer === 'velocity') {
         const src = state.envelopeMode ? env.max_speed_m_s : speedArr;
         const sp = sampleBilinear(src, meta.active_mask, cols, rows, fx, fy);
@@ -318,7 +403,7 @@ function updateSmoothWaterImage(meta, env, frame) {
         data[out] = rgba[0];
         data[out + 1] = rgba[1];
         data[out + 2] = rgba[2];
-        data[out + 3] = Math.round(rgba[3] * 0.86);
+        data[out + 3] = Math.round(rgba[3]);
       }
     }
   }
@@ -336,7 +421,7 @@ function updateSmoothWaterImage(meta, env, frame) {
         id: 'arus-water-smooth',
         type: 'raster',
         source: 'arus-water-img',
-        paint: { 'raster-opacity': 0.88, 'raster-resampling': 'linear', 'raster-fade-duration': 0 },
+        paint: { 'raster-opacity': 0.85, 'raster-resampling': 'linear', 'raster-fade-duration': 0 },
       },
       'arus-particles-line',
     );
@@ -360,7 +445,6 @@ function renderFloodCanvas(forceRaster) {
     updateSmoothWaterImage(meta, env, frame);
   }
 
-  // 60 FPS animated velocity particle streamlines as crisp vector segments
   const particleFeatures = [];
   if (state.particlesOn && state.layer !== 'diff') {
     for (const p of state.particles) {
@@ -371,7 +455,7 @@ function renderFloodCanvas(forceRaster) {
       const vx = frame.vx[idx];
       const vy = frame.vy[idx];
       const sp = Math.hypot(vx, vy);
-      if (!meta.active_mask[idx] || h < 0.01 || sp < 0.01 || p.age >= p.maxAge) {
+      if (!meta.active_mask[idx] || h < 0.03 || sp < 0.02 || p.age >= p.maxAge) {
         p.x = Math.random();
         p.y = Math.random();
         p.age = 0;
@@ -379,16 +463,16 @@ function renderFloodCanvas(forceRaster) {
       }
       const lon0 = minLon + p.x * (maxLon - minLon);
       const lat0 = minLat + p.y * (maxLat - minLat);
-      const step = 0.018;
+      const step = 0.015;
       const nx = p.x + vx * step;
       const ny = p.y + vy * step;
       const lon1 = minLon + nx * (maxLon - minLon);
       const lat1 = minLat + ny * (maxLat - minLat);
-      const opacity = Math.min(0.95, 0.35 + sp * 0.8) * (1 - p.age / p.maxAge);
+      const opacity = Math.min(0.85, 0.32 + sp * 0.65) * (1 - p.age / p.maxAge);
       particleFeatures.push({
         type: 'Feature',
         geometry: { type: 'LineString', coordinates: [[lon0, lat0], [lon1, lat1]] },
-        properties: { color: sp > 0.5 ? '#fde047' : '#e0f2fe', opacity },
+        properties: { color: '#ffffff', opacity },
       });
       p.x = nx;
       p.y = ny;
@@ -401,21 +485,23 @@ function renderFloodCanvas(forceRaster) {
     }
   }
 
-  const overlayFeatures = [];
-  for (const iv of state.interventions) {
+  const ivFeatures = state.interventions.map((iv) => {
     const lon0 = minLon + iv.col * dLon;
     const lat0 = minLat + iv.row * dLat;
-    const ring = [[lon0, lat0], [lon0 + dLon, lat0], [lon0 + dLon, lat0 + dLat], [lon0, lat0 + dLat], [lon0, lat0]];
-    overlayFeatures.push({
+    return {
       type: 'Feature',
-      geometry: { type: 'LineString', coordinates: ring },
-      properties: { color: iv.delta_m > 0 ? '#fbbf24' : '#2dd4bf' },
-    });
-  }
+      geometry: {
+        type: 'Polygon',
+        coordinates: [[[lon0, lat0], [lon0 + dLon, lat0], [lon0 + dLon, lat0 + dLat], [lon0, lat0 + dLat], [lon0, lat0]]],
+      },
+      properties: { color: iv.delta_m > 0 ? '#d97706' : '#0d9488' },
+    };
+  });
 
+  const xsecFeatures = [];
   if (state.xsecPts.length === 2) {
     const [a, b] = state.xsecPts;
-    overlayFeatures.push({
+    xsecFeatures.push({
       type: 'Feature',
       geometry: {
         type: 'LineString',
@@ -424,12 +510,13 @@ function renderFloodCanvas(forceRaster) {
           [minLon + (b.col + 0.5) * dLon, minLat + (b.row + 0.5) * dLat],
         ],
       },
-      properties: { color: '#ffffff' },
+      properties: {},
     });
   }
 
   map.getSource('arus-particles').setData({ type: 'FeatureCollection', features: particleFeatures });
-  map.getSource('arus-overlays').setData({ type: 'FeatureCollection', features: overlayFeatures });
+  map.getSource('arus-iv-polys').setData({ type: 'FeatureCollection', features: ivFeatures });
+  map.getSource('arus-xsec').setData({ type: 'FeatureCollection', features: xsecFeatures });
 }
 
 function lngLatToCell(lon, lat) {
@@ -446,25 +533,26 @@ function handleHover(lon, lat) {
   const el = $('telemetry');
   const hit = lngLatToCell(lon, lat);
   if (!hit || !state.frames.length) {
-    el.textContent = `${lat.toFixed(4)}°, ${lon.toFixed(4)}° • Outside domain`;
+    el.textContent = `${lat.toFixed(4)}°, ${lon.toFixed(4)}°`;
     return;
   }
   const meta = state.grid.metadata;
   if (!meta.active_mask[hit.idx]) {
-    el.textContent = `${lat.toFixed(4)}°, ${lon.toFixed(4)}° • NODATA / OUT OF COVERAGE`;
+    el.textContent = 'NODATA (out of coverage)';
     return;
   }
   const frame = state.frames[Math.min(state.frameIdx, state.frames.length - 1)];
   const z = meta.bed_m[hit.idx];
   const h = frame.depth[hit.idx];
   const sp = Math.hypot(frame.vx[hit.idx], frame.vy[hit.idx]);
-  el.textContent = `${lat.toFixed(4)}°, ${lon.toFixed(4)}° | z=${z.toFixed(2)}m | h=${h.toFixed(3)}m | WSE=${(z + h).toFixed(2)}m | |v|=${sp.toFixed(2)}m/s`;
+  el.textContent = `z ${z.toFixed(1)}m · h ${h.toFixed(2)}m · |v| ${sp.toFixed(2)}m/s`;
 }
 
 function handleMapClick(lon, lat) {
   if (state.tool === 'pick') {
     state.center = { lon, lat };
     state.uploadedDem = null;
+    state.cachedDem = null;
     $('coord-search').value = `${lat.toFixed(4)}, ${lon.toFixed(4)}`;
     setTool('inspect');
     runSimulation(false);
@@ -476,7 +564,6 @@ function handleMapClick(lon, lat) {
   if (state.tool === 'bund' || state.tool === 'pond') {
     const delta = state.tool === 'bund' ? 0.8 : -0.8;
     const reason = state.tool === 'bund' ? 'raised flood bund' : 'detention pond';
-    // Paint a small 2x2 footprint so earthwork & hydraulic impact are unmistakable
     for (let dr = 0; dr <= 1; dr++) {
       for (let dc = 0; dc <= 1; dc++) {
         const c = hit.col + dc;
@@ -487,15 +574,15 @@ function handleMapClick(lon, lat) {
       }
     }
     updateInterventionBar();
+    renderFloodCanvas(false);
     return;
   }
 
   if (state.tool === 'xsection') {
     if (state.xsecPts.length >= 2) state.xsecPts = [];
     state.xsecPts.push({ col: hit.col, row: hit.row });
-    if (state.xsecPts.length === 2) {
-      renderCrossSectionInspector();
-    }
+    if (state.xsecPts.length === 2) renderCrossSectionInspector();
+    renderFloodCanvas(false);
     return;
   }
 
@@ -509,48 +596,48 @@ function renderHydrographInspector() {
   const env = state.grid.envelope;
   const { col, row } = state.selectedCell;
   const idx = row * meta.cols + col;
-  const box = $('inspector');
-  box.classList.remove('hidden');
+  $('inspector').classList.remove('hidden');
+  $('inspector-svg').classList.remove('hidden');
 
   if (!meta.active_mask[idx]) {
-    $('inspector-title').textContent = `Cell (${col}, ${row}) — OUT OF COVERAGE`;
-    $('inspector-svg').innerHTML = `<text x="170" y="68" text-anchor="middle" fill="#fda4af" font-family="monospace" font-size="11">NODATA CELL — NEVER TREAT AS DRY</text>`;
+    $('inspector-title').textContent = `Cell (${col}, ${row}) · Out of coverage`;
+    $('inspector-svg').innerHTML = `<text x="170" y="66" text-anchor="middle" fill="#e11d48" font-family="Inter, sans-serif" font-size="11" font-weight="500">NODATA — never treated as dry</text>`;
     $('inspector-stats').innerHTML = '';
     return;
   }
 
-  const times = state.frames.map(f => f.time_s);
-  const depths = state.frames.map(f => f.depth[idx]);
+  const times = state.frames.map((f) => f.time_s);
+  const depths = state.frames.map((f) => f.depth[idx]);
   const tMax = Math.max(1, times[times.length - 1]);
   const dPeak = Math.max(env.max_depth_m[idx], ...depths);
   const yMax = Math.max(dPeak * 1.15, env.threshold_m * 1.3, 0.05);
 
   const pts = times.map((t, i) => {
-    const x = 36 + (t / tMax) * 290;
-    const y = 108 - (depths[i] / yMax) * 86;
+    const x = 38 + (t / tMax) * 288;
+    const y = 104 - (depths[i] / yMax) * 82;
     return `${x.toFixed(1)},${y.toFixed(1)}`;
   }).join(' ');
-  const ty = 108 - (env.threshold_m / yMax) * 86;
+  const ty = 104 - (env.threshold_m / yMax) * 82;
   const curT = state.frames[Math.min(state.frameIdx, state.frames.length - 1)].time_s;
-  const cx = 36 + (curT / tMax) * 290;
+  const cx = 38 + (curT / tMax) * 288;
 
-  $('inspector-title').textContent = `Probe Hydrograph (${col}, ${row})`;
+  $('inspector-title').textContent = `Hydrograph (${col}, ${row})`;
   $('inspector-svg').innerHTML = `
-    <line x1="36" y1="22" x2="326" y2="22" stroke="#1e293b"/>
-    <line x1="36" y1="108" x2="326" y2="108" stroke="#334155"/>
-    <polygon points="${pts} 326,108 36,108" fill="rgba(56,189,248,0.22)"/>
-    <polyline points="${pts}" fill="none" stroke="#38bdf8" stroke-width="2.2"/>
-    <line x1="36" y1="${ty.toFixed(1)}" x2="326" y2="${ty.toFixed(1)}" stroke="#f43f5e" stroke-dasharray="4 3" stroke-width="1.3"/>
-    <line x1="${cx.toFixed(1)}" y1="18" x2="${cx.toFixed(1)}" y2="108" stroke="#fbbf24" stroke-width="1.2"/>
-    <text x="32" y="26" text-anchor="end" fill="#64748b" font-size="8.5" font-family="monospace">${yMax.toFixed(2)}</text>
-    <text x="32" y="111" text-anchor="end" fill="#64748b" font-size="8.5" font-family="monospace">0.00</text>
-    <text x="324" y="${(ty - 3).toFixed(1)}" text-anchor="end" fill="#fb7185" font-size="8.5" font-family="monospace">THRESH ${env.threshold_m.toFixed(2)}m</text>
+    <line x1="38" y1="22" x2="326" y2="22" stroke="rgba(100,116,139,0.22)"/>
+    <line x1="38" y1="104" x2="326" y2="104" stroke="rgba(100,116,139,0.45)"/>
+    <polygon points="${pts} 326,104 38,104" fill="rgba(2,132,199,0.18)"/>
+    <polyline points="${pts}" fill="none" stroke="#0284c7" stroke-width="2"/>
+    <line x1="38" y1="${ty.toFixed(1)}" x2="326" y2="${ty.toFixed(1)}" stroke="#e11d48" stroke-dasharray="4 3" stroke-width="1.2"/>
+    <line x1="${cx.toFixed(1)}" y1="18" x2="${cx.toFixed(1)}" y2="104" stroke="#d97706" stroke-width="1.2"/>
+    <text x="34" y="25" text-anchor="end" fill="#64748b" font-family="JetBrains Mono, monospace" font-size="10">${yMax.toFixed(2)}</text>
+    <text x="34" y="107" text-anchor="end" fill="#64748b" font-family="JetBrains Mono, monospace" font-size="10">0.00</text>
+    <text x="324" y="${(ty - 4).toFixed(1)}" text-anchor="end" fill="#e11d48" font-family="Inter, sans-serif" font-size="10" font-weight="500">Threshold ${env.threshold_m.toFixed(2)}m</text>
   `;
   const onset = env.onset_time_s[idx] >= 0 ? `${env.onset_time_s[idx].toFixed(0)}s` : '—';
-  const rec = depths[depths.length - 1] >= env.threshold_m ? 'Right-cens.' : 'Receded';
+  const rec = depths[depths.length - 1] >= env.threshold_m ? 'Active' : 'Receded';
   $('inspector-stats').innerHTML = `
-    <div class="mini-stat"><div class="mini-k">Peak h</div><div class="mini-v">${dPeak.toFixed(3)}m</div></div>
-    <div class="mini-stat"><div class="mini-k">Max |v|</div><div class="mini-v">${env.max_speed_m_s[idx].toFixed(2)}m/s</div></div>
+    <div class="mini-stat"><div class="mini-k">Peak Depth</div><div class="mini-v">${dPeak.toFixed(2)} m</div></div>
+    <div class="mini-stat"><div class="mini-k">Max Speed</div><div class="mini-v">${env.max_speed_m_s[idx].toFixed(2)} m/s</div></div>
     <div class="mini-stat"><div class="mini-k">Onset</div><div class="mini-v">${onset}</div></div>
     <div class="mini-stat"><div class="mini-k">Status</div><div class="mini-v">${rec}</div></div>
   `;
@@ -561,7 +648,7 @@ function renderCrossSectionInspector() {
   const meta = state.grid.metadata;
   const frame = state.frames[Math.min(state.frameIdx, state.frames.length - 1)];
   const [a, b] = state.xsecPts;
-  const steps = 32;
+  const steps = 40;
   const beds = [];
   const wses = [];
   for (let i = 0; i <= steps; i++) {
@@ -574,33 +661,34 @@ function renderCrossSectionInspector() {
     beds.push(z);
     wses.push(z + h);
   }
-  const zMin = Math.min(...beds) - 0.1;
-  const zMax = Math.max(...wses) + 0.15;
-  const span = Math.max(0.2, zMax - zMin);
-  const bedPts = beds.map((z, i) => `${(36 + (i / steps) * 290).toFixed(1)},${(108 - ((z - zMin) / span) * 86).toFixed(1)}`).join(' ');
-  const wsePts = wses.map((z, i) => `${(36 + (i / steps) * 290).toFixed(1)},${(108 - ((z - zMin) / span) * 86).toFixed(1)}`).join(' ');
-  const bedRev = [...beds].reverse().map((z, i) => `${(36 + ((steps - i) / steps) * 290).toFixed(1)},${(108 - ((z - zMin) / span) * 86).toFixed(1)}`).join(' ');
+  const zMin = Math.min(...beds) - 0.15;
+  const zMax = Math.max(...wses) + 0.25;
+  const span = Math.max(0.25, zMax - zMin);
+  const bedPts = beds.map((z, i) => `${(38 + (i / steps) * 288).toFixed(1)},${(104 - ((z - zMin) / span) * 82).toFixed(1)}`).join(' ');
+  const wsePts = wses.map((z, i) => `${(38 + (i / steps) * 288).toFixed(1)},${(104 - ((z - zMin) / span) * 82).toFixed(1)}`).join(' ');
+  const bedRev = [...beds].reverse().map((z, i) => `${(38 + ((steps - i) / steps) * 288).toFixed(1)},${(104 - ((z - zMin) / span) * 82).toFixed(1)}`).join(' ');
 
   const lenM = Math.hypot((b.col - a.col) * meta.dx_m, (b.row - a.row) * meta.dy_m);
   const maxH = Math.max(...wses.map((w, i) => w - beds[i]));
 
   $('inspector').classList.remove('hidden');
+  $('inspector-svg').classList.remove('hidden');
   $('inspector-title').textContent = `Cross-Section A → B (${lenM.toFixed(0)} m)`;
   $('inspector-svg').innerHTML = `
-    <polygon points="${wsePts} ${bedRev}" fill="rgba(56,189,248,0.45)"/>
-    <polygon points="${bedPts} 326,108 36,108" fill="#1e293b"/>
-    <polyline points="${bedPts}" fill="none" stroke="#94a3b8" stroke-width="1.8"/>
-    <polyline points="${wsePts}" fill="none" stroke="#38bdf8" stroke-width="2.2"/>
-    <text x="32" y="26" text-anchor="end" fill="#64748b" font-size="8.5" font-family="monospace">${zMax.toFixed(1)}m</text>
-    <text x="32" y="111" text-anchor="end" fill="#64748b" font-size="8.5" font-family="monospace">${zMin.toFixed(1)}m</text>
-    <text x="38" y="122" fill="#cbd5e1" font-size="8.5" font-family="monospace">A</text>
-    <text x="322" y="122" text-anchor="end" fill="#cbd5e1" font-size="8.5" font-family="monospace">B (${lenM.toFixed(0)}m)</text>
+    <polygon points="${wsePts} ${bedRev}" fill="rgba(2,132,199,0.42)"/>
+    <polygon points="${bedPts} 326,104 38,104" fill="rgba(100,116,139,0.28)"/>
+    <polyline points="${bedPts}" fill="none" stroke="#64748b" stroke-width="1.6"/>
+    <polyline points="${wsePts}" fill="none" stroke="#0284c7" stroke-width="2"/>
+    <text x="34" y="25" text-anchor="end" fill="#64748b" font-family="JetBrains Mono, monospace" font-size="10">${zMax.toFixed(1)}m</text>
+    <text x="34" y="107" text-anchor="end" fill="#64748b" font-family="JetBrains Mono, monospace" font-size="10">${zMin.toFixed(1)}m</text>
+    <text x="40" y="118" fill="#64748b" font-family="Inter, sans-serif" font-size="10" font-weight="500">A</text>
+    <text x="324" y="118" text-anchor="end" fill="#64748b" font-family="Inter, sans-serif" font-size="10" font-weight="500">B (${lenM.toFixed(0)}m)</text>
   `;
   $('inspector-stats').innerHTML = `
-    <div class="mini-stat"><div class="mini-k">Length</div><div class="mini-v">${lenM.toFixed(0)}m</div></div>
-    <div class="mini-stat"><div class="mini-k">Max h</div><div class="mini-v">${maxH.toFixed(3)}m</div></div>
-    <div class="mini-stat"><div class="mini-k">Bed Min</div><div class="mini-v">${Math.min(...beds).toFixed(2)}m</div></div>
-    <div class="mini-stat"><div class="mini-k">WSE Max</div><div class="mini-v">${Math.max(...wses).toFixed(2)}m</div></div>
+    <div class="mini-stat"><div class="mini-k">Length</div><div class="mini-v">${lenM.toFixed(0)} m</div></div>
+    <div class="mini-stat"><div class="mini-k">Max Depth</div><div class="mini-v">${maxH.toFixed(2)} m</div></div>
+    <div class="mini-stat"><div class="mini-k">Bed Min</div><div class="mini-v">${Math.min(...beds).toFixed(2)} m</div></div>
+    <div class="mini-stat"><div class="mini-k">WSE Max</div><div class="mini-v">${Math.max(...wses).toFixed(2)} m</div></div>
   `;
 }
 
@@ -638,6 +726,33 @@ function loadTerrariumTile(z, tx, ty) {
   });
 }
 
+// Gentle 1-pass 3x3 smoothing to remove single-pixel Terrarium quantization pits while keeping channels
+function smoothScreeningDem(raw, cols, rows) {
+  const out = new Array(raw.length);
+  for (let r = 0; r < rows; r++) {
+    for (let c = 0; c < cols; c++) {
+      const idx = r * cols + c;
+      const center = raw[idx];
+      if (center === null) { out[idx] = null; continue; }
+      let sum = 0;
+      let cnt = 0;
+      for (let dr = -1; dr <= 1; dr++) {
+        for (let dc = -1; dc <= 1; dc++) {
+          if (dr === 0 && dc === 0) continue;
+          const nr = r + dr;
+          const nc = c + dc;
+          if (nr >= 0 && nr < rows && nc >= 0 && nc < cols) {
+            const v = raw[nr * cols + nc];
+            if (v !== null) { sum += v; cnt++; }
+          }
+        }
+      }
+      out[idx] = cnt > 0 ? center * 0.55 + (sum / cnt) * 0.45 : center;
+    }
+  }
+  return out;
+}
+
 async function fetchTerrariumElevations(centerLon, centerLat, cols, rows, dxM) {
   const key = `${centerLon.toFixed(4)},${centerLat.toFixed(4)},${cols},${rows},${dxM}`;
   if (state.cachedDem && state.cachedDem.key === key) {
@@ -652,7 +767,7 @@ async function fetchTerrariumElevations(centerLon, centerLat, cols, rows, dxM) {
   const minLat = centerLat - (heightM * 0.5) / mPerDegLat;
   const maxLat = centerLat + (heightM * 0.5) / mPerDegLat;
 
-  const zoom = 13;
+  const zoom = 14;
   const needed = new Map();
   const samples = [];
   for (let r = 0; r < rows; r++) {
@@ -675,30 +790,26 @@ async function fetchTerrariumElevations(centerLon, centerLat, cols, rows, dxM) {
   );
   if (tileData.size === 0) return null;
 
-  const elevations = [];
+  const raw = [];
   let validCount = 0;
   let minZ = Infinity;
   let maxZ = -Infinity;
   for (const s of samples) {
     const data = tileData.get(s.tkey);
-    if (!data) {
-      elevations.push(null);
-      continue;
-    }
+    if (!data) { raw.push(null); continue; }
     const off = (s.py * 256 + s.px) * 4;
     const z = (data[off] * 256 + data[off + 1] + data[off + 2] / 256) - 32768;
     if (Number.isFinite(z)) {
-      elevations.push(z);
+      raw.push(z);
       validCount++;
       if (z < minZ) minZ = z;
       if (z > maxZ) maxZ = z;
     } else {
-      elevations.push(null);
+      raw.push(null);
     }
   }
-  if (validCount < cols * rows * 0.8 || (maxZ - minZ) < 0.2) {
-    return null;
-  }
+  if (validCount < cols * rows * 0.8 || (maxZ - minZ) < 0.2) return null;
+  const elevations = smoothScreeningDem(raw, cols, rows);
   state.cachedDem = { key, elevations };
   return elevations;
 }
@@ -707,13 +818,12 @@ async function buildRequestPayload() {
   const landChoice = $('ctl-soil').value === 'green-ampt'
     ? { kind: 'modified-green-ampt', suction_m: 0.11, conductivity_m_per_s: 0.000015, maximum_deficit: 0.35 }
     : { kind: 'impervious' };
-  const bndVal = $('ctl-boundary').value;
-  const boundary = bndVal === 'closed'
+  const boundary = $('ctl-boundary').value === 'closed'
     ? { kind: 'closed' }
     : { kind: 'transmissive' };
-  const cols = 20;
-  const rows = 18;
-  const dxM = 75.0;
+  const cols = 32;
+  const rows = 28;
+  const dxM = 45.0;
   const sampled = state.uploadedDem
     ? null
     : await fetchTerrariumElevations(state.center.lon, state.center.lat, cols, rows, dxM);
@@ -747,23 +857,25 @@ async function loadRun(runId) {
   state.grid = await gridResp.json();
   state.frames = decodeFramesBin(await binResp.arrayBuffer());
   state.runId = runId;
-  state.frameIdx = Math.min(Math.floor(state.frames.length * 0.55), state.frames.length - 1);
+  state.frameIdx = Math.min(Math.floor(state.frames.length * 0.72), state.frames.length - 1);
   seedParticles();
-  attachFloodCanvasSource(state.grid.metadata.wgs84_bounds);
+  ensureMapLayers();
+  updateDomainOutline(state.grid.metadata.wgs84_bounds);
+  lastRasterKey = '';
 
   const scrubber = $('scrubber');
   scrubber.max = String(Math.max(0, state.frames.length - 1));
   scrubber.value = String(state.frameIdx);
   updateHonestyPill();
   updateTimeReadout();
-  renderFloodCanvas();
+  renderFloodCanvas(true);
 }
 
 async function runSimulation(compareMode) {
   const btn = compareMode ? $('btn-compare') : $('btn-run');
   const orig = btn.innerHTML;
   btn.disabled = true;
-  btn.innerHTML = '<span class="spinner"></span> Solving hydr F64...';
+  btn.innerHTML = '<span class="spinner"></span>Solving…';
   try {
     const payload = await buildRequestPayload();
     if (compareMode) {
@@ -779,14 +891,14 @@ async function runSimulation(compareMode) {
       await loadRun(state.diffData.intervention_run_id);
       setLayer('diff');
       $('inspector').classList.remove('hidden');
-      $('inspector-title').textContent = 'Baseline vs Intervention Δh Impact';
-      $('inspector-svg').innerHTML = `
-        <text x="16" y="34" fill="#2dd4bf" font-family="monospace" font-size="11" font-weight="700">PROTECTED: ${state.diffData.improved_cells} cells (max -${state.diffData.max_reduction_m.toFixed(3)} m)</text>
-        <text x="16" y="60" fill="#fb923c" font-family="monospace" font-size="11" font-weight="700">WORSENED:  ${state.diffData.worsened_cells} cells (max +${state.diffData.max_worsening_m.toFixed(3)} m)</text>
-        <text x="16" y="88" fill="#cbd5e1" font-family="monospace" font-size="10">Cut: ${state.diffData.earthwork.cut_volume_m3.toFixed(0)} m³  |  Fill: ${state.diffData.earthwork.fill_volume_m3.toFixed(0)} m³</text>
-        <text x="16" y="110" fill="#4ade80" font-family="monospace" font-size="10">Conservation Valid: ${state.diffData.conservation_valid ? 'PASS' : 'FAIL'}</text>
+      $('inspector-svg').classList.add('hidden');
+      $('inspector-title').textContent = 'Intervention Δh Impact';
+      $('inspector-stats').innerHTML = `
+        <div class="mini-stat"><div class="mini-k">Protected</div><div class="mini-v good">${state.diffData.improved_cells} cells (−${state.diffData.max_reduction_m.toFixed(2)}m)</div></div>
+        <div class="mini-stat"><div class="mini-k">Worsened</div><div class="mini-v bad">${state.diffData.worsened_cells} cells (+${state.diffData.max_worsening_m.toFixed(2)}m)</div></div>
+        <div class="mini-stat"><div class="mini-k">Earthwork</div><div class="mini-v">${state.diffData.earthwork.fill_volume_m3.toFixed(0)} m³ fill</div></div>
+        <div class="mini-stat"><div class="mini-k">Mass Check</div><div class="mini-v good">${state.diffData.conservation_valid ? 'PASS' : 'FAIL'}</div></div>
       `;
-      $('inspector-stats').innerHTML = '';
     } else {
       state.diffData = null;
       const resp = await fetch('/api/v1/simulations', {
@@ -800,16 +912,16 @@ async function runSimulation(compareMode) {
       const [minLon, minLat, maxLon, maxLat] = summary.wgs84_bounds;
       map.flyTo({
         center: [(minLon + maxLon) * 0.5, (minLat + maxLat) * 0.5],
-        zoom: 14.5,
-        pitch: state.is3D ? 58 : 0,
-        duration: 900,
+        zoom: 14.4,
+        pitch: state.is3D ? 48 : 0,
+        duration: 800,
       });
     }
   } catch (err) {
     $('inspector').classList.remove('hidden');
+    $('inspector-svg').classList.add('hidden');
     $('inspector-title').textContent = 'Simulation Notice';
-    $('inspector-svg').innerHTML = `<text x="14" y="64" fill="#fda4af" font-family="monospace" font-size="10">${String(err.message).slice(0, 56)}</text>`;
-    $('inspector-stats').innerHTML = '';
+    $('inspector-stats').innerHTML = `<div class="mini-stat" style="grid-column:span 2"><div class="mini-k">Error</div><div class="mini-v bad">${String(err.message).slice(0, 96)}</div></div>`;
   } finally {
     btn.disabled = false;
     btn.innerHTML = orig;
@@ -818,65 +930,76 @@ async function runSimulation(compareMode) {
 
 function updateHonestyPill() {
   const pill = $('honesty-pill');
+  const txt = $('honesty-text');
   if (!state.grid) return;
   const ok = state.grid.budget_assessment.passed;
   const res = Math.abs(state.grid.water_budget.residual_m3);
   const prov = state.grid.metadata.terrain_provenance;
   const demTag = prov === 'BrowserTerrariumScreening'
-    ? 'DEM: Terrarium 30m'
+    ? 'Terrarium 30m'
     : prov === 'UploadedAsciiDem'
-      ? 'DEM: Uploaded .ASC'
-      : 'DEM: Synthetic';
+      ? 'Uploaded .ASC'
+      : 'Synthetic DEM';
   pill.classList.toggle('fail', !ok);
-  pill.innerHTML = `<span class="dot"></span>${demTag} • MASS ${ok ? 'OK' : 'FAIL'} (${res.toExponential(1)} m³)`;
+  pill.title = `Mass residual: ${res.toExponential(1)} m³ (screening only)`;
+  txt.textContent = `${demTag} · Mass ${ok ? 'OK' : 'FAIL'}`;
+}
+
+function fmtMMSS(sec) {
+  const s = Math.max(0, Math.round(sec));
+  const m = Math.floor(s / 60);
+  const rem = s % 60;
+  return `${String(m).padStart(2, '0')}:${String(rem).padStart(2, '0')}`;
 }
 
 function updateTimeReadout() {
   if (!state.frames.length) return;
   const cur = state.frames[Math.min(state.frameIdx, state.frames.length - 1)].time_s;
   const end = state.frames[state.frames.length - 1].time_s;
-  $('time-readout').textContent = `t = ${cur.toFixed(0)}s / ${end.toFixed(0)}s`;
+  $('time-readout').textContent = `${fmtMMSS(cur)} / ${fmtMMSS(end)}`;
 }
 
 function updateInterventionBar() {
   const count = state.interventions.length;
   $('iv-count').textContent = `${count} cells`;
+  $('intervention-bar').classList.toggle('hidden', count === 0);
+  $('btn-compare').classList.toggle('hidden', count === 0);
   $('btn-compare').disabled = count === 0;
 }
 
 function setTool(tool) {
   state.tool = tool;
-  document.querySelectorAll('[data-tool]').forEach(el => {
+  document.querySelectorAll('[data-tool]').forEach((el) => {
     el.classList.toggle('active', el.dataset.tool === tool);
   });
 }
 
 function setLayer(layer) {
   state.layer = layer;
-  document.querySelectorAll('[data-layer]').forEach(el => {
+  document.querySelectorAll('[data-layer]').forEach((el) => {
     el.classList.toggle('active', el.dataset.layer === layer);
   });
   const bar = $('legend-bar');
   const ticks = $('legend-ticks');
   const note = $('legend-note');
   if (layer === 'depth') {
-    bar.style.background = 'linear-gradient(90deg, #0ea5e9, #38bdf8, #f59e0b, #f43f5e)';
-    ticks.innerHTML = '<span>0.01m</span><span>0.15m</span><span>0.40m+</span>';
-    note.textContent = 'Draped depth on 3D terrain (h < 0.01m transparent; hatched = nodata).';
+    bar.style.background = 'linear-gradient(90deg, #bae6fd, #38bdf8, #0284c7, #1d4ed8, #1e1b4b)';
+    ticks.innerHTML = '<span>0.03m</span><span>0.30m</span><span>1.2m+</span>';
+    note.textContent = 'Water depth h (transparent below 3 cm).';
   } else if (layer === 'velocity') {
-    bar.style.background = 'linear-gradient(90deg, #2dd4bf, #eab308, #f43f5e)';
-    ticks.innerHTML = '<span>0.0 m/s</span><span>0.75 m/s</span><span>1.5+ m/s</span>';
-    note.textContent = 'Depth-averaged velocity |v| with 60 FPS streamlines.';
+    bar.style.background = 'linear-gradient(90deg, #2dd4bf, #0284c7, #4f46e5)';
+    ticks.innerHTML = '<span>0.0 m/s</span><span>0.7 m/s</span><span>1.4+ m/s</span>';
+    note.textContent = 'Depth-averaged velocity |v| with streamlines.';
   } else if (layer === 'hazard') {
-    bar.style.background = 'linear-gradient(90deg, #38bdf8 0% 25%, #facc15 25% 50%, #f97316 50% 75%, #f43f5e 75% 100%)';
-    ticks.innerHTML = '<span>&lt;0.75 Low</span><span>1.25 Mod</span><span>2.0+ Ext</span>';
-    note.textContent = 'DEFRA FD2320 Hazard Rating: HR = h × (v + 0.5), DF = 0.';
+    bar.style.background = 'linear-gradient(90deg, #38bdf8 0% 25%, #facc15 25% 50%, #f97316 50% 75%, #e11d48 75% 100%)';
+    ticks.innerHTML = '<span>Low</span><span>Mod</span><span>Ext</span>';
+    note.textContent = 'DEFRA FD2320 hazard rating: h × (v + 0.5).';
   } else {
-    bar.style.background = 'linear-gradient(90deg, #14b8a6, #0f172a 50%, #f97316)';
-    ticks.innerHTML = '<span>-0.15m Safer</span><span>0</span><span>+0.15m Worse</span>';
-    note.textContent = 'Colorblind-safe Δh = Intervention − Baseline max depth.';
+    bar.style.background = 'linear-gradient(90deg, #0d9488, #cbd5e1 50%, #e11d48)';
+    ticks.innerHTML = '<span>−0.14m Safer</span><span>0</span><span>+0.14m Worse</span>';
+    note.textContent = 'Max depth change: Intervention minus Baseline.';
   }
-  renderFloodCanvas();
+  renderFloodCanvas(true);
 }
 
 function animationLoop(now) {
@@ -888,41 +1011,42 @@ function animationLoop(now) {
     else if (state.selectedCell) renderHydrographInspector();
     state.lastTickMs = now;
   }
-  renderFloodCanvas();
+  renderFloodCanvas(false);
   requestAnimationFrame(animationLoop);
 }
 
 async function openSourcesModal() {
   $('sources-modal').classList.remove('hidden');
   const grid = $('sources-grid');
-  grid.innerHTML = 'Loading catalog...';
+  grid.innerHTML = 'Loading catalog…';
   try {
     const resp = await fetch('/api/v1/catalog/sources');
     if (!resp.ok) throw new Error('Catalog not configured');
     const data = await resp.json();
-    grid.innerHTML = data.sources.map(s => `
+    grid.innerHTML = data.sources.map((s) => `
       <div class="src-card">
         <strong>${s.title}</strong>
         <div><span class="src-badge ${s.access === 'public' ? 'pub' : ''}">${s.access}</span> <span class="src-badge">${s.data_class}</span></div>
-        <div style="color:#94a3b8">${s.provider} • ${s.license.name}</div>
+        <div style="color:var(--ink-3)">${s.provider} · ${s.license.name}</div>
       </div>
     `).join('');
   } catch (e) {
-    grid.innerHTML = `<div style="color:#fda4af">${e.message}</div>`;
+    grid.innerHTML = `<div style="color:var(--danger)">${e.message}</div>`;
   }
 }
 
 function wireUi() {
   const sel = $('preset-select');
-  sel.innerHTML = PRESETS.map(p => `<option value="${p.id}">${p.name}</option>`).join('');
+  sel.innerHTML = PRESETS.map((p) => `<option value="${p.id}">${p.name}</option>`).join('');
   sel.addEventListener('change', () => {
-    const p = PRESETS.find(x => x.id === sel.value);
+    const p = PRESETS.find((x) => x.id === sel.value);
     if (!p) return;
     state.center = { lon: p.lon, lat: p.lat };
     state.uploadedDem = null;
+    state.cachedDem = null;
     state.interventions = [];
     updateInterventionBar();
-    map.flyTo({ center: [p.lon, p.lat], zoom: p.zoom, pitch: state.is3D ? 58 : 0, duration: 1100 });
+    map.flyTo({ center: [p.lon, p.lat], zoom: p.zoom, pitch: state.is3D ? 48 : 0, duration: 900 });
     runSimulation(false);
   });
 
@@ -930,11 +1054,12 @@ function wireUi() {
     if (e.key !== 'Enter') return;
     const raw = e.target.value.trim();
     if (!raw) return;
-    const parts = raw.split(',').map(v => parseFloat(v.trim()));
+    const parts = raw.split(',').map((v) => parseFloat(v.trim()));
     if (parts.length === 2 && Number.isFinite(parts[0]) && Number.isFinite(parts[1])) {
       state.center = { lat: parts[0], lon: parts[1] };
-      map.flyTo({ center: [parts[1], parts[0]], zoom: 14.1, duration: 900 });
-      map.once('idle', () => runSimulation(false));
+      state.cachedDem = null;
+      map.flyTo({ center: [parts[1], parts[0]], zoom: 14.2, duration: 800 });
+      runSimulation(false);
       return;
     }
     try {
@@ -944,16 +1069,20 @@ function wireUi() {
         const lat = parseFloat(hits[0].lat);
         const lon = parseFloat(hits[0].lon);
         state.center = { lat, lon };
-        map.flyTo({ center: [lon, lat], zoom: 14.1, duration: 1100 });
-        map.once('idle', () => runSimulation(false));
+        state.cachedDem = null;
+        map.flyTo({ center: [lon, lat], zoom: 14.2, duration: 900 });
+        runSimulation(false);
       }
     } catch (_) { /* offline geocoding unavailable */ }
   });
 
-  document.querySelectorAll('[data-tool]').forEach(el => {
+  document.querySelectorAll('[data-basemap]').forEach((el) => {
+    el.addEventListener('click', () => setBasemap(el.dataset.basemap));
+  });
+  document.querySelectorAll('[data-tool]').forEach((el) => {
     el.addEventListener('click', () => setTool(el.dataset.tool));
   });
-  document.querySelectorAll('[data-layer]').forEach(el => {
+  document.querySelectorAll('[data-layer]').forEach((el) => {
     el.addEventListener('click', () => setLayer(el.dataset.layer));
   });
 
@@ -961,19 +1090,14 @@ function wireUi() {
     state.is3D = !state.is3D;
     $('btn-2d3d').textContent = state.is3D ? '3D' : '2D';
     $('btn-2d3d').classList.toggle('active', state.is3D);
-    map.easeTo({ pitch: state.is3D ? 58 : 0, bearing: state.is3D ? -20 : 0, duration: 600 });
-  });
-
-  $('btn-mode').addEventListener('click', () => {
-    state.publicMode = !state.publicMode;
-    $('drawer').classList.toggle('public-mode', state.publicMode);
-    $('btn-mode').textContent = state.publicMode ? 'Public' : 'Engineer';
+    map.easeTo({ pitch: state.is3D ? 48 : 0, bearing: state.is3D ? -16 : 0, duration: 500 });
   });
 
   $('btn-env').addEventListener('click', () => {
     state.envelopeMode = !state.envelopeMode;
-    $('btn-env').textContent = state.envelopeMode ? 'Max Env' : 'Live t';
+    $('btn-env').textContent = state.envelopeMode ? 'Peak' : 'Live';
     $('btn-env').classList.toggle('active', state.envelopeMode);
+    renderFloodCanvas(true);
   });
 
   $('btn-particles').addEventListener('click', () => {
@@ -998,14 +1122,15 @@ function wireUi() {
     updateTimeReadout();
     if (state.xsecPts.length === 2) renderCrossSectionInspector();
     else if (state.selectedCell) renderHydrographInspector();
+    renderFloodCanvas(true);
   });
 
   $('ctl-rain').addEventListener('input', (e) => { $('val-rain').textContent = `${e.target.value} mm/hr`; });
   $('ctl-dur').addEventListener('input', (e) => { $('val-dur').textContent = `${e.target.value} s`; });
   $('ctl-manning').addEventListener('input', (e) => { $('val-manning').textContent = Number(e.target.value).toFixed(3); });
 
-  $('btn-iv-undo').addEventListener('click', () => { state.interventions.splice(-4, 4); updateInterventionBar(); });
-  $('btn-iv-clear').addEventListener('click', () => { state.interventions = []; updateInterventionBar(); });
+  $('btn-iv-undo').addEventListener('click', () => { state.interventions.splice(-4, 4); updateInterventionBar(); renderFloodCanvas(false); });
+  $('btn-iv-clear').addEventListener('click', () => { state.interventions = []; updateInterventionBar(); renderFloodCanvas(false); });
   $('btn-run').addEventListener('click', () => runSimulation(false));
   $('btn-compare').addEventListener('click', () => runSimulation(true));
 
@@ -1022,13 +1147,14 @@ function wireUi() {
     $('inspector').classList.add('hidden');
     state.xsecPts = [];
     state.selectedCell = null;
+    renderFloodCanvas(false);
   });
 
   $('file-asc').addEventListener('change', async (e) => {
     const file = e.target.files?.[0];
     if (!file) return;
     const text = await file.text();
-    const d = 0.004;
+    const d = 0.006;
     state.uploadedDem = {
       ascii_content: text,
       projected_crs: 'EPSG:3375',

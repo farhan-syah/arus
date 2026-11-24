@@ -2231,9 +2231,9 @@ dependencies = [
 
 [[package]]
 name = "hydr"
-version = "0.1.0"
+version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "42215bf27d7cf8a5b66a6e2022d7b1ab4de7447de363db4c170b2e6354925008"
+checksum = "221f615c6126d1e499d3915396c15003dd82df4bc43241e671a6f817eabc386d"
 dependencies = [
  "hydr-channel",
  "hydr-core",
@@ -2250,9 +2250,9 @@ dependencies = [
 
 [[package]]
 name = "hydr-channel"
-version = "0.1.0"
+version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3b84ff87a951bfa70cb0c3f61da5cf087e24b3f1f4b2aa1575a7f80ae9527a2d"
+checksum = "7e1489609acc1bd0ebc6e2f2745d5228bac7c9c057a0b7cee98d6c0b1aab512e"
 dependencies = [
  "hydr-core",
  "numr",
@@ -2261,9 +2261,9 @@ dependencies = [
 
 [[package]]
 name = "hydr-core"
-version = "0.1.0"
+version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3897d3a8cd0a9336498e4d4dea440f3ba35b23ede2ed33d87e0a14a607b91ef3"
+checksum = "f9e41cbee74a901a6b9f5d1bf9606ff153404a748c6cb8d270d7f4067acc1cc1"
 dependencies = [
  "numr",
  "solvr",
@@ -2271,9 +2271,9 @@ dependencies = [
 
 [[package]]
 name = "hydr-coupling"
-version = "0.1.0"
+version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f596aa9cc733ca02dc5cce308bb6f4c3c724fa5554cc75f11fa972667084d77b"
+checksum = "c94498e50d8060badf50a756c8e35ddea5503f368a21ea4b647308c17abe9e8d"
 dependencies = [
  "hydr-channel",
  "hydr-core",
@@ -2289,9 +2289,9 @@ dependencies = [
 
 [[package]]
 name = "hydr-drainage"
-version = "0.1.0"
+version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9b13d3c9e6d9e2982bd01947165936dcdf97f1952117f2801e3ec05c3cd651c0"
+checksum = "451aef010c4e74e2c8661f47dae8f337dc649a84f1f710821b46814cf1c003fa"
 dependencies = [
  "hydr-core",
  "sha2 0.11.1",
@@ -2299,9 +2299,9 @@ dependencies = [
 
 [[package]]
 name = "hydr-runoff"
-version = "0.1.0"
+version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2b7026ffa21c82c6a99b3caa2bc377a618b51383dcde40390f882c0390a87273"
+checksum = "0db7d0c786ecedd4154b902483ed9d131b690ed0bd410e1ab1f2584ea63fd0fe"
 dependencies = [
  "hydr-core",
  "hydr-soil",
@@ -2311,9 +2311,9 @@ dependencies = [
 
 [[package]]
 name = "hydr-soil"
-version = "0.1.0"
+version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "920e58ce1ab2c609093066914e073ae37c4e83f07a963e76328182f9e3ef96be"
+checksum = "e5880405dc935e7ef309192ceb4f7ef84db588cc6312fee894813de6bab070c5"
 dependencies = [
  "hydr-core",
  "numr",
@@ -2322,9 +2322,9 @@ dependencies = [
 
 [[package]]
 name = "hydr-solver"
-version = "0.1.0"
+version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "012285374090a73f403381eee416d38002e4cb3c2f4b2018a8e9249c3389f498"
+checksum = "9a23c6c8f8f5f93cc8c8ee5a8560e1a882fcb429f8d58135e6e254351e8958b5"
 dependencies = [
  "hydr-core",
  "hydr-soil",
@@ -2335,9 +2335,9 @@ dependencies = [
 
 [[package]]
 name = "hydr-storage"
-version = "0.1.0"
+version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f54de18993ffaa9de1c915444dbe27137c91544d8d53ff34319a7a835bda3a64"
+checksum = "d506f52dac777edc9bea122e460c28e0315be1399519d4e395c745c6041144e5"
 dependencies = [
  "hydr-core",
  "numr",
@@ -2346,9 +2346,9 @@ dependencies = [
 
 [[package]]
 name = "hydr-structures"
-version = "0.1.0"
+version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "267593d471c087dee208d68c52a85824666ae0ac0a965926244d64b880825e64"
+checksum = "950fc175ada2cde710e86244d6d5719b743aa8df1ba29fa137dbc89642ce517f"
 dependencies = [
  "hydr-core",
  "numr",

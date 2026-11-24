@@ -10,8 +10,9 @@ use arus_assets::Archive;
 use arus_ingest::{AccessClass, Catalog, DataClass};
 use arus_storage::{PublishedPointer, RunIndex, RunRecord, RunStore};
 use arus_web::{
-    Locale, MAPLIBRE_CSS, MAPLIBRE_JS, STUDIO_CSS, STUDIO_JS, render_index_page_html,
-    render_run_page_html, render_sources_page_html, render_studio_page_html,
+    FONT_INTER_400, FONT_INTER_500, FONT_INTER_600, FONT_JBMONO_400, FONT_JBMONO_500, Locale,
+    MAPLIBRE_CSS, MAPLIBRE_JS, STUDIO_CSS, STUDIO_JS, render_index_page_html, render_run_page_html,
+    render_sources_page_html, render_studio_page_html,
 };
 use axum::body::Body;
 use axum::extract::{DefaultBodyLimit, Path, Query, State};
@@ -78,6 +79,11 @@ pub fn router(state: ApiState) -> Router {
         .route("/assets/maplibre-gl.css", get(serve_maplibre_css))
         .route("/assets/studio.js", get(serve_studio_js))
         .route("/assets/studio.css", get(serve_studio_css))
+        .route("/assets/fonts/inter-400.woff2", get(serve_font_inter_400))
+        .route("/assets/fonts/inter-500.woff2", get(serve_font_inter_500))
+        .route("/assets/fonts/inter-600.woff2", get(serve_font_inter_600))
+        .route("/assets/fonts/jbmono-400.woff2", get(serve_font_jbmono_400))
+        .route("/assets/fonts/jbmono-500.woff2", get(serve_font_jbmono_500))
         .route("/health", get(health))
         .route("/api/v1/catalog/sources", get(get_catalog_sources))
         .route("/api/v1/published", get(get_published))
@@ -122,11 +128,40 @@ async fn serve_studio_css() -> Response {
     static_asset("text/css; charset=utf-8", STUDIO_CSS)
 }
 
+async fn serve_font_inter_400() -> Response {
+    static_bytes("font/woff2", FONT_INTER_400)
+}
+
+async fn serve_font_inter_500() -> Response {
+    static_bytes("font/woff2", FONT_INTER_500)
+}
+
+async fn serve_font_inter_600() -> Response {
+    static_bytes("font/woff2", FONT_INTER_600)
+}
+
+async fn serve_font_jbmono_400() -> Response {
+    static_bytes("font/woff2", FONT_JBMONO_400)
+}
+
+async fn serve_font_jbmono_500() -> Response {
+    static_bytes("font/woff2", FONT_JBMONO_500)
+}
+
 fn static_asset(content_type: &'static str, body: &'static str) -> Response {
     Response::builder()
         .status(StatusCode::OK)
         .header(header::CONTENT_TYPE, content_type)
         .header(header::CACHE_CONTROL, "public, max-age=3600")
+        .body(Body::from(body))
+        .unwrap_or_else(|_| Response::new(Body::empty()))
+}
+
+fn static_bytes(content_type: &'static str, body: &'static [u8]) -> Response {
+    Response::builder()
+        .status(StatusCode::OK)
+        .header(header::CONTENT_TYPE, content_type)
+        .header(header::CACHE_CONTROL, "public, max-age=86400")
         .body(Body::from(body))
         .unwrap_or_else(|_| Response::new(Body::empty()))
 }

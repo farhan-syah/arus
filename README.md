@@ -40,7 +40,7 @@ Open `http://127.0.0.1:8080/` in your browser.
 
 ## What To Expect Today
 
-- **Ready to run**: Full-screen 3D Flood Simulation Studio, real-time `hydr 0.1.0` `F64` 2D shallow-water solver, Modified Green-Ampt infiltration, 1D–2D river bank coupling, coupled detention pools (weirs, orifices, sluice gates, pumps, HDS-5 culverts), urban subcatchment runoff, paired scenario comparison, `.asc`/`.csv` GIS exports, embedded `nodedb-lite` storage, and offline-capable vendored MapLibre GL JS v5 assets.
+- **Ready to run**: Full-screen Flood Simulation Studio (`Topo | Satellite | Dark` basemaps + self-hosted typography), real-time `hydr 0.2.0` `F64` 2D shallow-water solver, Modified Green-Ampt infiltration, 1D–2D river bank coupling, coupled detention pools (weirs, orifices, sluice gates, pumps, HDS-5 culverts), urban subcatchment runoff, paired scenario comparison, `.asc`/`.csv` GIS exports, embedded `nodedb-lite` storage, and offline-capable vendored MapLibre GL JS v5 assets.
 - **Not yet operational**: Live calibrated operational flood forecasts require surveyed local bare-earth LiDAR, local drainage geometry, official gauge/radar archives, and independent locked-event evaluation. Until approved, every run carries a persistent `DEMO • SCREENING ONLY` badge.
 
 ## Documentation & Verification
