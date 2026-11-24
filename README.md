@@ -11,7 +11,7 @@
 - **Interactive Cross-Section & Hydrograph Inspector**: Draw any profile line `A → B` across a valley or street to inspect terrain bed `z(s)` vs animated water surface `z(s) + h(s)`, or click any cell for its onset/peak/recession hydrograph.
 - **On-Map Bund & Detention Pond What-If Testing**: Paint floodwalls (`+0.8 m`) or detention ponds (`-0.8 m`) directly onto the 3D map, calculate earthwork cut/fill (`m³`), and run **Baseline vs Intervention** comparisons highlighting both protected (teal) and downstream worsened (orange) zones.
 - **Bring-Your-Own-Data (BYOD) & 1-Click GIS Exports**: Upload local projected ESRI ASCII `.asc` DEMs, tune real hydraulic physics (rainfall `mm/hr`, peak vs uniform storm, Manning `n`, Modified Green-Ampt infiltration, open boundaries), and export `max-depth.asc` or `envelope.csv` for QGIS/reports.
-- **Scientific Honesty Built In**: Every interactive run displays its classification (`DEMO • SCREENING ONLY`), live mass-conservation residual (`PASS / FAIL`), explicit `nodata` coverage boundaries, and bilingual `EN` / `BM` controls.
+- **Scientific Honesty Built In**: Every interactive run displays its terrain source (`DEM: Terrarium 30m`, `DEM: Uploaded .ASC`, or `DEM: Synthetic`), live mass-conservation residual (`PASS / FAIL`), and explicit `nodata` coverage boundaries.
 
 ## Screenshots
 
@@ -36,7 +36,7 @@ Requires Rust `1.98.0` (pinned in `rust-toolchain.toml`).
 cargo run --release -p arus-api -- --archive data/runs --bind 127.0.0.1:8080
 ```
 
-Open `http://127.0.0.1:8080/?lang=en` (or `?lang=bm`) in your browser.
+Open `http://127.0.0.1:8080/` in your browser.
 
 ## What To Expect Today
 

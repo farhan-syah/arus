@@ -128,6 +128,12 @@ pub struct CreateSimulationRequest {
     pub interventions: Vec<InterventionCellDelta>,
     #[serde(default)]
     pub ascii_dem: Option<UploadedAsciiDem>,
+    /// Optional row-major bare-earth elevations (`m`) sampled from the 3D map DEM (e.g. Terrarium).
+    #[serde(default)]
+    pub terrain_elevations_m: Option<Vec<Option<f64>>>,
+    /// Optional provenance label for `terrain_elevations_m` (e.g. `BrowserTerrariumScreening`).
+    #[serde(default)]
+    pub terrain_provenance: Option<String>,
 }
 
 const fn default_lon() -> f64 {
@@ -405,15 +411,62 @@ fn execute_blocking(
             (grid, upload.wgs84_bounds, "UploadedAsciiDem".to_owned())
         }
         None => {
-            let (grid, bounds) = build_synthetic_valley_terrain(
-                req.center_lon,
-                req.center_lat,
-                req.cols,
-                req.rows,
-                req.dx_m,
-            )
-            .map_err(|e| (422, e))?;
-            (grid, bounds, "SyntheticDemoBasin".to_owned())
+            if let Some(sampled) = &req.terrain_elevations_m {
+                let expected = req.cols.saturating_mul(req.rows);
+                if sampled.len() != expected {
+                    return Err((
+                        422,
+                        format!(
+                            "terrain_elevations_m length {} does not match {}x{} ({expected})",
+                            sampled.len(),
+                            req.cols,
+                            req.rows
+                        ),
+                    ));
+                }
+                let prov = req
+                    .terrain_provenance
+                    .clone()
+                    .filter(|s| !s.trim().is_empty())
+                    .unwrap_or_else(|| "BrowserTerrariumScreening".to_owned());
+                let bounds = compute_wgs84_bounds(
+                    req.center_lon,
+                    req.center_lat,
+                    req.cols,
+                    req.rows,
+                    req.dx_m,
+                );
+                let grid = TerrainGrid::new(
+                    GridSpec {
+                        columns: req.cols,
+                        rows: req.rows,
+                        dx_m: req.dx_m,
+                        dy_m: req.dx_m,
+                    },
+                    SpatialReference {
+                        projected_crs: format!(
+                            "local-metric-tangent@{:.4},{:.4}",
+                            req.center_lat, req.center_lon
+                        ),
+                        vertical_datum: "egm96-terrarium-screening".to_owned(),
+                        origin_m: [0.0, 0.0],
+                    },
+                    prov.clone(),
+                    sampled.clone(),
+                )
+                .map_err(|e| (422, e.to_string()))?;
+                (grid, bounds, prov)
+            } else {
+                let (grid, bounds) = build_synthetic_valley_terrain(
+                    req.center_lon,
+                    req.center_lat,
+                    req.cols,
+                    req.rows,
+                    req.dx_m,
+                )
+                .map_err(|e| (422, e))?;
+                (grid, bounds, "SyntheticDemoBasin".to_owned())
+            }
         }
     };
 
@@ -522,13 +575,18 @@ fn execute_blocking(
         },
     };
 
+    let initial_depth_m = if terrain_provenance == "BrowserTerrariumScreening" {
+        0.08
+    } else {
+        0.14
+    };
     let spec = SurfaceRunSpec {
         run_id: run_id.clone(),
         classification: RunClassification::NumericalDemonstration,
         terrain,
         uniform_manning_n: req.manning_n,
         land,
-        initial_depth_m: 0.14,
+        initial_depth_m,
         open_faces,
         forcing,
         target_time_s: req.duration_s,
@@ -587,6 +645,27 @@ fn execute_blocking(
     })
 }
 
+fn compute_wgs84_bounds(
+    center_lon: f64,
+    center_lat: f64,
+    cols: usize,
+    rows: usize,
+    dx_m: f64,
+) -> [f64; 4] {
+    let width_m = cols as f64 * dx_m;
+    let height_m = rows as f64 * dx_m;
+    let m_per_deg_lat = 111_320.0;
+    let m_per_deg_lon = (111_320.0 * center_lat.to_radians().cos()).max(10_000.0);
+    let half_dlat = (height_m * 0.5) / m_per_deg_lat;
+    let half_dlon = (width_m * 0.5) / m_per_deg_lon;
+    [
+        center_lon - half_dlon,
+        center_lat - half_dlat,
+        center_lon + half_dlon,
+        center_lat + half_dlat,
+    ]
+}
+
 /// Builds a georeferenced synthetic sloping river-valley basin centered at `(center_lon, center_lat)`
 /// with a winding central channel depression and corner nodata cells so coverage masks are visible.
 fn build_synthetic_valley_terrain(
@@ -596,18 +675,7 @@ fn build_synthetic_valley_terrain(
     rows: usize,
     dx_m: f64,
 ) -> Result<(TerrainGrid, [f64; 4]), String> {
-    let width_m = cols as f64 * dx_m;
-    let height_m = rows as f64 * dx_m;
-    let m_per_deg_lat = 111_320.0;
-    let m_per_deg_lon = (111_320.0 * center_lat.to_radians().cos()).max(10_000.0);
-    let half_dlat = (height_m * 0.5) / m_per_deg_lat;
-    let half_dlon = (width_m * 0.5) / m_per_deg_lon;
-    let bounds = [
-        center_lon - half_dlon,
-        center_lat - half_dlat,
-        center_lon + half_dlon,
-        center_lat + half_dlat,
-    ];
+    let bounds = compute_wgs84_bounds(center_lon, center_lat, cols, rows, dx_m);
 
     let mut cells = Vec::with_capacity(cols * rows);
     for r in 0..rows {

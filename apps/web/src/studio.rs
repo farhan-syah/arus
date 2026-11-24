@@ -14,20 +14,7 @@ pub const STUDIO_JS: &str = include_str!("../assets/studio.js");
 pub const STUDIO_CSS: &str = include_str!("../assets/studio.css");
 
 #[component]
-fn StudioShell(locale: Locale) -> Element {
-    let lang_btn = match locale {
-        Locale::English => "EN",
-        Locale::BahasaMalaysia => "BM",
-    };
-    let run_label = match locale {
-        Locale::English => "Run Simulation",
-        Locale::BahasaMalaysia => "Jalankan Simulasi",
-    };
-    let cmp_label = match locale {
-        Locale::English => "Compare vs Baseline",
-        Locale::BahasaMalaysia => "Banding vs Asal",
-    };
-
+fn StudioShell() -> Element {
     rsx! {
         div { id: "map" }
 
@@ -43,7 +30,7 @@ fn StudioShell(locale: Locale) -> Element {
                     id: "coord-search",
                     class: "search-input",
                     r#type: "text",
-                    placeholder: "lat, lon (anywhere on Earth) + Enter",
+                    placeholder: "Search city or lat, lon + Enter",
                 }
             }
             div { id: "honesty-pill", class: "honesty-pill",
@@ -53,7 +40,6 @@ fn StudioShell(locale: Locale) -> Element {
             div { class: "top-actions",
                 button { id: "btn-2d3d", class: "btn active", "3D" }
                 button { id: "btn-mode", class: "btn", "Engineer" }
-                button { id: "btn-lang", class: "btn", "{lang_btn}" }
                 button { id: "btn-sources", class: "btn", "Sources" }
                 button { id: "btn-export-asc", class: "btn", ".ASC" }
                 button { id: "btn-export-csv", class: "btn", ".CSV" }
@@ -133,8 +119,8 @@ fn StudioShell(locale: Locale) -> Element {
             }
 
             div { class: "cta-stack",
-                button { id: "btn-run", class: "btn primary", "{run_label}" }
-                button { id: "btn-compare", class: "btn warn", disabled: true, "{cmp_label}" }
+                button { id: "btn-run", class: "btn primary", "Run Simulation" }
+                button { id: "btn-compare", class: "btn warn", disabled: true, "Compare vs Baseline" }
             }
         }
 
@@ -192,14 +178,17 @@ fn StudioShell(locale: Locale) -> Element {
 
 /// Renders the full-viewport ARUS 3D Flood Simulation Studio HTML document via Dioxus SSR.
 #[must_use]
-pub fn render_studio_page_html(locale: Locale) -> String {
+pub fn render_studio_page_html(_locale: Locale) -> String {
     let body = dioxus_ssr::render_element(rsx! {
-        StudioShell { locale }
+        StudioShell {}
     });
     format!(
         "<!doctype html><html><head><meta charset=\"utf-8\">\
          <meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\
          <title>ARUS — 3D Flood Simulation Studio</title>\
+         <link rel=\"preconnect\" href=\"https://fonts.googleapis.com\">\
+         <link rel=\"preconnect\" href=\"https://fonts.gstatic.com\" crossorigin>\
+         <link rel=\"stylesheet\" href=\"https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@500;600;700&display=swap\">\
          <link rel=\"stylesheet\" href=\"/assets/maplibre-gl.css\">\
          <link rel=\"stylesheet\" href=\"/assets/studio.css\">\
          </head><body>{body}\

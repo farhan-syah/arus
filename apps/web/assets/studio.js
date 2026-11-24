@@ -10,29 +10,7 @@ const PRESETS = [
   { id: 'houston', name: 'Houston / Buffalo Bayou (US)', lon: -95.369, lat: 29.760, zoom: 14.0 },
 ];
 
-const I18N = {
-  en: {
-    run: 'Run Simulation',
-    compare: 'Compare vs Baseline',
-    running: 'Solving hydr F64...',
-    tools: 'INTERACTION TOOLS',
-    physics: 'HYDR 0.1.0 PARAMETERS',
-    layers: 'LAYERS & LEGEND',
-    demoBadge: 'DEMO • SCREENING ONLY',
-  },
-  bm: {
-    run: 'Jalankan Simulasi',
-    compare: 'Banding vs Asal',
-    running: 'Menyelesaikan hydr F64...',
-    tools: 'ALAT INTERAKSI',
-    physics: 'PARAMETER HYDR 0.1.0',
-    layers: 'LAPISAN & PETUNJUK',
-    demoBadge: 'DEMO • SARINGAN SAHAJA',
-  },
-};
-
 const state = {
-  lang: new URLSearchParams(window.location.search).get('lang') === 'bm' ? 'bm' : 'en',
   center: { lon: 101.535, lat: 3.031 },
   tool: 'inspect', // inspect | pick | bund | pond | xsection
   layer: 'depth',  // depth | velocity | hazard | diff
@@ -52,11 +30,21 @@ const state = {
   xsecPts: [],     // [{ col, row }]
   selectedCell: null, // { col, row }
   uploadedDem: null, // { ascii_content, projected_crs, vertical_datum, wgs84_bounds }
+  cachedDem: null,   // { key, elevations }
   particles: [],
 };
 
+// Offscreen high-resolution canvas rendered smoothly with bilinear interpolation
+// and pushed to MapLibre via ImageSource.updateImage (zero WebGL CanvasSource tile artifacts).
+const rasterCanvas = document.createElement('canvas');
+rasterCanvas.width = 256;
+rasterCanvas.height = 256;
+const rasterCtx = rasterCanvas.getContext('2d');
+let lastRasterKey = '';
+
 let map = null;
 let layersReady = false;
+let initialSimTriggered = false;
 
 function $(id) { return document.getElementById(id); }
 
@@ -87,8 +75,9 @@ function initMap() {
   map.addControl(new maplibregl.NavigationControl({ visualizePitch: true }), 'top-right');
 
   let fellBack = false;
-  map.on('error', () => {
-    if (!fellBack && !map.isStyleLoaded()) {
+  map.on('error', (e) => {
+    // Only fall back to offline blank style if the base style itself fails, never on a single DEM tile miss.
+    if (!fellBack && !map.isStyleLoaded() && (!e || !e.sourceId)) {
       fellBack = true;
       map.setStyle(buildOfflineStyle());
     }
@@ -99,52 +88,32 @@ function initMap() {
       if (typeof map.setProjection === 'function') {
         map.setProjection({ type: 'globe' });
       }
-      if (!map.getSource('terrarium-dem') && !fellBack) {
-        map.addSource('terrarium-dem', {
-          type: 'raster-dem',
-          tiles: ['https://s3.amazonaws.com/elevation-tiles-prod/terrarium/{z}/{x}/{y}.png'],
-          encoding: 'terrarium',
-          tileSize: 256,
-          maxzoom: 14,
-        });
-        map.setTerrain({ source: 'terrarium-dem', exaggeration: 1.35 });
-      }
-    } catch (_) { /* offline or unsupported terrain */ }
+    } catch (_) { /* projection unsupported */ }
     ensureMapLayers();
     if (state.grid) {
       updateDomainOutline(state.grid.metadata.wgs84_bounds);
-      renderFloodCanvas();
+      renderFloodCanvas(true);
+    }
+    if (!initialSimTriggered) {
+      initialSimTriggered = true;
+      runSimulation(false);
     }
   });
+
+  setTimeout(() => {
+    if (!initialSimTriggered) {
+      initialSimTriggered = true;
+      runSimulation(false);
+    }
+  }, 2400);
 
   map.on('mousemove', (e) => handleHover(e.lngLat.lng, e.lngLat.lat));
   map.on('click', (e) => handleMapClick(e.lngLat.lng, e.lngLat.lat));
 }
 
 function ensureMapLayers() {
-  if (!map || !map.isStyleLoaded() || map.getSource('arus-water')) return;
+  if (!map || !map.isStyleLoaded() || map.getSource('arus-particles')) return;
   const empty = { type: 'FeatureCollection', features: [] };
-
-  map.addSource('arus-water', { type: 'geojson', data: empty });
-  map.addLayer({
-    id: 'arus-water-3d',
-    type: 'fill-extrusion',
-    source: 'arus-water',
-    paint: {
-      'fill-extrusion-color': ['get', 'color'],
-      'fill-extrusion-height': ['get', 'height'],
-      'fill-extrusion-base': 0,
-      'fill-extrusion-opacity': 0.82,
-    },
-  });
-
-  map.addSource('arus-nodata', { type: 'geojson', data: empty });
-  map.addLayer({
-    id: 'arus-nodata-fill',
-    type: 'fill',
-    source: 'arus-nodata',
-    paint: { 'fill-color': '#f43f5e', 'fill-opacity': 0.28 },
-  });
 
   map.addSource('arus-particles', { type: 'geojson', data: empty });
   map.addLayer({
@@ -176,7 +145,7 @@ function ensureMapLayers() {
     id: 'arus-domain-outline',
     type: 'line',
     source: 'arus-domain-box',
-    paint: { 'line-color': '#38bdf8', 'line-width': 2, 'line-dasharray': [3, 2] },
+    paint: { 'line-color': '#38bdf8', 'line-width': 1.8, 'line-opacity': 0.75, 'line-dasharray': [4, 3] },
   });
 
   layersReady = true;
@@ -197,6 +166,7 @@ function updateDomainOutline(bounds) {
 function attachFloodCanvasSource(bounds) {
   ensureMapLayers();
   updateDomainOutline(bounds);
+  lastRasterKey = '';
 }
 
 function decodeFramesBin(buffer) {
@@ -273,12 +243,107 @@ function colorForDiff(d) {
   return [249, 115 - mag * 55, 22 + mag * 110, 130 + mag * 115];
 }
 
-function rgbHex(rgba) {
-  const h = (n) => Math.max(0, Math.min(255, Math.round(n))).toString(16).padStart(2, '0');
-  return `#${h(rgba[0])}${h(rgba[1])}${h(rgba[2])}`;
+function sampleBilinear(arr, active, cols, rows, fx, fy) {
+  const c0 = Math.max(0, Math.min(cols - 1, Math.floor(fx)));
+  const r0 = Math.max(0, Math.min(rows - 1, Math.floor(fy)));
+  const c1 = Math.min(cols - 1, c0 + 1);
+  const r1 = Math.min(rows - 1, r0 + 1);
+  const tx = Math.max(0, Math.min(1, fx - c0));
+  const ty = Math.max(0, Math.min(1, fy - r0));
+  const i00 = r0 * cols + c0;
+  const i10 = r0 * cols + c1;
+  const i01 = r1 * cols + c0;
+  const i11 = r1 * cols + c1;
+  if (!active[i00]) return null;
+  const v00 = arr[i00];
+  const v10 = active[i10] ? arr[i10] : v00;
+  const v01 = active[i01] ? arr[i01] : v00;
+  const v11 = active[i11] ? arr[i11] : v00;
+  return (v00 * (1 - tx) + v10 * tx) * (1 - ty) + (v01 * (1 - tx) + v11 * tx) * ty;
 }
 
-function renderFloodCanvas() {
+function updateSmoothWaterImage(meta, env, frame) {
+  const cols = meta.cols;
+  const rows = meta.rows;
+  const W = rasterCanvas.width;
+  const H = rasterCanvas.height;
+  const img = rasterCtx.createImageData(W, H);
+  const data = img.data;
+
+  let speedArr = null;
+  if (state.layer === 'velocity' || state.layer === 'hazard') {
+    speedArr = new Float32Array(cols * rows);
+    for (let i = 0; i < cols * rows; i++) {
+      speedArr[i] = Math.hypot(frame.vx[i], frame.vy[i]);
+    }
+  }
+
+  for (let py = 0; py < H; py++) {
+    const fy = (1 - (py + 0.5) / H) * (rows - 1);
+    const rNearest = Math.min(rows - 1, Math.max(0, Math.round(fy)));
+    for (let px = 0; px < W; px++) {
+      const fx = ((px + 0.5) / W) * (cols - 1);
+      const cNearest = Math.min(cols - 1, Math.max(0, Math.round(fx)));
+      const out = (py * W + px) * 4;
+
+      if (!meta.active_mask[rNearest * cols + cNearest]) {
+        if (((px + py) % 10) < 2) {
+          data[out] = 244; data[out + 1] = 63; data[out + 2] = 94; data[out + 3] = 125;
+        }
+        continue;
+      }
+
+      let rgba = null;
+      if (state.layer === 'depth') {
+        const src = state.envelopeMode ? env.max_depth_m : frame.depth;
+        const h = sampleBilinear(src, meta.active_mask, cols, rows, fx, fy);
+        if (h !== null) rgba = colorForDepth(h, env.threshold_m);
+      } else if (state.layer === 'velocity') {
+        const src = state.envelopeMode ? env.max_speed_m_s : speedArr;
+        const sp = sampleBilinear(src, meta.active_mask, cols, rows, fx, fy);
+        if (sp !== null) rgba = colorForVelocity(sp);
+      } else if (state.layer === 'hazard') {
+        const h = sampleBilinear(frame.depth, meta.active_mask, cols, rows, fx, fy);
+        const sp = sampleBilinear(speedArr, meta.active_mask, cols, rows, fx, fy);
+        const hr = state.envelopeMode
+          ? sampleBilinear(env.max_hazard_m2_s, meta.active_mask, cols, rows, fx, fy)
+          : (h !== null && sp !== null ? h * (sp + 0.5) : null);
+        if (hr !== null) rgba = colorForHazard(hr);
+      } else if (state.layer === 'diff' && state.diffData) {
+        const d = sampleBilinear(state.diffData.delta_max_depth_m, meta.active_mask, cols, rows, fx, fy);
+        if (d !== null) rgba = colorForDiff(d);
+      }
+
+      if (rgba) {
+        data[out] = rgba[0];
+        data[out + 1] = rgba[1];
+        data[out + 2] = rgba[2];
+        data[out + 3] = Math.round(rgba[3] * 0.86);
+      }
+    }
+  }
+  rasterCtx.putImageData(img, 0, 0);
+
+  const [minLon, minLat, maxLon, maxLat] = meta.wgs84_bounds;
+  const coords = [[minLon, maxLat], [maxLon, maxLat], [maxLon, minLat], [minLon, minLat]];
+  const url = rasterCanvas.toDataURL('image/png');
+  if (map.getSource('arus-water-img')) {
+    map.getSource('arus-water-img').updateImage({ url, coordinates: coords });
+  } else {
+    map.addSource('arus-water-img', { type: 'image', url, coordinates: coords });
+    map.addLayer(
+      {
+        id: 'arus-water-smooth',
+        type: 'raster',
+        source: 'arus-water-img',
+        paint: { 'raster-opacity': 0.88, 'raster-resampling': 'linear', 'raster-fade-duration': 0 },
+      },
+      'arus-particles-line',
+    );
+  }
+}
+
+function renderFloodCanvas(forceRaster) {
   if (!state.grid || !state.frames.length || !layersReady) return;
   const meta = state.grid.metadata;
   const env = state.grid.envelope;
@@ -289,57 +354,13 @@ function renderFloodCanvas() {
   const dLat = (maxLat - minLat) / rows;
   const frame = state.frames[Math.min(state.frameIdx, state.frames.length - 1)];
 
-  const waterFeatures = [];
-  const nodataFeatures = [];
-  const overlayFeatures = [];
-
-  for (let r = 0; r < rows; r++) {
-    const lat0 = minLat + r * dLat;
-    const lat1 = lat0 + dLat;
-    for (let c = 0; c < cols; c++) {
-      const idx = r * cols + c;
-      const lon0 = minLon + c * dLon;
-      const lon1 = lon0 + dLon;
-      const ring = [[lon0, lat0], [lon1, lat0], [lon1, lat1], [lon0, lat1], [lon0, lat0]];
-
-      if (!meta.active_mask[idx]) {
-        nodataFeatures.push({ type: 'Feature', geometry: { type: 'Polygon', coordinates: [ring] }, properties: {} });
-        continue;
-      }
-
-      let rgba = null;
-      let extrudeM = 0;
-      const h = state.envelopeMode ? env.max_depth_m[idx] : frame.depth[idx];
-      if (state.layer === 'depth') {
-        rgba = colorForDepth(h, env.threshold_m);
-        extrudeM = state.is3D ? Math.min(45, h * 36) : 0;
-      } else if (state.layer === 'velocity') {
-        const sp = state.envelopeMode ? env.max_speed_m_s[idx] : Math.hypot(frame.vx[idx], frame.vy[idx]);
-        rgba = colorForVelocity(sp);
-        extrudeM = state.is3D ? Math.min(35, sp * 18) : 0;
-      } else if (state.layer === 'hazard') {
-        const hr = state.envelopeMode
-          ? env.max_hazard_m2_s[idx]
-          : frame.depth[idx] * (Math.hypot(frame.vx[idx], frame.vy[idx]) + 0.5);
-        rgba = colorForHazard(hr);
-        extrudeM = state.is3D ? Math.min(45, hr * 20) : 0;
-      } else if (state.layer === 'diff' && state.diffData) {
-        const d = state.diffData.delta_max_depth_m[idx] || 0;
-        rgba = colorForDiff(d);
-        extrudeM = state.is3D ? Math.min(40, Math.abs(d) * 90) : 0;
-      }
-
-      if (rgba) {
-        waterFeatures.push({
-          type: 'Feature',
-          geometry: { type: 'Polygon', coordinates: [ring] },
-          properties: { color: rgbHex(rgba), height: extrudeM },
-        });
-      }
-    }
+  const rasterKey = `${state.runId}:${state.frameIdx}:${state.layer}:${state.envelopeMode}`;
+  if (forceRaster || rasterKey !== lastRasterKey) {
+    lastRasterKey = rasterKey;
+    updateSmoothWaterImage(meta, env, frame);
   }
 
-  // 60 FPS animated velocity particle streamlines as GeoJSON segments
+  // 60 FPS animated velocity particle streamlines as crisp vector segments
   const particleFeatures = [];
   if (state.particlesOn && state.layer !== 'diff') {
     for (const p of state.particles) {
@@ -380,7 +401,7 @@ function renderFloodCanvas() {
     }
   }
 
-  // Intervention outlines (bund = amber, pond = teal)
+  const overlayFeatures = [];
   for (const iv of state.interventions) {
     const lon0 = minLon + iv.col * dLon;
     const lat0 = minLat + iv.row * dLat;
@@ -392,7 +413,6 @@ function renderFloodCanvas() {
     });
   }
 
-  // Cross-section A->B line
   if (state.xsecPts.length === 2) {
     const [a, b] = state.xsecPts;
     overlayFeatures.push({
@@ -408,8 +428,6 @@ function renderFloodCanvas() {
     });
   }
 
-  map.getSource('arus-water').setData({ type: 'FeatureCollection', features: waterFeatures });
-  map.getSource('arus-nodata').setData({ type: 'FeatureCollection', features: nodataFeatures });
   map.getSource('arus-particles').setData({ type: 'FeatureCollection', features: particleFeatures });
   map.getSource('arus-overlays').setData({ type: 'FeatureCollection', features: overlayFeatures });
 }
@@ -586,7 +604,106 @@ function renderCrossSectionInspector() {
   `;
 }
 
-function buildRequestPayload() {
+function lonLatToTilePixel(lon, lat, zoom) {
+  const n = Math.pow(2, zoom);
+  const x = ((lon + 180) / 360) * n;
+  const latRad = (lat * Math.PI) / 180;
+  const y = ((1 - Math.log(Math.tan(latRad) + 1 / Math.cos(latRad)) / Math.PI) / 2) * n;
+  const tx = Math.floor(x);
+  const ty = Math.floor(y);
+  const px = Math.min(255, Math.max(0, Math.floor((x - tx) * 256)));
+  const py = Math.min(255, Math.max(0, Math.floor((y - ty) * 256)));
+  return { tx, ty, px, py };
+}
+
+function loadTerrariumTile(z, tx, ty) {
+  return new Promise((resolve) => {
+    const img = new Image();
+    img.crossOrigin = 'anonymous';
+    const timer = setTimeout(() => resolve(null), 4000);
+    img.onload = () => {
+      clearTimeout(timer);
+      const c = document.createElement('canvas');
+      c.width = 256;
+      c.height = 256;
+      const ctx = c.getContext('2d');
+      ctx.drawImage(img, 0, 0, 256, 256);
+      resolve(ctx.getImageData(0, 0, 256, 256).data);
+    };
+    img.onerror = () => {
+      clearTimeout(timer);
+      resolve(null);
+    };
+    img.src = `https://s3.amazonaws.com/elevation-tiles-prod/terrarium/${z}/${tx}/${ty}.png`;
+  });
+}
+
+async function fetchTerrariumElevations(centerLon, centerLat, cols, rows, dxM) {
+  const key = `${centerLon.toFixed(4)},${centerLat.toFixed(4)},${cols},${rows},${dxM}`;
+  if (state.cachedDem && state.cachedDem.key === key) {
+    return state.cachedDem.elevations;
+  }
+  const widthM = cols * dxM;
+  const heightM = rows * dxM;
+  const mPerDegLat = 111320.0;
+  const mPerDegLon = Math.max(10000.0, 111320.0 * Math.cos((centerLat * Math.PI) / 180));
+  const minLon = centerLon - (widthM * 0.5) / mPerDegLon;
+  const maxLon = centerLon + (widthM * 0.5) / mPerDegLon;
+  const minLat = centerLat - (heightM * 0.5) / mPerDegLat;
+  const maxLat = centerLat + (heightM * 0.5) / mPerDegLat;
+
+  const zoom = 13;
+  const needed = new Map();
+  const samples = [];
+  for (let r = 0; r < rows; r++) {
+    const lat = minLat + ((r + 0.5) / rows) * (maxLat - minLat);
+    for (let c = 0; c < cols; c++) {
+      const lon = minLon + ((c + 0.5) / cols) * (maxLon - minLon);
+      const tp = lonLatToTilePixel(lon, lat, zoom);
+      const tkey = `${tp.tx}/${tp.ty}`;
+      if (!needed.has(tkey)) needed.set(tkey, { tx: tp.tx, ty: tp.ty });
+      samples.push({ tkey, px: tp.px, py: tp.py });
+    }
+  }
+
+  const tileData = new Map();
+  await Promise.all(
+    Array.from(needed.entries()).map(async ([tkey, { tx, ty }]) => {
+      const data = await loadTerrariumTile(zoom, tx, ty);
+      if (data) tileData.set(tkey, data);
+    }),
+  );
+  if (tileData.size === 0) return null;
+
+  const elevations = [];
+  let validCount = 0;
+  let minZ = Infinity;
+  let maxZ = -Infinity;
+  for (const s of samples) {
+    const data = tileData.get(s.tkey);
+    if (!data) {
+      elevations.push(null);
+      continue;
+    }
+    const off = (s.py * 256 + s.px) * 4;
+    const z = (data[off] * 256 + data[off + 1] + data[off + 2] / 256) - 32768;
+    if (Number.isFinite(z)) {
+      elevations.push(z);
+      validCount++;
+      if (z < minZ) minZ = z;
+      if (z > maxZ) maxZ = z;
+    } else {
+      elevations.push(null);
+    }
+  }
+  if (validCount < cols * rows * 0.8 || (maxZ - minZ) < 0.2) {
+    return null;
+  }
+  state.cachedDem = { key, elevations };
+  return elevations;
+}
+
+async function buildRequestPayload() {
   const landChoice = $('ctl-soil').value === 'green-ampt'
     ? { kind: 'modified-green-ampt', suction_m: 0.11, conductivity_m_per_s: 0.000015, maximum_deficit: 0.35 }
     : { kind: 'impervious' };
@@ -594,12 +711,18 @@ function buildRequestPayload() {
   const boundary = bndVal === 'closed'
     ? { kind: 'closed' }
     : { kind: 'transmissive' };
+  const cols = 20;
+  const rows = 18;
+  const dxM = 75.0;
+  const sampled = state.uploadedDem
+    ? null
+    : await fetchTerrariumElevations(state.center.lon, state.center.lat, cols, rows, dxM);
   return {
     center_lon: state.center.lon,
     center_lat: state.center.lat,
-    cols: 20,
-    rows: 18,
-    dx_m: 75.0,
+    cols,
+    rows,
+    dx_m: dxM,
     rainfall_mm_per_hr: parseFloat($('ctl-rain').value),
     hyetograph: $('ctl-hyeto').value,
     duration_s: parseFloat($('ctl-dur').value),
@@ -610,6 +733,8 @@ function buildRequestPayload() {
     precision: 'f64',
     interventions: state.interventions,
     ascii_dem: state.uploadedDem,
+    terrain_elevations_m: sampled,
+    terrain_provenance: sampled ? 'BrowserTerrariumScreening' : null,
   };
 }
 
@@ -638,9 +763,9 @@ async function runSimulation(compareMode) {
   const btn = compareMode ? $('btn-compare') : $('btn-run');
   const orig = btn.innerHTML;
   btn.disabled = true;
-  btn.innerHTML = `<span class="spinner"></span> ${I18N[state.lang].running}`;
+  btn.innerHTML = '<span class="spinner"></span> Solving hydr F64...';
   try {
-    const payload = buildRequestPayload();
+    const payload = await buildRequestPayload();
     if (compareMode) {
       const resp = await fetch('/api/v1/compare', {
         method: 'POST',
@@ -649,6 +774,8 @@ async function runSimulation(compareMode) {
       });
       if (!resp.ok) throw new Error(await resp.text());
       state.diffData = await resp.json();
+      state.xsecPts = [];
+      state.selectedCell = null;
       await loadRun(state.diffData.intervention_run_id);
       setLayer('diff');
       $('inspector').classList.remove('hidden');
@@ -694,8 +821,14 @@ function updateHonestyPill() {
   if (!state.grid) return;
   const ok = state.grid.budget_assessment.passed;
   const res = Math.abs(state.grid.water_budget.residual_m3);
+  const prov = state.grid.metadata.terrain_provenance;
+  const demTag = prov === 'BrowserTerrariumScreening'
+    ? 'DEM: Terrarium 30m'
+    : prov === 'UploadedAsciiDem'
+      ? 'DEM: Uploaded .ASC'
+      : 'DEM: Synthetic';
   pill.classList.toggle('fail', !ok);
-  pill.innerHTML = `<span class="dot"></span>${I18N[state.lang].demoBadge} • MASS ${ok ? 'OK' : 'FAIL'} (${res.toExponential(1)} m³)`;
+  pill.innerHTML = `<span class="dot"></span>${demTag} • MASS ${ok ? 'OK' : 'FAIL'} (${res.toExponential(1)} m³)`;
 }
 
 function updateTimeReadout() {
@@ -793,14 +926,28 @@ function wireUi() {
     runSimulation(false);
   });
 
-  $('coord-search').addEventListener('keydown', (e) => {
+  $('coord-search').addEventListener('keydown', async (e) => {
     if (e.key !== 'Enter') return;
-    const parts = e.target.value.split(',').map(v => parseFloat(v.trim()));
+    const raw = e.target.value.trim();
+    if (!raw) return;
+    const parts = raw.split(',').map(v => parseFloat(v.trim()));
     if (parts.length === 2 && Number.isFinite(parts[0]) && Number.isFinite(parts[1])) {
       state.center = { lat: parts[0], lon: parts[1] };
-      map.flyTo({ center: [parts[1], parts[0]], zoom: 14.3, duration: 900 });
-      runSimulation(false);
+      map.flyTo({ center: [parts[1], parts[0]], zoom: 14.1, duration: 900 });
+      map.once('idle', () => runSimulation(false));
+      return;
     }
+    try {
+      const resp = await fetch(`https://nominatim.openstreetmap.org/search?format=json&limit=1&q=${encodeURIComponent(raw)}`);
+      const hits = await resp.json();
+      if (hits && hits.length > 0) {
+        const lat = parseFloat(hits[0].lat);
+        const lon = parseFloat(hits[0].lon);
+        state.center = { lat, lon };
+        map.flyTo({ center: [lon, lat], zoom: 14.1, duration: 1100 });
+        map.once('idle', () => runSimulation(false));
+      }
+    } catch (_) { /* offline geocoding unavailable */ }
   });
 
   document.querySelectorAll('[data-tool]').forEach(el => {
@@ -821,14 +968,6 @@ function wireUi() {
     state.publicMode = !state.publicMode;
     $('drawer').classList.toggle('public-mode', state.publicMode);
     $('btn-mode').textContent = state.publicMode ? 'Public' : 'Engineer';
-  });
-
-  $('btn-lang').addEventListener('click', () => {
-    state.lang = state.lang === 'en' ? 'bm' : 'en';
-    $('btn-lang').textContent = state.lang.toUpperCase();
-    $('btn-run').textContent = I18N[state.lang].run;
-    $('btn-compare').textContent = I18N[state.lang].compare;
-    updateHonestyPill();
   });
 
   $('btn-env').addEventListener('click', () => {
@@ -879,7 +1018,11 @@ function wireUi() {
 
   $('btn-sources').addEventListener('click', openSourcesModal);
   $('btn-sources-close').addEventListener('click', () => $('sources-modal').classList.add('hidden'));
-  $('btn-inspector-close').addEventListener('click', () => $('inspector').classList.add('hidden'));
+  $('btn-inspector-close').addEventListener('click', () => {
+    $('inspector').classList.add('hidden');
+    state.xsecPts = [];
+    state.selectedCell = null;
+  });
 
   $('file-asc').addEventListener('change', async (e) => {
     const file = e.target.files?.[0];
@@ -901,5 +1044,4 @@ window.addEventListener('DOMContentLoaded', () => {
   wireUi();
   setLayer('depth');
   requestAnimationFrame(animationLoop);
-  runSimulation(false);
 });
