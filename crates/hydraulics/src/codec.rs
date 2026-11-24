@@ -57,7 +57,32 @@ pub fn encode_snapshot(data: &SnapshotData) -> Result<CheckpointPackage> {
 
 /// Decodes an exact binary `CheckpointPackage` into `SnapshotData`.
 pub fn decode_snapshot(package: &CheckpointPackage) -> Result<SnapshotData> {
-    let mut reader = Reader::new(&package.payload);
+    let data = decode_snapshot_bytes(&package.payload)?;
+    if data.schema != package.header.schema || data.contract != package.header.contract {
+        return Err(ModelError::Checkpoint(format!(
+            "checkpoint header mismatch: header=({}, {}), payload=({}, {})",
+            package.header.schema, package.header.contract, data.schema, data.contract
+        )));
+    }
+    Ok(data)
+}
+
+/// Reconstructs a `CheckpointPackage` (header + payload) directly from raw archived bytes.
+pub fn package_from_bytes(payload: Vec<u8>) -> Result<CheckpointPackage> {
+    let data = decode_snapshot_bytes(&payload)?;
+    let header = CheckpointHeader {
+        schema: data.schema,
+        contract: data.contract,
+        accepted_time_s: data.accepted.time,
+        accepted_steps: data.accepted_steps,
+        forcing_prefix_intervals: data.forcing_prefix.intervals,
+        forcing_prefix_digest_hex: hex_digest(&data.forcing_prefix.digest),
+    };
+    Ok(CheckpointPackage { header, payload })
+}
+
+fn decode_snapshot_bytes(payload: &[u8]) -> Result<SnapshotData> {
+    let mut reader = Reader::new(payload);
     let magic = reader.fixed::<8>()?;
     if &magic != MAGIC {
         return Err(ModelError::Checkpoint(
@@ -72,12 +97,6 @@ pub fn decode_snapshot(package: &CheckpointPackage) -> Result<SnapshotData> {
     }
     let schema = reader.string()?;
     let contract = reader.string()?;
-    if schema != package.header.schema || contract != package.header.contract {
-        return Err(ModelError::Checkpoint(format!(
-            "checkpoint header mismatch: header=({}, {}), payload=({schema}, {contract})",
-            package.header.schema, package.header.contract
-        )));
-    }
     if schema != SNAPSHOT_SCHEMA {
         return Err(ModelError::Checkpoint(format!(
             "unsupported checkpoint schema {schema}: expected {SNAPSHOT_SCHEMA}"

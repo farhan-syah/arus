@@ -11,17 +11,17 @@ use arus_assets::Archive;
 use arus_domain::{Provenance, RunClassification};
 use arus_evaluation::{BudgetAssessment, assess_water_budget};
 use arus_forecasting::{
-    EpisodePolicy, EpisodeTracker, LocationEvolution, LocationSupportStatus, OnsetStatus,
-    RecessionStatus,
+    ApprovalStatus, EpisodePolicy, EpisodeTracker, LocationEvolution, LocationSupportStatus,
+    OnsetStatus, PublicationCandidate, PublicationDecision, RecessionStatus, evaluate_publication,
 };
 use arus_hydraulics::{
-    LocationProbe, SurfaceEngine, SurfaceRunSpec, all_component_capabilities,
+    LocationProbe, SurfaceEngine, SurfaceRunSpec, all_component_capabilities, package_from_bytes,
     run_closed_basin_demo, run_native_worker_demo, surface_capabilities,
 };
 use arus_jobs::{CancellationToken, StepBudget};
-use arus_model_api::PersistedCheckpoint;
+use arus_model_api::{AdvanceOutcome, PersistedCheckpoint};
 use arus_scenarios::{ScenarioManifest, ScenarioRunSummary, compare_paired_runs};
-use arus_storage::{RunRecord, RunStore};
+use arus_storage::{PublishedPointer, RunRecord, RunStore};
 use clap::{Parser, Subcommand};
 use serde::Serialize;
 use sha2::{Digest, Sha256};
@@ -77,6 +77,45 @@ enum Command {
         /// Path to the intervention JSON `SurfaceRunSpec`.
         #[arg(long)]
         intervention: PathBuf,
+    },
+    /// Verify and resume an archived run from its exact binary checkpoint blob.
+    Resume {
+        /// Archive directory containing the persisted run and checkpoint blob.
+        #[arg(long)]
+        archive: PathBuf,
+        /// Existing run ID whose checkpoint blob will be resumed.
+        #[arg(long)]
+        from_run: String,
+    },
+    /// Evaluate an archived run against the publication gate and atomically advance the published pointer.
+    Publish {
+        /// Archive directory containing the persisted run.
+        #[arg(long)]
+        archive: PathBuf,
+        /// Run ID to evaluate for publication.
+        #[arg(long)]
+        run_id: String,
+        /// Cycle identifier.
+        #[arg(long)]
+        cycle_id: String,
+        /// Strictly increasing cycle sequence number.
+        #[arg(long)]
+        cycle_sequence: u64,
+        /// Valid-from Unix timestamp in seconds.
+        #[arg(long)]
+        valid_from_unix_s: i64,
+        /// Expiry Unix timestamp in seconds.
+        #[arg(long)]
+        expires_at_unix_s: i64,
+        /// Current Unix timestamp in seconds used for expiry checking.
+        #[arg(long)]
+        now_unix_s: i64,
+        /// Declare scientific review approval.
+        #[arg(long)]
+        scientific_approved: bool,
+        /// Declare owner publication approval.
+        #[arg(long)]
+        owner_approved: bool,
     },
 }
 
@@ -162,6 +201,136 @@ fn execute(command: Command) -> Result<(), String> {
             baseline,
             intervention,
         } => run_paired_comparison(baseline, intervention),
+        Command::Resume { archive, from_run } => run_resume_check(archive, from_run),
+        Command::Publish {
+            archive,
+            run_id,
+            cycle_id,
+            cycle_sequence,
+            valid_from_unix_s,
+            expires_at_unix_s,
+            now_unix_s,
+            scientific_approved,
+            owner_approved,
+        } => run_publish(
+            archive,
+            run_id,
+            cycle_id,
+            cycle_sequence,
+            valid_from_unix_s,
+            expires_at_unix_s,
+            now_unix_s,
+            scientific_approved,
+            owner_approved,
+        ),
+    }
+}
+
+fn run_resume_check(archive_path: PathBuf, from_run: String) -> Result<(), String> {
+    let archive = Archive::open(&archive_path).map_err(|error| error.to_string())?;
+    let store = RunStore::new(&archive);
+    let record = store
+        .get_run(&from_run)
+        .map_err(|error| error.to_string())?
+        .ok_or_else(|| format!("run {from_run:?} not found in archive"))?;
+    let blob = record
+        .checkpoint_blob
+        .ok_or_else(|| format!("run {from_run:?} has no persisted checkpoint blob"))?;
+    let bytes = archive
+        .read_blob(&blob.sha256)
+        .map_err(|error| error.to_string())?;
+    let package = package_from_bytes(bytes).map_err(|error| error.to_string())?;
+    let engine = SurfaceEngine::resume_retained(&package).map_err(|error| error.to_string())?;
+    let round_trip = engine.checkpoint().map_err(|error| error.to_string())?;
+    let bitwise_match = round_trip.payload == package.payload;
+    if !bitwise_match {
+        return Err("resumed checkpoint payload diverged from archived blob".to_owned());
+    }
+    let summary = serde_json::json!({
+        "run_id": from_run,
+        "schema": package.header.schema,
+        "contract": package.header.contract,
+        "accepted_time_s": engine.time_s(),
+        "accepted_steps": package.header.accepted_steps,
+        "bitwise_match": bitwise_match,
+        "budget": engine.water_budget(),
+    });
+    let json = serde_json::to_string_pretty(&summary).map_err(|error| error.to_string())?;
+    println!("{json}");
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+fn run_publish(
+    archive_path: PathBuf,
+    run_id: String,
+    cycle_id: String,
+    cycle_sequence: u64,
+    valid_from_unix_s: i64,
+    expires_at_unix_s: i64,
+    now_unix_s: i64,
+    scientific_approved: bool,
+    owner_approved: bool,
+) -> Result<(), String> {
+    let archive = Archive::open(&archive_path).map_err(|error| error.to_string())?;
+    let store = RunStore::new(&archive);
+    let record = store
+        .get_run(&run_id)
+        .map_err(|error| error.to_string())?
+        .ok_or_else(|| format!("run {run_id:?} not found in archive"))?;
+    let current = store
+        .load_published()
+        .map_err(|error| error.to_string())?
+        .map(|pointer| arus_forecasting::PublicationManifest {
+            cycle_id: pointer.cycle_id,
+            cycle_sequence: pointer.cycle_sequence,
+            run_id: pointer.run_id,
+            valid_from_unix_s: pointer.valid_from_unix_s,
+            expires_at_unix_s: pointer.expires_at_unix_s,
+            supersedes_cycle_id: pointer.supersedes_cycle_id,
+        });
+
+    let candidate = PublicationCandidate {
+        cycle_id,
+        cycle_sequence,
+        run_id,
+        classification: record.provenance.classification,
+        execution_outcome: AdvanceOutcome::ReachedTarget,
+        numerical_assessment_passed: record.conservation_passed,
+        scientific_approval: if scientific_approved {
+            ApprovalStatus::Approved
+        } else {
+            ApprovalStatus::Pending
+        },
+        owner_approval: if owner_approved {
+            ApprovalStatus::Approved
+        } else {
+            ApprovalStatus::Pending
+        },
+        valid_from_unix_s,
+        expires_at_unix_s,
+    };
+
+    let decision = evaluate_publication(&candidate, current.as_ref(), now_unix_s);
+    if let PublicationDecision::Published(ref manifest) = decision {
+        store
+            .set_published(&PublishedPointer {
+                cycle_id: manifest.cycle_id.clone(),
+                cycle_sequence: manifest.cycle_sequence,
+                run_id: manifest.run_id.clone(),
+                valid_from_unix_s: manifest.valid_from_unix_s,
+                expires_at_unix_s: manifest.expires_at_unix_s,
+                supersedes_cycle_id: manifest.supersedes_cycle_id.clone(),
+            })
+            .map_err(|error| error.to_string())?;
+    }
+    let json = serde_json::to_string_pretty(&decision).map_err(|error| error.to_string())?;
+    println!("{json}");
+    match decision {
+        PublicationDecision::Published(_) => Ok(()),
+        PublicationDecision::Refused { reasons } => {
+            Err(format!("publication refused: {}", reasons.join(", ")))
+        }
     }
 }
 

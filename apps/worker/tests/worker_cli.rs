@@ -252,3 +252,74 @@ fn worker_compare_runs_paired_baseline_vs_pervious_intervention() -> Result<(), 
     );
     Ok(())
 }
+
+#[test]
+fn worker_resume_verifies_archived_checkpoint_and_publish_gates_demonstrations()
+-> Result<(), String> {
+    let temp = TempDir::new().map_err(|e| e.to_string())?;
+    let archive_arg = temp
+        .path()
+        .to_str()
+        .ok_or_else(|| "non-utf8 temp path".to_owned())?;
+
+    let outlook_out = Command::new(env!("CARGO_BIN_EXE_arus-worker"))
+        .args([
+            "outlook",
+            "--run-id",
+            "resume-run-1",
+            "--archive",
+            archive_arg,
+        ])
+        .output()
+        .map_err(|e| e.to_string())?;
+    assert!(outlook_out.status.success());
+
+    let resume_out = Command::new(env!("CARGO_BIN_EXE_arus-worker"))
+        .args([
+            "resume",
+            "--archive",
+            archive_arg,
+            "--from-run",
+            "resume-run-1",
+        ])
+        .output()
+        .map_err(|e| e.to_string())?;
+    assert!(
+        resume_out.status.success(),
+        "resume failed: {}",
+        String::from_utf8_lossy(&resume_out.stderr)
+    );
+    let resume_json: serde_json::Value =
+        serde_json::from_slice(&resume_out.stdout).map_err(|e| e.to_string())?;
+    assert_eq!(resume_json["bitwise_match"], true);
+    assert_eq!(resume_json["accepted_time_s"], 60.0);
+
+    // Numerical demonstrations MUST be refused by the publication gate even with approval flags.
+    let pub_out = Command::new(env!("CARGO_BIN_EXE_arus-worker"))
+        .args([
+            "publish",
+            "--archive",
+            archive_arg,
+            "--run-id",
+            "resume-run-1",
+            "--cycle-id",
+            "cycle-1",
+            "--cycle-sequence",
+            "1",
+            "--valid-from-unix-s",
+            "1000",
+            "--expires-at-unix-s",
+            "5000",
+            "--now-unix-s",
+            "2000",
+            "--scientific-approved",
+            "--owner-approved",
+        ])
+        .output()
+        .map_err(|e| e.to_string())?;
+    assert!(!pub_out.status.success());
+    let pub_json: serde_json::Value =
+        serde_json::from_slice(&pub_out.stdout).map_err(|e| e.to_string())?;
+    assert_eq!(pub_json["status"], "refused");
+    Ok(())
+}
