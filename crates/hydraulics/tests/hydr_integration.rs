@@ -235,3 +235,128 @@ fn surface_probes_feed_forecasting_episode_tracker() -> Result<(), String> {
     assert_eq!(outside_evo.max_depth_m, None);
     Ok(())
 }
+
+#[test]
+fn all_component_capabilities_cover_all_hydr_modules() {
+    let all = arus_hydraulics::all_component_capabilities();
+    assert_eq!(all.len(), 23);
+    let unique: std::collections::BTreeSet<&str> =
+        all.iter().map(|c| c.component.as_str()).collect();
+    assert_eq!(unique.len(), 23);
+    assert!(unique.contains("surface-solver"));
+    assert!(unique.contains("soil"));
+    assert!(unique.contains("channel-reach-surveyed"));
+    assert!(unique.contains("surface-channels"));
+    assert!(unique.contains("swmm-drainage"));
+    assert!(unique.contains("surface-drainage"));
+}
+
+#[test]
+fn pervious_modified_green_ampt_surface_conserves_and_resumes_bitwise() -> Result<(), String> {
+    use arus_hydraulics::SurfaceEngine;
+    use arus_jobs::StepBudget;
+    use hydr::capability::{BoundaryKind, SourceKind};
+    use hydr::grid::CartesianGrid;
+    use hydr::model::{CellState, Domain, FlowState, SpatialReference};
+    use hydr::soil::{LandCell, LandModel, ModifiedGreenAmptParameters, SoilState};
+    use hydr::solver::{
+        BoundaryConditions, ForcingInterval, ForcingSchedule, InitialState, SolverConfig,
+        SolverSetup,
+    };
+
+    arus_hydraulics::check_surface_admission(
+        &[BoundaryKind::Wall],
+        &[SourceKind::Rain, SourceKind::ModifiedGreenAmpt],
+    )
+    .map_err(|e| e.to_string())?;
+
+    let build = || -> Result<SurfaceEngine, String> {
+        let grid = CartesianGrid::new(3, 3, 10.0, 10.0).map_err(|e| e.to_string())?;
+        let n = grid.cell_count();
+        let reference = SpatialReference::new(
+            "synthetic metric plane".to_owned(),
+            "synthetic datum".to_owned(),
+            [0.0, 0.0],
+        )
+        .map_err(|e| e.to_string())?;
+        let domain = Domain::new(grid, vec![0.0; n], vec![0.03; n], vec![true; n], reference)
+            .map_err(|e| e.to_string())?;
+        let soil_params =
+            ModifiedGreenAmptParameters::from_si(0.11, 3.0e-6, 0.25).map_err(|e| e.to_string())?;
+        let land = LandModel::new(&domain, vec![LandCell::ModifiedGreenAmpt(soil_params); n])
+            .map_err(|e| e.to_string())?;
+        let soil = SoilState::initialized(&land).map_err(|e| e.to_string())?;
+        let flow =
+            FlowState::new(&domain, vec![CellState::default(); n]).map_err(|e| e.to_string())?;
+        let boundaries = BoundaryConditions::impermeable_walls();
+        let forcing = ForcingSchedule::new(
+            &domain,
+            &boundaries,
+            vec![
+                ForcingInterval {
+                    start: 0.0,
+                    end: 30.0,
+                    rain: vec![2e-5; n],
+                    potential_evaporation: vec![0.0; n],
+                    withdrawal: vec![0.0; n],
+                    boundaries: Vec::new(),
+                },
+                ForcingInterval {
+                    start: 30.0,
+                    end: 60.0,
+                    rain: vec![0.0; n],
+                    potential_evaporation: vec![0.0; n],
+                    withdrawal: vec![0.0; n],
+                    boundaries: Vec::new(),
+                },
+            ],
+        )
+        .map_err(|e| e.to_string())?;
+        SurfaceEngine::new(
+            SolverSetup {
+                domain,
+                land,
+                boundaries,
+                forcing,
+                config: SolverConfig::default(),
+            },
+            InitialState {
+                time: 0.0,
+                flow,
+                soil,
+            },
+        )
+        .map_err(|e| e.to_string())
+    };
+
+    let mut uninterrupted = build()?;
+    uninterrupted
+        .advance_to(30.0, StepBudget::new(10_000))
+        .map_err(|e| e.to_string())?;
+    uninterrupted
+        .advance_to(60.0, StepBudget::new(10_000))
+        .map_err(|e| e.to_string())?;
+
+    let mut split = build()?;
+    split
+        .advance_to(30.0, StepBudget::new(10_000))
+        .map_err(|e| e.to_string())?;
+    let checkpoint = split.checkpoint().map_err(|e| e.to_string())?;
+    let mut resumed = SurfaceEngine::resume_retained(&checkpoint).map_err(|e| e.to_string())?;
+    resumed
+        .advance_to(60.0, StepBudget::new(10_000))
+        .map_err(|e| e.to_string())?;
+
+    assert_eq!(
+        uninterrupted
+            .checkpoint()
+            .map_err(|e| e.to_string())?
+            .payload,
+        resumed.checkpoint().map_err(|e| e.to_string())?.payload
+    );
+    let budget = resumed.water_budget();
+    assert!(budget.outputs_m3 > 0.0, "expected positive infiltration");
+    assert!(budget.within_residual_bound());
+    assert!(budget.within_adjustment_limit());
+    Ok(())
+}

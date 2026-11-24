@@ -4,7 +4,9 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 
 use arus_assets::Archive;
-use arus_hydraulics::{run_closed_basin_demo, run_native_worker_demo, surface_capabilities};
+use arus_hydraulics::{
+    all_component_capabilities, run_closed_basin_demo, run_native_worker_demo, surface_capabilities,
+};
 use clap::{Parser, Subcommand};
 
 #[derive(Debug, Parser)]
@@ -16,8 +18,12 @@ struct Arguments {
 
 #[derive(Debug, Subcommand)]
 enum Command {
-    /// Print surface-solver capability declarations from hydr.
-    Capabilities,
+    /// Print capability declarations from hydr.
+    Capabilities {
+        /// Print all 23 hydr component declarations instead of only the F64 surface solver.
+        #[arg(long)]
+        all: bool,
+    },
     /// Run synthetic CPU F64 numerical demonstrations and check conservation and replay.
     Demo {
         /// Optional archive directory for persisting exact binary checkpoints.
@@ -39,9 +45,13 @@ fn main() -> ExitCode {
 
 fn execute(command: Command) -> Result<(), String> {
     match command {
-        Command::Capabilities => {
-            let caps = surface_capabilities();
-            let json = serde_json::to_string_pretty(&caps).map_err(|error| error.to_string())?;
+        Command::Capabilities { all } => {
+            let json = if all {
+                serde_json::to_string_pretty(&all_component_capabilities())
+            } else {
+                serde_json::to_string_pretty(&surface_capabilities())
+            }
+            .map_err(|error| error.to_string())?;
             println!("{json}");
             Ok(())
         }

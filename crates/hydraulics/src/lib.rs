@@ -9,7 +9,7 @@ pub mod demo;
 pub mod runtime;
 pub mod surface;
 
-pub use capabilities::{check_surface_admission, surface_capabilities};
+pub use capabilities::{all_component_capabilities, check_surface_admission, surface_capabilities};
 pub use codec::{decode_snapshot, encode_snapshot};
 pub use demo::{
     ClosedBasinDemoReport, NativeWorkerDemoReport, run_closed_basin_demo, run_native_worker_demo,

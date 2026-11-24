@@ -1,27 +1,48 @@
-//! Mapping and admission checks against `hydr::solver::surface_solver_capabilities()`.
+//! Mapping and admission checks against `hydr` component capability declarations.
 
 use arus_model_api::{
     BackendCapabilities, CapabilityLimitSummary, ModelError, Result, RuntimeSupportSummary,
 };
 use hydr::capability::{
-    BoundaryKind, EndpointId, Precision, RuntimeKind, RuntimeStatus, SourceKind,
+    BoundaryKind, ComponentCapabilities, EndpointId, Precision, RuntimeKind, RuntimeStatus,
+    SourceKind,
 };
-use hydr::solver::{CONTRACT_VERSION, SNAPSHOT_SCHEMA, surface_solver_capabilities};
+use hydr::channel::{
+    rectangular_reach_capabilities, surveyed_reach_capabilities, triangular_reach_capabilities,
+};
+use hydr::coupling::{
+    channel_pool_capabilities, coupled_level_pool_capabilities, runoff_pool_capabilities,
+    surface_channel_capabilities, surface_drainage_capabilities,
+};
+use hydr::drainage::swmm_drainage_capabilities;
+use hydr::runoff::{reservoir_capabilities, subcatchment_capabilities};
+use hydr::soil::soil_capabilities;
+use hydr::solver::{
+    CONTRACT_VERSION, SNAPSHOT_SCHEMA, surface_solver_capabilities, surface_solver_f32_capabilities,
+};
+use hydr::storage::level_pool_capabilities;
+use hydr::structures::{
+    controlled_gate_capabilities, controlled_pump_capabilities, culvert_barrel_capabilities,
+    culvert_capabilities, culvert_inlet_capabilities, culvert_outlet_capabilities,
+    gate_actuator_capabilities, operating_control_capabilities,
+};
 
-/// Returns the ARUS capability summary for `hydr`'s 2D shallow-water `F64` surface solver.
-pub fn surface_capabilities() -> BackendCapabilities {
-    let caps = surface_solver_capabilities();
-    let boundaries = caps
-        .endpoints
-        .iter()
-        .filter(|endpoint| endpoint.id == EndpointId::ExteriorFace)
-        .flat_map(|endpoint| endpoint.admitted.iter().map(|kind| kind.id().to_owned()))
-        .collect();
+/// Maps any `hydr` component capability declaration into an ARUS `BackendCapabilities` summary.
+pub fn map_component_capabilities(caps: &ComponentCapabilities) -> BackendCapabilities {
+    let mut boundaries = Vec::new();
+    for endpoint in caps.endpoints {
+        for kind in endpoint.admitted {
+            let id = kind.id().to_owned();
+            if !boundaries.contains(&id) {
+                boundaries.push(id);
+            }
+        }
+    }
     BackendCapabilities {
         backend: "hydr".to_owned(),
         component: caps.component.id().to_owned(),
-        contract: caps.contract.unwrap_or(CONTRACT_VERSION).to_owned(),
-        snapshot_schema: caps.snapshot_schema.unwrap_or(SNAPSHOT_SCHEMA).to_owned(),
+        contract: caps.contract.unwrap_or("unversioned").to_owned(),
+        snapshot_schema: caps.snapshot_schema.unwrap_or("none").to_owned(),
         precision: caps
             .precision
             .iter()
@@ -50,6 +71,43 @@ pub fn surface_capabilities() -> BackendCapabilities {
             })
             .collect(),
     }
+}
+
+/// Returns the ARUS capability summary for `hydr`'s 2D shallow-water `F64` surface solver.
+pub fn surface_capabilities() -> BackendCapabilities {
+    map_component_capabilities(surface_solver_capabilities())
+}
+
+/// Returns the complete capability catalog across all `hydr 0.1.0` components.
+pub fn all_component_capabilities() -> Vec<BackendCapabilities> {
+    [
+        surface_solver_capabilities(),
+        surface_solver_f32_capabilities(),
+        soil_capabilities(),
+        rectangular_reach_capabilities(),
+        triangular_reach_capabilities(),
+        surveyed_reach_capabilities(),
+        level_pool_capabilities(),
+        subcatchment_capabilities(),
+        reservoir_capabilities(),
+        operating_control_capabilities(),
+        gate_actuator_capabilities(),
+        controlled_gate_capabilities(),
+        controlled_pump_capabilities(),
+        culvert_barrel_capabilities(),
+        culvert_inlet_capabilities(),
+        culvert_outlet_capabilities(),
+        culvert_capabilities(),
+        coupled_level_pool_capabilities(),
+        channel_pool_capabilities(),
+        runoff_pool_capabilities(),
+        surface_channel_capabilities(),
+        swmm_drainage_capabilities(),
+        surface_drainage_capabilities(),
+    ]
+    .into_iter()
+    .map(map_component_capabilities)
+    .collect()
 }
 
 /// Refuses execution unless `hydr`'s surface solver admits every required boundary, source,
