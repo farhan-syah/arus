@@ -7,7 +7,9 @@ use hydr::capability::{BoundaryKind, SourceKind};
 use hydr::model::{CellState, FlowState};
 use hydr::soil::{LandCell, LandModel, ModifiedGreenAmptParameters, SoilState};
 use hydr::solver::{
-    BoundaryConditions, ForcingInterval, ForcingSchedule, InitialState, SolverConfig, SolverSetup,
+    Axis, BoundaryConditions, BoundaryFace, BoundaryForcing, DischargeBoundary, ExteriorBoundary,
+    ExteriorState, FluxPort, ForcingInterval, ForcingSchedule, InitialState, SolverConfig,
+    SolverSetup, StageBoundary,
 };
 use serde::{Deserialize, Serialize};
 
@@ -26,12 +28,144 @@ pub enum LandSpec {
     },
 }
 
-/// Piecewise-constant uniform rainfall interval over active cells.
-#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+/// Grid face normal direction for an open exterior boundary.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum BoundaryAxisSpec {
+    X,
+    Y,
+}
+
+/// Exterior face coordinate in the Cartesian grid.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BoundaryFaceSpec {
+    pub axis: BoundaryAxisSpec,
+    pub column: usize,
+    pub row: usize,
+}
+
+impl BoundaryFaceSpec {
+    fn to_hydr(self) -> BoundaryFace {
+        BoundaryFace {
+            axis: match self.axis {
+                BoundaryAxisSpec::X => Axis::X,
+                BoundaryAxisSpec::Y => Axis::Y,
+            },
+            column: self.column,
+            row: self.row,
+        }
+    }
+}
+
+/// Physical boundary condition supplied on one declared open face during a forcing interval.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "kebab-case")]
+pub enum BoundaryForcingSpec {
+    Stage {
+        face: BoundaryFaceSpec,
+        elevation_m: f64,
+        inflow_tangential_velocity_m_s: Option<f64>,
+    },
+    Discharge {
+        face: BoundaryFaceSpec,
+        outward_rate_m3_per_s: f64,
+        inflow_tangential_velocity_m_s: Option<f64>,
+    },
+    ExteriorDry {
+        face: BoundaryFaceSpec,
+    },
+    ExteriorWet {
+        face: BoundaryFaceSpec,
+        elevation_m: f64,
+        outward_velocity_m_s: f64,
+        tangential_velocity_m_s: f64,
+    },
+    Transmissive {
+        face: BoundaryFaceSpec,
+    },
+    FluxPort {
+        face: BoundaryFaceSpec,
+        water_rate_m3_per_s: f64,
+        momentum_rate: [f64; 2],
+        signal_speed_m_s: f64,
+        provenance: String,
+    },
+}
+
+impl BoundaryForcingSpec {
+    fn boundary_kind(&self) -> BoundaryKind {
+        match self {
+            Self::Stage { .. } => BoundaryKind::Stage,
+            Self::Discharge { .. } => BoundaryKind::Discharge,
+            Self::ExteriorDry { .. } | Self::ExteriorWet { .. } => BoundaryKind::Exterior,
+            Self::Transmissive { .. } => BoundaryKind::Transmissive,
+            Self::FluxPort { .. } => BoundaryKind::FluxPort,
+        }
+    }
+
+    fn to_hydr(&self) -> BoundaryForcing {
+        match self {
+            Self::Stage {
+                face,
+                elevation_m,
+                inflow_tangential_velocity_m_s,
+            } => BoundaryForcing::Stage(StageBoundary {
+                face: face.to_hydr(),
+                elevation: *elevation_m,
+                inflow_tangential_velocity: *inflow_tangential_velocity_m_s,
+            }),
+            Self::Discharge {
+                face,
+                outward_rate_m3_per_s,
+                inflow_tangential_velocity_m_s,
+            } => BoundaryForcing::Discharge(DischargeBoundary {
+                face: face.to_hydr(),
+                outward_rate: *outward_rate_m3_per_s,
+                inflow_tangential_velocity: *inflow_tangential_velocity_m_s,
+            }),
+            Self::ExteriorDry { face } => BoundaryForcing::Exterior(ExteriorBoundary {
+                face: face.to_hydr(),
+                state: ExteriorState::Dry,
+            }),
+            Self::ExteriorWet {
+                face,
+                elevation_m,
+                outward_velocity_m_s,
+                tangential_velocity_m_s,
+            } => BoundaryForcing::Exterior(ExteriorBoundary {
+                face: face.to_hydr(),
+                state: ExteriorState::Wet {
+                    elevation: *elevation_m,
+                    outward_velocity: *outward_velocity_m_s,
+                    tangential_velocity: *tangential_velocity_m_s,
+                },
+            }),
+            Self::Transmissive { face } => BoundaryForcing::Transmissive(face.to_hydr()),
+            Self::FluxPort {
+                face,
+                water_rate_m3_per_s,
+                momentum_rate,
+                signal_speed_m_s,
+                provenance,
+            } => BoundaryForcing::Flux(FluxPort {
+                face: face.to_hydr(),
+                water_rate: *water_rate_m3_per_s,
+                momentum_rate: *momentum_rate,
+                signal_speed: *signal_speed_m_s,
+                provenance: provenance.clone(),
+            }),
+        }
+    }
+}
+
+/// Piecewise-constant uniform rainfall and open-boundary forcing interval over active cells.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct RainIntervalSpec {
     pub start_s: f64,
     pub end_s: f64,
     pub uniform_rain_m_per_s: f64,
+    #[serde(default)]
+    pub boundaries: Vec<BoundaryForcingSpec>,
 }
 
 /// Named coordinate probe declared in a run manifest.
@@ -42,7 +176,7 @@ pub struct ProbeSpec {
     pub y_m: f64,
 }
 
-/// Complete manifest-driven closed-basin surface simulation specification.
+/// Complete manifest-driven surface simulation specification supporting walls and open boundaries.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SurfaceRunSpec {
     pub run_id: String,
@@ -51,6 +185,8 @@ pub struct SurfaceRunSpec {
     pub uniform_manning_n: f64,
     pub land: LandSpec,
     pub initial_depth_m: f64,
+    #[serde(default)]
+    pub open_faces: Vec<BoundaryFaceSpec>,
     pub forcing: Vec<RainIntervalSpec>,
     pub target_time_s: f64,
     pub max_steps: usize,
@@ -69,7 +205,16 @@ impl SurfaceRunSpec {
                 [SourceKind::Rain, SourceKind::ModifiedGreenAmpt]
             }
         };
-        check_surface_admission(&[BoundaryKind::Wall], &required_sources)?;
+        let mut required_boundaries = vec![BoundaryKind::Wall];
+        for interval in &self.forcing {
+            for boundary in &interval.boundaries {
+                let kind = boundary.boundary_kind();
+                if !required_boundaries.contains(&kind) {
+                    required_boundaries.push(kind);
+                }
+            }
+        }
+        check_surface_admission(&required_boundaries, &required_sources)?;
 
         let n =
             self.terrain.grid().cell_count().ok_or_else(|| {
@@ -125,7 +270,18 @@ impl SurfaceRunSpec {
         let flow = FlowState::new(&domain, flow_cells)
             .map_err(|error| ModelError::InvalidInput(error.to_string()))?;
 
-        let boundaries = BoundaryConditions::impermeable_walls();
+        let boundaries = if self.open_faces.is_empty() {
+            BoundaryConditions::impermeable_walls()
+        } else {
+            let faces = self
+                .open_faces
+                .iter()
+                .copied()
+                .map(BoundaryFaceSpec::to_hydr)
+                .collect();
+            BoundaryConditions::with_open_faces(&domain, faces)
+                .map_err(|error| ModelError::InvalidInput(error.to_string()))?
+        };
         let intervals: Vec<ForcingInterval> = self
             .forcing
             .iter()
@@ -144,7 +300,11 @@ impl SurfaceRunSpec {
                     .collect(),
                 potential_evaporation: vec![0.0; n],
                 withdrawal: vec![0.0; n],
-                boundaries: Vec::new(),
+                boundaries: item
+                    .boundaries
+                    .iter()
+                    .map(BoundaryForcingSpec::to_hydr)
+                    .collect(),
             })
             .collect();
         let forcing = ForcingSchedule::new(&domain, &boundaries, intervals)

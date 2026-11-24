@@ -439,3 +439,79 @@ fn terrain_grid_nodata_maps_to_unsupported_hydr_cell() -> Result<(), String> {
     );
     Ok(())
 }
+
+#[test]
+fn open_stage_boundary_surface_run_spec_executes_and_conserves() -> Result<(), String> {
+    use arus_domain::{GridSpec, RunClassification, SpatialReference};
+    use arus_geo::TerrainGrid;
+    use arus_hydraulics::{
+        BoundaryAxisSpec, BoundaryFaceSpec, BoundaryForcingSpec, LandSpec, ProbeSpec,
+        RainIntervalSpec, SurfaceRunSpec,
+    };
+    use arus_jobs::StepBudget;
+
+    let terrain = TerrainGrid::new(
+        GridSpec {
+            columns: 3,
+            rows: 1,
+            dx_m: 10.0,
+            dy_m: 10.0,
+        },
+        SpatialReference {
+            projected_crs: "EPSG:3375".to_owned(),
+            vertical_datum: "NGVD-MY".to_owned(),
+            origin_m: [0.0, 0.0],
+        },
+        "synthetic open-boundary test",
+        vec![Some(0.0); 3],
+    )
+    .map_err(|e| e.to_string())?;
+
+    let outlet = BoundaryFaceSpec {
+        axis: BoundaryAxisSpec::X,
+        column: 3,
+        row: 0,
+    };
+    let spec = SurfaceRunSpec {
+        run_id: "open-stage-1".to_owned(),
+        classification: RunClassification::NumericalDemonstration,
+        terrain,
+        uniform_manning_n: 0.03,
+        land: LandSpec::UniformImpervious,
+        initial_depth_m: 1.0,
+        open_faces: vec![outlet],
+        forcing: vec![RainIntervalSpec {
+            start_s: 0.0,
+            end_s: 2.0,
+            uniform_rain_m_per_s: 0.0,
+            boundaries: vec![BoundaryForcingSpec::Stage {
+                face: outlet,
+                elevation_m: 0.9,
+                inflow_tangential_velocity_m_s: Some(0.0),
+            }],
+        }],
+        target_time_s: 2.0,
+        max_steps: 10_000,
+        probes: vec![ProbeSpec {
+            id: "near-outlet".to_owned(),
+            x_m: 25.0,
+            y_m: 5.0,
+        }],
+        threshold_m: 0.5,
+        hysteresis_m: 0.0,
+        recession_persistence_s: 1.0,
+    };
+
+    let mut engine = spec.build_engine().map_err(|e| e.to_string())?;
+    engine
+        .advance_to(2.0, StepBudget::new(10_000))
+        .map_err(|e| e.to_string())?;
+    let budget = engine.water_budget();
+    assert!(
+        budget.outputs_m3 > 0.0,
+        "expected outward drainage through stage boundary"
+    );
+    assert!(budget.within_residual_bound());
+    assert!(budget.within_adjustment_limit());
+    Ok(())
+}
