@@ -144,6 +144,8 @@ function initMap() {
 function setBasemap(mode) {
   if (state.basemap === mode) return;
   state.basemap = mode;
+  layersReady = false;
+  lastRasterKey = '';
   document.documentElement.dataset.theme = mode === 'topo' ? 'light' : 'dark';
   document.querySelectorAll('[data-basemap]').forEach((el) => {
     el.classList.toggle('active', el.dataset.basemap === mode);
@@ -516,9 +518,12 @@ function renderFloodCanvas(forceRaster) {
     });
   }
 
-  map.getSource('arus-particles').setData({ type: 'FeatureCollection', features: particleFeatures });
-  map.getSource('arus-iv-polys').setData({ type: 'FeatureCollection', features: ivFeatures });
-  map.getSource('arus-xsec').setData({ type: 'FeatureCollection', features: xsecFeatures });
+  const pSrc = map.getSource('arus-particles');
+  const ivSrc = map.getSource('arus-iv-polys');
+  const xSrc = map.getSource('arus-xsec');
+  if (pSrc) pSrc.setData({ type: 'FeatureCollection', features: particleFeatures });
+  if (ivSrc) ivSrc.setData({ type: 'FeatureCollection', features: ivFeatures });
+  if (xSrc) xSrc.setData({ type: 'FeatureCollection', features: xsecFeatures });
 }
 
 function lngLatToCell(lon, lat) {
