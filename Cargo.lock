@@ -64,6 +64,7 @@ dependencies = [
  "arus-jobs",
  "arus-scenarios",
  "arus-storage",
+ "arus-web",
  "axum",
  "clap",
  "serde",

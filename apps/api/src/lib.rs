@@ -6,11 +6,13 @@ use std::sync::Arc;
 use arus_api_types::{API_SCHEMA_VERSION, ApiLocationOutlook};
 use arus_assets::Archive;
 use arus_storage::{RunIndex, RunRecord, RunStore};
-use axum::extract::{Path, State};
+use arus_web::{Locale, render_outlook_html};
+use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
+use axum::response::Html;
 use axum::routing::get;
 use axum::{Json, Router};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 /// Shared state backing the ARUS API router.
 #[derive(Debug, Clone)]
@@ -38,13 +40,19 @@ struct ErrorResponse {
     error: String,
 }
 
-/// Builds the Axum router with all public ARUS endpoints.
+#[derive(Debug, Deserialize)]
+struct LangQuery {
+    lang: Option<String>,
+}
+
+/// Builds the Axum router with all public ARUS JSON and HTML endpoints.
 pub fn router(state: ApiState) -> Router {
     Router::new()
         .route("/health", get(health))
         .route("/api/v1/runs", get(list_runs))
         .route("/api/v1/runs/{run_id}", get(get_run))
         .route("/api/v1/runs/{run_id}/outlook", get(get_run_outlook))
+        .route("/runs/{run_id}", get(render_run_html))
         .with_state(state)
 }
 
@@ -93,6 +101,39 @@ async fn get_run_outlook(
     let outlooks: Vec<ApiLocationOutlook> =
         serde_json::from_slice(&bytes).map_err(internal_error)?;
     Ok(Json(outlooks))
+}
+
+async fn render_run_html(
+    State(state): State<ApiState>,
+    Path(run_id): Path<String>,
+    Query(query): Query<LangQuery>,
+) -> Result<Html<String>, (StatusCode, Json<ErrorResponse>)> {
+    let store = RunStore::new(&state.archive);
+    let Some(record) = store.get_run(&run_id).map_err(internal_error)? else {
+        return Err(not_found(format!("run {run_id} not found")));
+    };
+    let Some(blob) = record.outlook_blob else {
+        return Err(not_found(format!("run {run_id} has no persisted outlook")));
+    };
+    let bytes = state
+        .archive
+        .read_blob(&blob.sha256)
+        .map_err(internal_error)?;
+    let outlooks: Vec<ApiLocationOutlook> =
+        serde_json::from_slice(&bytes).map_err(internal_error)?;
+    let locale = match query.lang.as_deref() {
+        Some("bm" | "ms") => Locale::BahasaMalaysia,
+        _ => Locale::English,
+    };
+    let cards: String = outlooks
+        .iter()
+        .map(|outlook| render_outlook_html(outlook, locale))
+        .collect();
+    let html = format!(
+        "<!doctype html><html><head><meta charset=\"utf-8\"><title>ARUS {run_id}</title></head>\
+         <body><main>{cards}</main></body></html>"
+    );
+    Ok(Html(html))
 }
 
 fn not_found(message: String) -> (StatusCode, Json<ErrorResponse>) {

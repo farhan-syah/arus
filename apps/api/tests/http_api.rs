@@ -95,6 +95,24 @@ async fn api_serves_health_runs_and_outlooks_from_archive() -> Result<(), String
         serde_json::from_slice(&outlook_body).map_err(|e| e.to_string())?;
     assert_eq!(decoded, outlooks);
 
+    let html_resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/runs/api-run-1?lang=bm")
+                .body(Body::empty())
+                .map_err(|e| e.to_string())?,
+        )
+        .await
+        .map_err(|e| e.to_string())?;
+    assert_eq!(html_resp.status(), StatusCode::OK);
+    let html_bytes = to_bytes(html_resp.into_body(), 1024 * 1024)
+        .await
+        .map_err(|e| e.to_string())?;
+    let html = String::from_utf8(html_bytes.to_vec()).map_err(|e| e.to_string())?;
+    assert!(html.contains("Demonstrasi berangka"));
+    assert!(html.contains("basin-center"));
+
     let missing_resp = app
         .oneshot(
             Request::builder()
