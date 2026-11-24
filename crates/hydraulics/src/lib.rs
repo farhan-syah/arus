@@ -9,10 +9,12 @@ pub mod codec;
 pub mod coupled;
 pub mod coupled_spec;
 pub mod demo;
+pub mod drainage;
 pub mod pools;
 pub mod runtime;
 pub mod spec;
 pub mod surface;
+pub mod surface_f32;
 
 pub use capabilities::{all_component_capabilities, check_surface_admission, surface_capabilities};
 pub use codec::{decode_snapshot, encode_snapshot, package_from_bytes};
@@ -22,6 +24,10 @@ pub use coupled_spec::{
 };
 pub use demo::{
     ClosedBasinDemoReport, NativeWorkerDemoReport, run_closed_basin_demo, run_native_worker_demo,
+};
+pub use drainage::{
+    DrainageControlSpec, DrainageSurchargeSpec, SwmmDrainageCheckReport, SwmmDrainageEngine,
+    SwmmDrainageSpec,
 };
 pub use pools::{
     CoupledPoolsEngine, LevelPoolSpec, PoolFinalState, PoolKnotSpec, PoolStructureRunReport,
@@ -33,3 +39,4 @@ pub use spec::{
     SurfaceRunSpec,
 };
 pub use surface::{LocationProbe, ProbeSample, SurfaceEngine, domain_from_terrain};
+pub use surface_f32::{SurfaceEngineF32, SurfaceF32RunReport, SurfaceF32RunSpec};
