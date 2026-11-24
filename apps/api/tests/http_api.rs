@@ -139,6 +139,24 @@ async fn api_serves_health_runs_and_outlooks_from_archive() -> Result<(), String
     assert!(index_html.contains("api-run-1"));
     assert!(index_html.contains("No operational forecast"));
 
+    let sources_html_resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/sources?lang=bm")
+                .body(Body::empty())
+                .map_err(|e| e.to_string())?,
+        )
+        .await
+        .map_err(|e| e.to_string())?;
+    assert_eq!(sources_html_resp.status(), StatusCode::OK);
+    let sources_html_bytes = to_bytes(sources_html_resp.into_body(), 1024 * 1024)
+        .await
+        .map_err(|e| e.to_string())?;
+    let sources_html = String::from_utf8(sources_html_bytes.to_vec()).map_err(|e| e.to_string())?;
+    assert!(sources_html.contains("Sumber Data Awam"));
+    assert!(sources_html.contains("met-weather-forecast"));
+
     let html_resp = app
         .clone()
         .oneshot(

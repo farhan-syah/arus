@@ -56,3 +56,15 @@ pub struct ApiLocationOutlook {
     pub max_depth_m: Option<f64>,
     pub episodes: Vec<ApiEpisodeSummary>,
 }
+
+/// Browser-safe summary of one registered data source from `catalog/sources.json`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ApiSourceSummary {
+    pub id: String,
+    pub title: String,
+    pub provider: String,
+    pub access: String,
+    pub data_class: String,
+    pub license_name: String,
+    pub coverage: String,
+}

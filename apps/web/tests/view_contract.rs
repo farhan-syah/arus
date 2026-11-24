@@ -1,8 +1,11 @@
 use arus_api_types::{
-    API_SCHEMA_VERSION, ApiEpisodeSummary, ApiLocationOutlook, ApiLocationStatus,
+    API_SCHEMA_VERSION, ApiEpisodeSummary, ApiLocationOutlook, ApiLocationStatus, ApiSourceSummary,
 };
 use arus_domain::RunClassification;
-use arus_web::{Locale, render_index_page_html, render_outlook_html, render_run_page_html};
+use arus_web::{
+    Locale, render_index_page_html, render_outlook_html, render_run_page_html,
+    render_sources_page_html,
+};
 
 #[test]
 fn bilingual_dioxus_renderer_preserves_unsupported_and_escapes_html() {
@@ -68,4 +71,20 @@ fn dioxus_pages_render_episodes_and_index_navigation() {
     );
     assert!(index.contains("Tiada ramalan operasi diterbitkan"));
     assert!(index.contains("/runs/run-42?lang=bm"));
+
+    let sources_page = render_sources_page_html(
+        &[ApiSourceSummary {
+            id: "met-weather-forecast".to_owned(),
+            title: "METMalaysia general weather forecasts".to_owned(),
+            provider: "data-gov-weather".to_owned(),
+            access: "public".to_owned(),
+            data_class: "general_guidance".to_owned(),
+            license_name: "CC BY 4.0".to_owned(),
+            coverage: "Malaysia".to_owned(),
+        }],
+        Locale::English,
+    );
+    assert!(sources_page.contains("Public Data Sources"));
+    assert!(sources_page.contains("Coverage"));
+    assert!(sources_page.contains("met-weather-forecast"));
 }

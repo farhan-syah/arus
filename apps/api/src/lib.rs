@@ -3,11 +3,11 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use arus_api_types::{API_SCHEMA_VERSION, ApiLocationOutlook};
+use arus_api_types::{API_SCHEMA_VERSION, ApiLocationOutlook, ApiSourceSummary};
 use arus_assets::Archive;
-use arus_ingest::Catalog;
+use arus_ingest::{AccessClass, Catalog, DataClass};
 use arus_storage::{PublishedPointer, RunIndex, RunRecord, RunStore};
-use arus_web::{Locale, render_index_page_html, render_run_page_html};
+use arus_web::{Locale, render_index_page_html, render_run_page_html, render_sources_page_html};
 use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use axum::response::Html;
@@ -59,6 +59,7 @@ struct LangQuery {
 pub fn router(state: ApiState) -> Router {
     Router::new()
         .route("/", get(render_index_html))
+        .route("/sources", get(render_sources_html))
         .route("/health", get(health))
         .route("/api/v1/catalog/sources", get(get_catalog_sources))
         .route("/api/v1/published", get(get_published))
@@ -67,6 +68,57 @@ pub fn router(state: ApiState) -> Router {
         .route("/api/v1/runs/{run_id}/outlook", get(get_run_outlook))
         .route("/runs/{run_id}", get(render_run_html))
         .with_state(state)
+}
+
+async fn render_sources_html(
+    State(state): State<ApiState>,
+    Query(query): Query<LangQuery>,
+) -> Result<Html<String>, (StatusCode, Json<ErrorResponse>)> {
+    let Some(path) = state.catalog_path.as_deref() else {
+        return Err(not_found(
+            "no public source catalog is configured".to_owned(),
+        ));
+    };
+    let catalog = Catalog::load(path).map_err(internal_error)?;
+    let summaries: Vec<ApiSourceSummary> = catalog
+        .sources
+        .into_iter()
+        .map(|s| ApiSourceSummary {
+            id: s.id,
+            title: s.title,
+            provider: s.provider,
+            access: access_label(s.access).to_owned(),
+            data_class: data_class_label(s.data_class).to_owned(),
+            license_name: s.license.name,
+            coverage: s.coverage,
+        })
+        .collect();
+    let locale = parse_locale(query.lang.as_deref());
+    Ok(Html(render_sources_page_html(&summaries, locale)))
+}
+
+const fn access_label(access: AccessClass) -> &'static str {
+    match access {
+        AccessClass::Public => "public",
+        AccessClass::PublicViewOnly => "public_view_only",
+        AccessClass::Registration => "registration",
+        AccessClass::RequestOnly => "request_only",
+        AccessClass::Unknown => "unknown",
+    }
+}
+
+const fn data_class_label(class: DataClass) -> &'static str {
+    match class {
+        DataClass::Observation => "observation",
+        DataClass::SatelliteEstimate => "satellite_estimate",
+        DataClass::Forecast => "forecast",
+        DataClass::StitchedForecastHistory => "stitched_forecast_history",
+        DataClass::Reanalysis => "reanalysis",
+        DataClass::Terrain => "terrain",
+        DataClass::Features => "features",
+        DataClass::Imagery => "imagery",
+        DataClass::GeneralGuidance => "general_guidance",
+    }
 }
 
 async fn get_catalog_sources(

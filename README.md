@@ -1,93 +1,99 @@
 # ARUS
 
-ARUS is a scaffold for location-specific flood forecasting, monitoring, and scenario simulation in Malaysia.
+**Open-source, physics-first flood forecasting, monitoring, and drainage scenario platform in Rust.**
 
-## Status
+ARUS gives cities, river-basin engineers, and disaster-response teams a single, auditable open-source platform to:
 
-- Scope: Public data catalog, raw-data acquisition, `hydr 0.1.0` CPU `F64` hydrology/hydraulics adapters, deterministic episode extraction, censored evaluation, scenario screening, archive + embedded `nodedb-lite 0.1.0` storage, Axum HTTP API, and `dioxus 0.7` bilingual SSR web views.
-- CLI (`apps/cli`): Inspect sources, check recipes, collect snapshots, report acquisition status, and inspect archived runs (`runs list`, `runs show`).
-- Worker (`apps/worker`): Print all 23 `hydr` component capabilities, execute `SurfaceRunSpec` (`run`), `SurfaceF32RunSpec` (`surface-f32`), `RunoffRunSpec` (`runoff`), `CoupledRunSpec` (`coupled`), and `PoolStructureRunSpec` (`pools` with weirs, orifices, gates, pumps, and HDS-5 culverts), validate SWMM piped drainage manifests (`drainage-check`), compare paired scenarios (`compare`), verify bitwise checkpoint resume (`resume`), and evaluate monotonic publication (`publish`).
-- API (`apps/api`): Axum HTTP server serving `/`, `/runs/{run_id}`, `/health`, `/api/v1/catalog/sources`, `/api/v1/published`, `/api/v1/runs`, `/api/v1/runs/{run_id}`, and `/api/v1/runs/{run_id}/outlook`.
-- Web (`apps/web`): `dioxus 0.7` (`dioxus-ssr`) bilingual (Bahasa Malaysia / English) components free of native solver, GIS, or database dependencies.
-- Benchmarks (`benchmarks/manifests`): 6 executable manifests verifying closed-basin rain, lake-at-rest, pervious Green-Ampt infiltration, open-stage drainage, urban subcatchment runoff, and 2D+1D bank-weir coupling.
-- Scientific boundary: Synthetic demonstrations and analytical benchmarks pass offline checks; site-calibrated Malaysian operational forecasts require surveyed catchment geometry, gauge history, and independent locked-event evaluation.
+- **Predict location-specific flooding**: depth, onset time, peak depth, duration, and recession (not only station alerts).
+- **Test drainage interventions before building**: compare detention ponds, sluice gates, pumps, culverts, and terrain edits side by side—and explicitly surface any downstream location made worse.
+- **Operate with verifiable scientific honesty**: every output carries provenance, mass-conservation residuals, explicit coverage boundaries (unsupported locations never render as dry zero), and strict publication gates.
 
-## Requirements
+Built in pure Rust (`#![forbid(unsafe_code)]`) on [`hydr`](https://crates.io/crates/hydr), [`nodedb-lite`](https://crates.io/crates/nodedb-lite), [`axum`](https://crates.io/crates/axum), and [`dioxus`](https://crates.io/crates/dioxus). Designed for Malaysia and Southeast Asia with native **Bahasa Malaysia / English** web views.
 
-- Rust 1.98.0, pinned in `rust-toolchain.toml`.
-- Rust 1.96 minimum, declared in the workspace manifest.
-- Rustfmt and Clippy, declared in the toolchain file.
-- Product dependency compatibility remains unchecked.
+---
 
-## Checks
+## Quick Start (30 Seconds)
+
+Run a synthetic 2D shallow-water flood demonstration, persist its immutable run archive, and launch the bilingual Dioxus web portal:
 
 ```sh
-sh scripts/check.sh
+# 1. Run a synthetic flood outlook and persist to data/runs
+cargo run -p arus-worker -- outlook --run-id demo-001 --archive data/runs
+
+# 2. Launch the Axum API + Dioxus SSR dashboard
+cargo run -p arus-api -- --archive data/runs --bind 127.0.0.1:8080
 ```
 
-The script checks repository paths, formatting, workspace compilation, tests, and strict Clippy. Local execution defaults to offline mode.
+Open in your browser:
 
-Format modified Rust source before running checks.
+- `http://127.0.0.1:8080/?lang=en` (or `?lang=bm`) — Run archive & publication dashboard
+- `http://127.0.0.1:8080/runs/demo-001?lang=bm` — Bilingual location outlook cards
+- `http://127.0.0.1:8080/sources?lang=en` — Public data catalog & coverage transparency table
+- `http://127.0.0.1:8080/api/v1/runs` — JSON API (`arus-api-v1`)
+
+---
+
+## Capabilities
+
+| Domain | What ARUS Runs Today | Entrypoint |
+| --- | --- | --- |
+| **2D Surface Hydraulics** | Full 2D shallow-water equations (CPU `F64` reference + opt-in `F32` screening), Modified Green-Ampt infiltration, 5 open-boundary types (`stage`, `discharge`, `exterior`, `transmissive`, `flux-port`), bitwise checkpoint resume | `arus-worker run`, `arus-worker surface-f32`, `arus-worker resume` |
+| **1D-2D Coupled Rivers** | Conservative 2D floodplain + 1D rectangular channel coupling across bank weirs | `arus-worker coupled` |
+| **Structures & Detention Pools** | Coupled level pools connected by weirs, submerged orifices, hydrostatic sluice gates, pumps, and HDS-5 circular/box culverts | `arus-worker pools` |
+| **Urban Subcatchment Runoff** | Three-subarea impervious/pervious runoff with Modified Green-Ampt soil memory | `arus-worker runoff` |
+| **Piped Drainage (SWMM)** | Manifest validation and isolated worker adapter for pinned EPA SWMM v5.2.4 (`EXTRAN` / `SLOT`) | `arus-worker drainage-check` |
+| **Scenario & Mitigation Search** | Paired baseline vs intervention comparison with explicit `worsened_locations`, audited terrain conditioning, and Pareto mitigation screening | `arus-worker compare`, `crates/scenarios`, `crates/optimisation` |
+| **Forecasting & Evaluation** | Deterministic flood-episode tracker (onset, peak, hysteresis, right-censored recession), monotonic publication gate, independent censored scoring, ML baseline gate | `arus-worker publish`, `crates/forecasting`, `crates/evaluation`, `crates/ml` |
+| **Data Ingestion & Storage** | 17-source Malaysian/global data catalog with licence/rate gates, content-addressed archive, and embedded `nodedb-lite 0.1.0` store | `arus-cli catalog`, `arus-cli data`, `arus-cli runs`, `crates/storage` |
+| **Public API & Web UI** | Axum HTTP API (`arus-api-v1`) and Dioxus 0.7 bilingual (BM/EN) SSR web portal | `apps/api`, `apps/web` |
+
+---
+
+## Architecture
+
+```mermaid
+flowchart LR
+    Ingest["arus-cli / arus-ingest\nPublic Data Catalog"] --> Archive["arus-assets + arus-storage\nContent Archive + NodeDB Lite"]
+    Geo["arus-geo\nChecked Terrain & Edits"] --> Worker["arus-worker\nhydr 0.1.0 (2D / 1D / Structures / Runoff)"]
+    Worker --> Eval["arus-evaluation + arus-forecasting\nWater Budget, Episodes & Publish Gate"]
+    Eval --> Archive
+    Archive --> Api["arus-api (Axum)\nJSON API + Dioxus 0.7 SSR"]
+    Api --> Web["arus-web (Dioxus)\nBilingual BM / EN Portal"]
+```
+
+| Workspace Path | Responsibility |
+| --- | --- |
+| `apps/api` | Axum public HTTP API and Dioxus SSR server |
+| `apps/web` | Browser-safe Dioxus 0.7 bilingual (BM/EN) components (no solver, GIS, or DB deps) |
+| `apps/worker` | Native numerical execution CLI (`run`, `coupled`, `pools`, `runoff`, `surface-f32`, `compare`, `resume`, `publish`) |
+| `apps/cli` | Operator CLI for catalog checks, bounded data acquisition, and archived run inspection |
+| `crates/hydraulics`, `crates/hydrology` | `hydr 0.1.0` numerical adapters (2D SWE, 1D channels, pools, structures, culverts, SWMM drainage, runoff) |
+| `crates/forecasting`, `crates/evaluation` | Episode tracking, monotonic publication gate, independent censored scoring |
+| `crates/scenarios`, `crates/optimisation`, `crates/ml` | Paired intervention comparison, Pareto mitigation screening, ML eligibility gate |
+| `crates/geo`, `crates/ingest`, `crates/storage`, `crates/assets` | Checked terrain grids (ESRI ASCII), public data connectors, `nodedb-lite` store, immutable blob archive |
+| `crates/domain`, `crates/api-types`, `crates/model-api`, `crates/jobs` | Shared domain provenance, browser-safe DTOs, backend contracts, cancellation & step budgets |
+| `benchmarks/manifests` | 7 executable analytical and coupled verification manifests |
+
+---
+
+## Scientific Boundary & Roadmap
+
+ARUS enforces an explicit boundary between **numerical verification** and **operational flood forecasting**:
+
+- **Verified today**: All 7 analytical and coupled benchmark manifests ([benchmarks/manifests](benchmarks/manifests/README.md)) pass offline conservation, lake-at-rest, infiltration, open-stage drainage, runoff, and structure checks.
+- **Not yet operational**: Producing calibrated Malaysian operational flood forecasts requires surveyed bare-earth LiDAR, local drainage geometry, official JPS/METMalaysia gauge/radar history, and independent locked-event hindcast evaluation. Until approved, every run displays an explicit `numerical-demonstration` banner.
+- **Upcoming (`hydr 0.2.0` track)**: Subgrid terrain, higher-order/implicit time stepping, native Rust pressurized pipe networks, and 3-way simultaneous surface-channel-sewer coupling.
+
+---
+
+## Development & Verification
+
+Requires Rust `1.98.0` (pinned in `rust-toolchain.toml`, minimum `1.96`).
 
 ```sh
+# Format and run full offline verification (path hygiene, fmt, check, 88+ tests, strict clippy)
 cargo fmt --all
+sh scripts/check.sh --offline
 ```
 
-Offline checks require cached dependencies and the pinned toolchain. Acquisition requires network access to the selected public provider.
-GitHub Actions runs the same script with network access enabled.
-
-## Data acquisition
-
-```sh
-cargo run -p arus-cli -- catalog check
-cargo run -p arus-cli -- data plan
-cargo run -p arus-cli -- data refresh
-cargo run -p arus-cli -- data status
-```
-
-The [source catalog](catalog/README.md) records access, licences, collection recipes, and unresolved data gaps.
-The [acquisition guide](docs/data-acquisition.md) covers historical collection, refresh scheduling, receipts, and recovery.
-
-- Default enabled collections archive official categorical weather forecasts and warnings.
-- Numerical rainfall recipes require an explicit noncommercial-use declaration where provider terms require it.
-- Raw responses and acquisition state stay under ignored `data/acquisition/`.
-- Successful collection does not establish complete coverage or scientific suitability.
-
-## Layout
-
-| Path                                                   | Responsibility                                                        |
-| ------------------------------------------------------ | --------------------------------------------------------------------- |
-| `apps/web`                                             | Future Dioxus browser application                                     |
-| `apps/api`                                             | Future Axum public API and database owner                             |
-| `apps/worker`                                          | Future numerical job process                                          |
-| `apps/cli`                                             | Future operator commands                                              |
-| `crates/domain`, `crates/api-types`                    | Domain concepts and public transport contracts                        |
-| `crates/model-api`, `crates/assets`, `crates/jobs`      | Numerical backend boundaries, immutable assets, and job execution       |
-| `crates/forecasting`, `crates/evaluation`               | Forecast publication and independent event assessment                  |
-| `crates/ingest`, `crates/storage`, `crates/geo`        | Ingestion, persistence, and geographic processing                     |
-| `crates/hydrology`, `crates/hydraulics`                | Runoff, routing, and surface-flow models                              |
-| `crates/scenarios`, `crates/optimisation`, `crates/ml` | Scenario operations, design search, and optional numerical prediction |
-| `tests/fixtures`, `benchmarks/manifests`               | Redistributable samples and scientific case manifests                 |
-| `docs/`                                               | Public documentation                                                  |
-
-## Local development
-
-Copy the Cargo config template before adding local dependency overrides.
-
-```sh
-cp .cargo/config.toml.example .cargo/config.toml
-```
-
-- `.cargo/config.toml` stays ignored. Activate local sibling overrides during local development, and keep committed `Cargo.lock` pinned to published crates.io versions.
-- The template uses sibling paths for `rust-llm` (`hydr`, `numr`, `solvr`) and `NodeDB` checkouts.
-- Local `nodedb-lite` uses development NodeDB packages. Check its complete override graph before integration.
-- `hydr 0.1.0` resolves with `numr 0.16.0` and `solvr 0.4.0`. Keep `hydr` and `numr` types inside `arus-hydraulics`.
-- `data/`, `artifacts/`, and `scratch/` hold ignored local runtime files.
-- `Cargo.lock` stays tracked for reproducible workspace resolution.
-
-## Next gate
-
-- Audit candidate catchments and source redistribution rights.
-- Check site-specific historical coverage and independent flood observations.
-- Resolve product dependencies and check browser and numerical builds separately.
-- Check NodeDB Lite durability and query capabilities before implementing repositories.
+See [docs/architecture.md](docs/architecture.md), [docs/api/README.md](docs/api/README.md), and [docs/data-acquisition.md](docs/data-acquisition.md) for detailed technical references.
