@@ -30,9 +30,9 @@ pub use drainage::{
     SwmmDrainageSpec,
 };
 pub use pools::{
-    CoupledPoolsEngine, LevelPoolSpec, PoolFinalState, PoolKnotSpec, PoolStructureRunReport,
-    PoolStructureRunSpec, PoolStructureSpec, PumpKnotSpec, StructureLawSpec,
-    StructureTransferSummary,
+    CoupledPoolsEngine, CulvertBarrelSpec, LevelPoolSpec, PoolFinalState, PoolKnotSpec,
+    PoolStructureRunReport, PoolStructureRunSpec, PoolStructureSpec, PumpKnotSpec,
+    StructureLawSpec, StructureTransferSummary,
 };
 pub use spec::{
     BoundaryAxisSpec, BoundaryFaceSpec, BoundaryForcingSpec, LandSpec, ProbeSpec, RainIntervalSpec,

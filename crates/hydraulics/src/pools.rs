@@ -11,10 +11,12 @@ use hydr::storage::{
     LevelPoolConfig, LevelPoolCurve, LevelPoolElement, LevelPoolKnot, LevelPoolState,
 };
 use hydr::structures::{
-    DirectionPolicy, GateApplicability, GateParameters, OrificeApplicability, PumpApplicability,
-    PumpCurve, PumpCurveKnot, PumpParameters, PumpSpeedPolicy, StructureCondition,
-    StructureElement, StructureLaw, StructureOperatingPoint, StructureOperation,
-    SubmergedOrificeParameters, SuppressedRectangularWeirParameters, WeirApplicability,
+    CulvertAlignment, CulvertApplicability, CulvertBarrel, CulvertEnd, CulvertEnds, CulvertInlet,
+    CulvertParameters, DirectionPolicy, GateApplicability, GateParameters, OrificeApplicability,
+    PumpApplicability, PumpCurve, PumpCurveKnot, PumpParameters, PumpSpeedPolicy,
+    StructureCondition, StructureElement, StructureLaw, StructureOperatingPoint,
+    StructureOperation, SubmergedOrificeParameters, SuppressedRectangularWeirParameters,
+    WeirApplicability,
 };
 use serde::{Deserialize, Serialize};
 
@@ -45,6 +47,14 @@ pub struct PumpKnotSpec {
     pub discharge_m3_per_s: f64,
 }
 
+/// Cross-section shape of an HDS-5 culvert barrel.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "shape", rename_all = "kebab-case")]
+pub enum CulvertBarrelSpec {
+    Circular { diameter_m: f64 },
+    RectangularBox { span_m: f64, rise_m: f64 },
+}
+
 /// Supported hydraulic structure laws connecting two level pools.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "kebab-case")]
@@ -72,6 +82,17 @@ pub enum StructureLawSpec {
         knots: Vec<PumpKnotSpec>,
         /// `Some(1.0)` runs at reference speed; `None` isolates the pump stopped.
         running_speed_ratio: Option<f64>,
+    },
+    Culvert {
+        barrel: CulvertBarrelSpec,
+        length_m: f64,
+        invert_a_m: f64,
+        invert_b_m: f64,
+        manning_n: f64,
+        barrel_count: u32,
+        /// HDS-5 Table A.1/A.2 inlet code (1..=8 circular, 9..=26 concrete box).
+        hds5_inlet_code: u8,
+        entrance_loss_ke: f64,
     },
 }
 
@@ -387,6 +408,56 @@ impl PoolStructureRunSpec {
                         None => StructureOperatingPoint::PumpStoppedIsolated,
                     };
                     (StructureLaw::Pump(params), DirectionPolicy::AtoBOnly, op)
+                }
+                StructureLawSpec::Culvert {
+                    barrel,
+                    length_m,
+                    invert_a_m,
+                    invert_b_m,
+                    manning_n,
+                    barrel_count,
+                    hds5_inlet_code,
+                    entrance_loss_ke,
+                } => {
+                    let hydr_barrel = match barrel {
+                        CulvertBarrelSpec::Circular { diameter_m } => {
+                            CulvertBarrel::circular(*diameter_m)
+                        }
+                        CulvertBarrelSpec::RectangularBox { span_m, rise_m } => {
+                            CulvertBarrel::rectangular_box(*span_m, *rise_m)
+                        }
+                    }
+                    .map_err(|error| ModelError::InvalidInput(error.to_string()))?;
+                    let inlet = CulvertInlet::hds5(*hds5_inlet_code)
+                        .map_err(|error| ModelError::InvalidInput(error.to_string()))?;
+                    let end = CulvertEnd::new(inlet, *entrance_loss_ke)
+                        .map_err(|error| ModelError::InvalidInput(error.to_string()))?;
+                    let params = CulvertParameters::new(
+                        hydr_barrel,
+                        CulvertAlignment {
+                            length_m: *length_m,
+                            invert_a_m: *invert_a_m,
+                            invert_b_m: *invert_b_m,
+                        },
+                        *manning_n,
+                        *barrel_count,
+                        CulvertEnds {
+                            a: Some(end),
+                            b: Some(end),
+                        },
+                        GRAVITY_M_PER_S2,
+                        CulvertApplicability {
+                            coefficient_provenance: format!("HDS-5 inlet code {hds5_inlet_code}"),
+                            barrel_condition_assertion: "unobstructed manifest culvert barrel"
+                                .to_owned(),
+                        },
+                    )
+                    .map_err(|error| ModelError::InvalidInput(error.to_string()))?;
+                    (
+                        StructureLaw::Culvert(params),
+                        DirectionPolicy::Bidirectional,
+                        StructureOperatingPoint::Passive,
+                    )
                 }
             };
 
