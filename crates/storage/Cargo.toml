@@ -8,11 +8,15 @@ publish.workspace = true
 [dependencies]
 arus-assets.workspace = true
 arus-domain.workspace = true
+nodedb-client.workspace = true
+nodedb-lite.workspace = true
 serde.workspace = true
+serde_json.workspace = true
 thiserror.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true
+tokio.workspace = true
 
 [lints]
 workspace = true
