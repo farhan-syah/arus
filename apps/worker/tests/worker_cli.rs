@@ -146,3 +146,105 @@ fn worker_run_executes_json_spec_with_pervious_soil_and_nodata() -> Result<(), S
     assert_eq!(value["outlooks"][1]["support"], "unsupported");
     Ok(())
 }
+
+#[test]
+fn worker_compare_runs_paired_baseline_vs_pervious_intervention() -> Result<(), String> {
+    use arus_domain::{GridSpec, RunClassification, SpatialReference};
+    use arus_geo::TerrainGrid;
+    use arus_hydraulics::{LandSpec, ProbeSpec, RainIntervalSpec, SurfaceRunSpec};
+
+    let temp = TempDir::new().map_err(|e| e.to_string())?;
+    let terrain = TerrainGrid::new(
+        GridSpec {
+            columns: 2,
+            rows: 2,
+            dx_m: 10.0,
+            dy_m: 10.0,
+        },
+        SpatialReference {
+            projected_crs: "EPSG:3375".to_owned(),
+            vertical_datum: "NGVD-MY".to_owned(),
+            origin_m: [0.0, 0.0],
+        },
+        "paired comparison test terrain",
+        vec![Some(0.0); 4],
+    )
+    .map_err(|e| e.to_string())?;
+
+    let base_spec = SurfaceRunSpec {
+        run_id: "baseline-impervious".to_owned(),
+        classification: RunClassification::NumericalDemonstration,
+        terrain: terrain.clone(),
+        uniform_manning_n: 0.03,
+        land: LandSpec::UniformImpervious,
+        initial_depth_m: 0.0,
+        forcing: vec![RainIntervalSpec {
+            start_s: 0.0,
+            end_s: 30.0,
+            uniform_rain_m_per_s: 5e-5,
+        }],
+        target_time_s: 30.0,
+        max_steps: 10_000,
+        probes: vec![ProbeSpec {
+            id: "site-center".to_owned(),
+            x_m: 5.0,
+            y_m: 5.0,
+        }],
+        threshold_m: 0.0005,
+        hysteresis_m: 0.0,
+        recession_persistence_s: 5.0,
+    };
+
+    let mut int_spec = base_spec.clone();
+    int_spec.run_id = "intervention-pervious".to_owned();
+    int_spec.land = LandSpec::UniformModifiedGreenAmpt {
+        suction_m: 0.11,
+        conductivity_m_per_s: 3.0e-6,
+        maximum_deficit: 0.25,
+    };
+
+    let base_path = temp.path().join("baseline.json");
+    let int_path = temp.path().join("intervention.json");
+    std::fs::write(
+        &base_path,
+        serde_json::to_vec_pretty(&base_spec).map_err(|e| e.to_string())?,
+    )
+    .map_err(|e| e.to_string())?;
+    std::fs::write(
+        &int_path,
+        serde_json::to_vec_pretty(&int_spec).map_err(|e| e.to_string())?,
+    )
+    .map_err(|e| e.to_string())?;
+
+    let output = Command::new(env!("CARGO_BIN_EXE_arus-worker"))
+        .args([
+            "compare",
+            "--baseline",
+            base_path
+                .to_str()
+                .ok_or_else(|| "non-utf8 path".to_owned())?,
+            "--intervention",
+            int_path
+                .to_str()
+                .ok_or_else(|| "non-utf8 path".to_owned())?,
+        ])
+        .output()
+        .map_err(|e| e.to_string())?;
+    assert!(
+        output.status.success(),
+        "worker compare failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let report: serde_json::Value =
+        serde_json::from_slice(&output.stdout).map_err(|e| e.to_string())?;
+    assert_eq!(report["conservation_valid"], true);
+    assert_eq!(
+        report["improved_locations"].as_array().map(Vec::len),
+        Some(1)
+    );
+    assert_eq!(
+        report["worsened_locations"].as_array().map(Vec::len),
+        Some(0)
+    );
+    Ok(())
+}

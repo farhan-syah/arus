@@ -277,10 +277,12 @@ dependencies = [
  "arus-hydraulics",
  "arus-jobs",
  "arus-model-api",
+ "arus-scenarios",
  "arus-storage",
  "clap",
  "serde",
  "serde_json",
+ "sha2 0.10.9",
  "tempfile",
 ]
 

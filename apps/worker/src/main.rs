@@ -1,5 +1,6 @@
 //! Native numerical worker for ARUS hydraulic executions.
 
+use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::process::ExitCode;
 
@@ -19,9 +20,11 @@ use arus_hydraulics::{
 };
 use arus_jobs::{CancellationToken, StepBudget};
 use arus_model_api::PersistedCheckpoint;
+use arus_scenarios::{ScenarioManifest, ScenarioRunSummary, compare_paired_runs};
 use arus_storage::{RunRecord, RunStore};
 use clap::{Parser, Subcommand};
 use serde::Serialize;
+use sha2::{Digest, Sha256};
 
 #[derive(Debug, Parser)]
 #[command(name = "arus-worker", about = "Native numerical worker backed by hydr")]
@@ -65,6 +68,15 @@ enum Command {
         /// Optional archive directory for persisting checkpoint, outlook JSON, and run receipt.
         #[arg(long)]
         archive: Option<PathBuf>,
+    },
+    /// Execute a paired baseline and intervention `SurfaceRunSpec` and emit a `PairedComparisonReport`.
+    Compare {
+        /// Path to the baseline JSON `SurfaceRunSpec`.
+        #[arg(long)]
+        baseline: PathBuf,
+        /// Path to the intervention JSON `SurfaceRunSpec`.
+        #[arg(long)]
+        intervention: PathBuf,
     },
 }
 
@@ -146,7 +158,103 @@ fn execute(command: Command) -> Result<(), String> {
             archive,
         } => run_outlook_demo(run_id, threshold_m, archive),
         Command::Run { spec, archive } => run_from_spec(spec, archive),
+        Command::Compare {
+            baseline,
+            intervention,
+        } => run_paired_comparison(baseline, intervention),
     }
+}
+
+fn load_spec(path: &PathBuf) -> Result<SurfaceRunSpec, String> {
+    let raw =
+        std::fs::read(path).map_err(|error| format!("read spec {}: {error}", path.display()))?;
+    serde_json::from_slice(&raw).map_err(|error| format!("parse spec {}: {error}", path.display()))
+}
+
+fn sha256_json<T: Serialize>(value: &T) -> Result<String, String> {
+    let bytes = serde_json::to_vec(value).map_err(|error| error.to_string())?;
+    Ok(format!("{:x}", Sha256::digest(&bytes)))
+}
+
+fn run_scenario_summary(
+    spec: &SurfaceRunSpec,
+    baseline_id: &str,
+) -> Result<ScenarioRunSummary, String> {
+    let policy = EpisodePolicy::new(
+        spec.threshold_m,
+        spec.hysteresis_m,
+        spec.recession_persistence_s,
+    )
+    .map_err(|error| error.to_string())?;
+    let mut engine = spec.build_engine().map_err(|error| error.to_string())?;
+    let probes = spec.location_probes();
+    let mut trackers: Vec<EpisodeTracker> = probes
+        .iter()
+        .map(|probe| EpisodeTracker::new(probe.id.clone(), policy))
+        .collect();
+    for (probe, tracker) in probes.iter().zip(trackers.iter_mut()) {
+        let initial = engine
+            .cell_at(probe.x_m, probe.y_m)
+            .map_err(|error| error.to_string())?;
+        tracker
+            .observe(engine.time_s(), initial)
+            .map_err(|error| error.to_string())?;
+    }
+    let token = CancellationToken::new();
+    let mut callback_error: Option<String> = None;
+    engine
+        .advance_with_probes(
+            spec.target_time_s,
+            StepBudget::new(spec.max_steps),
+            &token,
+            &probes,
+            |_, samples| {
+                for (tracker, sample) in trackers.iter_mut().zip(samples.iter()) {
+                    if let Err(error) = tracker.observe(sample.time_s, sample.sample) {
+                        callback_error = Some(error.to_string());
+                    }
+                }
+            },
+        )
+        .map_err(|error| error.to_string())?;
+    if let Some(error) = callback_error {
+        return Err(error);
+    }
+
+    let mut location_peak_depths_m = BTreeMap::new();
+    for tracker in trackers {
+        let evo = tracker.finish();
+        if let Some(max_depth) = evo.max_depth_m {
+            location_peak_depths_m.insert(evo.location_id, max_depth);
+        }
+    }
+    let forcing_digest = sha256_json(&spec.forcing)?;
+    let initial_state_digest = sha256_json(&spec.initial_depth_m.to_bits())?;
+    Ok(ScenarioRunSummary {
+        manifest: ScenarioManifest {
+            scenario_id: spec.run_id.clone(),
+            baseline_id: baseline_id.to_owned(),
+            forcing_digest,
+            initial_state_digest,
+            is_screening: true,
+            assumptions: vec!["matched manifest forcing and initial depth".to_owned()],
+            edits: Vec::new(),
+        },
+        budget: engine.water_budget(),
+        location_peak_depths_m,
+    })
+}
+
+fn run_paired_comparison(baseline_path: PathBuf, intervention_path: PathBuf) -> Result<(), String> {
+    let baseline_spec = load_spec(&baseline_path)?;
+    let intervention_spec = load_spec(&intervention_path)?;
+    let baseline = run_scenario_summary(&baseline_spec, &baseline_spec.run_id)?;
+    let intervention = run_scenario_summary(&intervention_spec, &baseline_spec.run_id)?;
+    let report =
+        compare_paired_runs(&baseline, &intervention).map_err(|error| error.to_string())?;
+    let json = serde_json::to_string_pretty(&report).map_err(|error| error.to_string())?;
+    println!("{json}");
+    Ok(())
 }
 
 fn run_from_spec(spec_path: PathBuf, archive: Option<PathBuf>) -> Result<(), String> {
