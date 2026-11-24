@@ -32,6 +32,8 @@ const state = {
   uploadedDem: null,
   cachedDem: null,
   nwpPeakMmHr: null,
+  startEpochMs: Date.now(),
+  tzLabel: 'UTC',
   particles: [],
 };
 
@@ -139,6 +141,7 @@ function initMap() {
 
   map.on('mousemove', (e) => handleHover(e.lngLat.lng, e.lngLat.lat));
   map.on('click', (e) => handleMapClick(e.lngLat.lng, e.lngLat.lat));
+  map.on('moveend', updateFrameTelemetry);
 }
 
 function setBasemap(mode) {
@@ -937,6 +940,16 @@ async function runSimulation(compareMode) {
   }
 }
 
+function updateFrameTelemetry() {
+  if (!map) return;
+  const c = map.getCenter();
+  const z = map.getZoom();
+  const rain = $('ctl-rain')?.value || '0';
+  const wind = parseFloat($('ctl-wind')?.value || '0') || 0;
+  const windPart = wind > 0 ? ` · ${wind} m/s` : '';
+  $('telemetry').textContent = `${c.lat.toFixed(4)}°, ${c.lng.toFixed(4)}° · z${z.toFixed(1)} · ${rain} mm/hr${windPart}`;
+}
+
 function updateHonestyPill() {
   const pill = $('honesty-pill');
   const txt = $('honesty-text');
@@ -952,6 +965,7 @@ function updateHonestyPill() {
   pill.classList.toggle('fail', !ok);
   pill.title = `Mass residual: ${res.toExponential(1)} m³ (screening only)`;
   txt.textContent = `${demTag} · Mass ${ok ? 'OK' : 'FAIL'}`;
+  updateFrameTelemetry();
 }
 
 function fmtMMSS(sec) {
@@ -961,11 +975,22 @@ function fmtMMSS(sec) {
   return `${String(m).padStart(2, '0')}:${String(rem).padStart(2, '0')}`;
 }
 
+function fmtCalendarTime(epochMs, tzLabel) {
+  const d = new Date(epochMs);
+  const yyyy = d.getUTCFullYear();
+  const mm = String(d.getUTCMonth() + 1).padStart(2, '0');
+  const dd = String(d.getUTCDate()).padStart(2, '0');
+  const hh = String(d.getUTCHours()).padStart(2, '0');
+  const mi = String(d.getUTCMinutes()).padStart(2, '0');
+  const ss = String(d.getUTCSeconds()).padStart(2, '0');
+  return `${yyyy}-${mm}-${dd} ${hh}:${mi}:${ss} ${tzLabel}`;
+}
+
 function updateTimeReadout() {
   if (!state.frames.length) return;
   const cur = state.frames[Math.min(state.frameIdx, state.frames.length - 1)].time_s;
-  const end = state.frames[state.frames.length - 1].time_s;
-  $('time-readout').textContent = `${fmtMMSS(cur)} / ${fmtMMSS(end)}`;
+  const ts = fmtCalendarTime(state.startEpochMs + cur * 1000, state.tzLabel);
+  $('time-readout').textContent = `${ts} (+${fmtMMSS(cur)})`;
 }
 
 function updateInterventionBar() {
@@ -1350,6 +1375,12 @@ window.arusDirector = {
     if (opts.hyetograph) $('ctl-hyeto').value = opts.hyetograph;
     if (opts.soil) $('ctl-soil').value = opts.soil;
     if (opts.boundary) $('ctl-boundary').value = opts.boundary;
+    if (opts.start_iso) {
+      const parsed = Date.parse(opts.start_iso.endsWith('Z') ? opts.start_iso : `${opts.start_iso}Z`);
+      if (Number.isFinite(parsed)) state.startEpochMs = parsed;
+    }
+    if (opts.tz_label) state.tzLabel = String(opts.tz_label);
+    updateTimeReadout();
   },
   runSimulation: () => runSimulation(false),
   compare: () => runSimulation(true),
@@ -1402,6 +1433,9 @@ window.arusDirector = {
       el.textContent = text;
       el.classList.remove('hidden');
     }
+  },
+  setPresentationMode: (enabled) => {
+    document.documentElement.dataset.presentation = enabled ? 'true' : 'false';
   },
 };
 

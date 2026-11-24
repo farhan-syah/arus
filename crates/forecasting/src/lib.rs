@@ -4,6 +4,7 @@
 
 pub mod ensemble;
 pub mod episode;
+pub mod pipeline;
 pub mod publication;
 pub mod stations;
 
@@ -13,6 +14,10 @@ pub use ensemble::{
 pub use episode::{
     EpisodePolicy, EpisodeTracker, FloodEpisode, ForecastError, LocationEvolution,
     LocationSupportStatus, OnsetStatus, RecessionStatus, Result,
+};
+pub use pipeline::{
+    CompoundTideLock, FourStagePipelineReport, InitialBasinState, Windowed2DOutcome,
+    build_initial_basin_state, evaluate_compound_tide_lock,
 };
 pub use publication::{
     ApprovalStatus, PublicationCandidate, PublicationDecision, PublicationManifest,

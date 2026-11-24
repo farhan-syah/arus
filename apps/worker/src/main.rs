@@ -8,22 +8,26 @@ use arus_api_types::{
     API_SCHEMA_VERSION, ApiEpisodeSummary, ApiLocationOutlook, ApiLocationStatus,
 };
 use arus_assets::Archive;
-use arus_domain::{Provenance, RunClassification};
+use arus_domain::{GridSpec, Provenance, RunClassification, SpatialReference};
 use arus_evaluation::{BudgetAssessment, assess_water_budget};
 use arus_forecasting::{
-    ApprovalStatus, EpisodePolicy, EpisodeTracker, LocationEvolution, LocationSupportStatus,
-    ModelForecastMember, OnsetStatus, PublicationCandidate, PublicationDecision, RecessionStatus,
-    evaluate_publication, summarize_ensemble,
+    ApprovalStatus, EpisodePolicy, EpisodeTracker, FourStagePipelineReport, LocationEvolution,
+    LocationSupportStatus, ModelForecastMember, OnsetStatus, PublicationCandidate,
+    PublicationDecision, RecessionStatus, StationRegistry, Windowed2DOutcome,
+    build_initial_basin_state, evaluate_compound_tide_lock, evaluate_publication,
+    summarize_ensemble,
 };
+use arus_geo::TerrainGrid;
 use arus_hydraulics::{
-    CoupledRunSpec, LocationProbe, NativePipeRunSpec, PoolStructureRunSpec, SurfaceEngine,
-    SurfaceF32RunSpec, SurfaceRunSpec, SwmmDrainageSpec, all_component_capabilities,
+    BoundaryAxisSpec, BoundaryFaceSpec, BoundaryForcingSpec, CoastalForcingSpec, CoupledRunSpec,
+    LandSpec, LocationProbe, NativePipeRunSpec, PoolStructureRunSpec, ProbeSpec, RainIntervalSpec,
+    SurfaceEngine, SurfaceF32RunSpec, SurfaceRunSpec, SwmmDrainageSpec, all_component_capabilities,
     package_from_bytes, run_closed_basin_demo, run_native_worker_demo, surface_capabilities,
 };
 use arus_hydrology::{
     RunoffRunSpec, build_runoff_spec_from_hourly, derive_antecedent_state, detect_peak_window,
 };
-use arus_ingest::parse_open_meteo_hourly;
+use arus_ingest::{parse_open_meteo_hourly, parse_open_meteo_marine};
 use arus_jobs::{CancellationToken, StepBudget};
 use arus_model_api::{AdvanceOutcome, PersistedCheckpoint};
 use arus_scenarios::{ScenarioManifest, ScenarioRunSummary, compare_paired_runs};
@@ -129,6 +133,50 @@ enum Command {
         /// Peak runoff window length in hours for 2D hydr refinement trigger (e.g. 6).
         #[arg(long, default_value_t = 6)]
         window_hours: usize,
+    },
+    /// Run the unified 4-stage flood forecasting pipeline:
+    /// (1) Initial state + gauge headroom -> (2) 72-120h 1D hydrology ensemble ->
+    /// (3) Coastal compound tide lock -> (4) Windowed 2D hydr 0.2.0 + onset/recession.
+    Pipeline {
+        /// Path to an archived Open-Meteo multi-model hourly JSON blob.
+        #[arg(long)]
+        meteo: PathBuf,
+        /// Optional path to an archived Open-Meteo Marine hourly JSON blob (enables Stage 3 tide lock).
+        #[arg(long)]
+        marine: Option<PathBuf>,
+        /// Optional path to a user-supplied JSON StationRegistry file.
+        #[arg(long)]
+        stations: Option<PathBuf>,
+        /// Optional station ID inside `--stations`.
+        #[arg(long)]
+        station_id: Option<String>,
+        /// Optional current live river stage in metres for headroom calculation.
+        #[arg(long)]
+        current_stage_m: Option<f64>,
+        /// Basin identifier.
+        #[arg(long, default_value = "catchment-1")]
+        basin_id: String,
+        /// Catchment area in km².
+        #[arg(long, default_value_t = 25.0)]
+        area_km2: f64,
+        /// Impervious fraction in [0.02, 0.95].
+        #[arg(long, default_value_t = 0.15)]
+        impervious_fraction: f64,
+        /// Leading antecedent hours (`past_days * 24`).
+        #[arg(long, default_value_t = 48)]
+        past_hours: usize,
+        /// Peak window duration in hours for Stage 4 2D refinement (e.g. 3 or 6).
+        #[arg(long, default_value_t = 3)]
+        window_hours: usize,
+        /// Sea-level height MSL threshold (m) flagging Stage 3 compound backwater risk.
+        #[arg(long, default_value_t = 1.8)]
+        tide_threshold_m: f64,
+        /// Peak 24h rain threshold (mm) triggering Stage 4 2D simulation.
+        #[arg(long, default_value_t = 25.0)]
+        trigger_rain_mm: f64,
+        /// Optional coastal wind forcing x-component (m/s) passed to Stage 4 hydr 0.2.0.
+        #[arg(long, default_value_t = 0.0)]
+        wind_m_per_s: f64,
     },
     /// Execute a pure-Rust Preissmann-slot pressurized storm-drain network manifest (`hydr 0.2.0`).
     Pipes {
@@ -284,6 +332,35 @@ fn execute(command: Command) -> Result<(), String> {
             past_hours,
             window_hours,
         ),
+        Command::Pipeline {
+            meteo,
+            marine,
+            stations,
+            station_id,
+            current_stage_m,
+            basin_id,
+            area_km2,
+            impervious_fraction,
+            past_hours,
+            window_hours,
+            tide_threshold_m,
+            trigger_rain_mm,
+            wind_m_per_s,
+        } => run_four_stage_pipeline(PipelineArgs {
+            meteo,
+            marine,
+            stations,
+            station_id,
+            current_stage_m,
+            basin_id,
+            area_km2,
+            impervious_fraction,
+            past_hours,
+            window_hours,
+            tide_threshold_m,
+            trigger_rain_mm,
+            wind_m_per_s,
+        }),
         Command::Pipes { spec } => run_native_pipes_spec(spec),
         Command::DrainageCheck { spec } => run_drainage_check(spec),
         Command::Resume { archive, from_run } => run_resume_check(archive, from_run),
@@ -877,6 +954,337 @@ fn run_forecast_bridge(
 
     let summary = summarize_ensemble(members);
     let json = serde_json::to_string_pretty(&summary).map_err(|error| error.to_string())?;
+    println!("{json}");
+    Ok(())
+}
+
+struct PipelineArgs {
+    meteo: PathBuf,
+    marine: Option<PathBuf>,
+    stations: Option<PathBuf>,
+    station_id: Option<String>,
+    current_stage_m: Option<f64>,
+    basin_id: String,
+    area_km2: f64,
+    impervious_fraction: f64,
+    past_hours: usize,
+    window_hours: usize,
+    tide_threshold_m: f64,
+    trigger_rain_mm: f64,
+    wind_m_per_s: f64,
+}
+
+fn run_four_stage_pipeline(args: PipelineArgs) -> Result<(), String> {
+    let meteo_bytes = std::fs::read(&args.meteo)
+        .map_err(|error| format!("read {} failed: {error}", args.meteo.display()))?;
+    let parsed = parse_open_meteo_hourly(&meteo_bytes).map_err(|error| error.to_string())?;
+
+    // Stage 2: 72-120h 1D hydrology ensemble across all archived NWP models
+    let mut members = Vec::with_capacity(parsed.series.len());
+    let mut worst_deficit = 0.30_f64;
+    let mut worst_window_rain: Vec<Option<f64>> = Vec::new();
+    let mut worst_peak_24h = -1.0_f64;
+
+    for s in &parsed.series {
+        let split = args
+            .past_hours
+            .min(s.precipitation_mm.len().saturating_sub(1));
+        let past_rain_mm: f64 = s.precipitation_mm[..split].iter().filter_map(|v| *v).sum();
+        let latest_soil = s.soil_moisture_0_to_7cm[..=split]
+            .iter()
+            .rev()
+            .find_map(|v| *v);
+        let antecedent = derive_antecedent_state(past_rain_mm, latest_soil, 0.30);
+        worst_deficit = worst_deficit.min(antecedent.effective_maximum_deficit);
+
+        let forecast_rain = &s.precipitation_mm[split..];
+        let missing_precip_hours = forecast_rain.iter().filter(|v| v.is_none()).count();
+        let spec = build_runoff_spec_from_hourly(
+            format!("{}-{}", args.basin_id, s.model),
+            args.basin_id.clone(),
+            args.area_km2,
+            args.impervious_fraction,
+            forecast_rain,
+            antecedent,
+        )
+        .map_err(|error| error.to_string())?;
+        let report = spec.execute().map_err(|error| error.to_string())?;
+        let peak_win = detect_peak_window(&report, forecast_rain, args.window_hours)
+            .map_err(|e| e.to_string())?;
+
+        let total_rain_mm: f64 = forecast_rain.iter().filter_map(|v| *v).sum();
+        let peak_hourly_mm = forecast_rain
+            .iter()
+            .filter_map(|v| *v)
+            .fold(0.0_f64, f64::max);
+        let mut peak_24h_mm = 0.0_f64;
+        let win24 = 24.min(forecast_rain.len());
+        if win24 > 0 {
+            for start in 0..=(forecast_rain.len() - win24) {
+                let sum: f64 = forecast_rain[start..start + win24]
+                    .iter()
+                    .filter_map(|v| *v)
+                    .sum();
+                if sum > peak_24h_mm {
+                    peak_24h_mm = sum;
+                }
+            }
+        }
+        if peak_24h_mm > worst_peak_24h {
+            worst_peak_24h = peak_24h_mm;
+            worst_window_rain = forecast_rain
+                .get(peak_win.start_hour..peak_win.end_hour)
+                .unwrap_or(&[])
+                .to_vec();
+        }
+        members.push(ModelForecastMember {
+            model: s.model.clone(),
+            total_rain_mm,
+            peak_24h_mm,
+            peak_hourly_mm,
+            total_runoff_m3: report.total_outlet_m3,
+            peak_window_start_h: peak_win.start_hour,
+            peak_window_end_h: peak_win.end_hour,
+            missing_precip_hours,
+            antecedent_deficit: antecedent.effective_maximum_deficit,
+        });
+    }
+
+    let stage2_ensemble = summarize_ensemble(members);
+
+    // Stage 1: Initial basin state + gauge headroom (or estimated GloFAS warm-up fallback)
+    let registry_opt: Option<StationRegistry> = match &args.stations {
+        Some(path) => {
+            let raw = std::fs::read_to_string(path)
+                .map_err(|e| format!("read {} failed: {e}", path.display()))?;
+            let reg: StationRegistry = serde_json::from_str(&raw)
+                .map_err(|e| format!("parse {} failed: {e}", path.display()))?;
+            reg.validate().map_err(|e| e.to_string())?;
+            Some(reg)
+        }
+        None => None,
+    };
+    let matched_station = match (&registry_opt, &args.station_id) {
+        (Some(reg), Some(id)) => reg.find(id),
+        _ => None,
+    };
+    let stage1_initial_state =
+        build_initial_basin_state(matched_station, args.current_stage_m, worst_deficit);
+
+    // Stage 3: Compound coastal tide-lock overlap check against Stage 2 worst-case peak window
+    let worst_member = stage2_ensemble
+        .members
+        .iter()
+        .find(|m| m.model == stage2_ensemble.worst_case_model)
+        .or_else(|| stage2_ensemble.members.first());
+    let (win_start_h, win_end_h) = worst_member
+        .map(|m| (m.peak_window_start_h, m.peak_window_end_h))
+        .unwrap_or((0, args.window_hours));
+
+    let stage3_compound_tide = match &args.marine {
+        Some(path) => {
+            let bytes =
+                std::fs::read(path).map_err(|e| format!("read {} failed: {e}", path.display()))?;
+            let marine = parse_open_meteo_marine(&bytes).map_err(|e| e.to_string())?;
+            Some(evaluate_compound_tide_lock(
+                win_start_h,
+                win_end_h,
+                args.past_hours,
+                &marine.times,
+                &marine.sea_level_height_msl_m,
+                args.tide_threshold_m,
+            ))
+        }
+        None => None,
+    };
+
+    // Stage 4: Windowed 2D hydr 0.2.0 inundation + onset/recession (waktu surut)
+    let tide_risk = stage3_compound_tide
+        .as_ref()
+        .is_some_and(|t| t.compound_backwater_risk);
+    let low_headroom = stage1_initial_state
+        .headroom_to_alert_m
+        .is_some_and(|h| h <= 0.5);
+    let heavy_rain = stage2_ensemble.max_peak_24h_mm >= args.trigger_rain_mm;
+    let should_trigger = heavy_rain || tide_risk || low_headroom;
+
+    let stage4_windowed_2d = if should_trigger && !worst_window_rain.is_empty() {
+        let mut reasons = Vec::new();
+        if heavy_rain {
+            reasons.push(format!(
+                "peak_24h_mm={:.1}>={:.1}",
+                stage2_ensemble.max_peak_24h_mm, args.trigger_rain_mm
+            ));
+        }
+        if tide_risk {
+            reasons.push("compound_tide_lock".to_owned());
+        }
+        if low_headroom {
+            reasons.push("low_gauge_headroom".to_owned());
+        }
+
+        let terrain = TerrainGrid::new(
+            GridSpec {
+                columns: 6,
+                rows: 3,
+                dx_m: 100.0,
+                dy_m: 100.0,
+            },
+            SpatialReference {
+                projected_crs: "local-metric-screening".to_owned(),
+                vertical_datum: "local-datum".to_owned(),
+                origin_m: [0.0, 0.0],
+            },
+            "pipeline-screening-valley",
+            (0..18)
+                .map(|i| Some(10.0 - ((i % 6) as f64) * 0.35))
+                .collect(),
+        )
+        .map_err(|e| e.to_string())?;
+        let open_faces: Vec<BoundaryFaceSpec> = (0..3)
+            .map(|row| BoundaryFaceSpec {
+                axis: BoundaryAxisSpec::X,
+                column: 6,
+                row,
+            })
+            .collect();
+        let boundaries: Vec<BoundaryForcingSpec> = open_faces
+            .iter()
+            .copied()
+            .map(|face| BoundaryForcingSpec::ExteriorDry { face })
+            .collect();
+
+        let forcing: Vec<RainIntervalSpec> = worst_window_rain
+            .iter()
+            .enumerate()
+            .map(|(h, opt_mm)| RainIntervalSpec {
+                start_s: (h as f64) * 3600.0,
+                end_s: ((h + 1) as f64) * 3600.0,
+                uniform_rain_m_per_s: opt_mm.unwrap_or(0.0).max(0.0) / 3_600_000.0,
+                boundaries: boundaries.clone(),
+            })
+            .collect();
+        let total_s = (worst_window_rain.len() as f64) * 3600.0;
+        let max_steps = (total_s as usize).saturating_add(5_000);
+        let spec = SurfaceRunSpec {
+            run_id: format!("{}-stage4-2d", args.basin_id),
+            classification: RunClassification::NumericalDemonstration,
+            terrain,
+            uniform_manning_n: 0.035,
+            land: LandSpec::UniformImpervious,
+            initial_depth_m: 0.0,
+            open_faces,
+            forcing,
+            target_time_s: total_s,
+            max_steps,
+            probes: vec![ProbeSpec {
+                id: "outlet-corridor".to_owned(),
+                x_m: 450.0,
+                y_m: 150.0,
+            }],
+            threshold_m: 0.02,
+            hysteresis_m: 0.005,
+            recession_persistence_s: 300.0,
+            coastal: if args.wind_m_per_s != 0.0 {
+                Some(CoastalForcingSpec {
+                    wind_x_m_per_s: args.wind_m_per_s,
+                    ..CoastalForcingSpec::default()
+                })
+            } else {
+                None
+            },
+        };
+        let mut engine = spec.build_engine().map_err(|e| e.to_string())?;
+        let token = CancellationToken::new();
+        let probes = spec.location_probes();
+        let mut tracker = EpisodeTracker::new(
+            "outlet-corridor",
+            EpisodePolicy {
+                threshold_m: spec.threshold_m,
+                hysteresis_m: spec.hysteresis_m,
+                recession_persistence_s: spec.recession_persistence_s,
+            },
+        );
+        if let Some(p) = probes.first() {
+            let initial = engine.cell_at(p.x_m, p.y_m).map_err(|e| e.to_string())?;
+            tracker
+                .observe(engine.time_s(), initial)
+                .map_err(|e| e.to_string())?;
+        }
+        let mut cb_err: Option<String> = None;
+        engine
+            .advance_with_probes(
+                total_s,
+                StepBudget::new(max_steps),
+                &token,
+                &probes,
+                |_, samples| {
+                    if let Some(s) = samples.first()
+                        && let Err(e) = tracker.observe(s.time_s, s.sample)
+                    {
+                        cb_err = Some(e.to_string());
+                    }
+                },
+            )
+            .map_err(|e| e.to_string())?;
+        if let Some(e) = cb_err {
+            return Err(e);
+        }
+        let evolution = tracker.finish();
+        let (onset_time_s, recession_status) = match evolution.episodes.first() {
+            Some(ep) => {
+                let onset = match ep.onset {
+                    OnsetStatus::Observed { time_s } => Some(time_s),
+                    OnsetStatus::LeftCensored { first_observed_s } => Some(first_observed_s),
+                };
+                let rec = match ep.recession {
+                    RecessionStatus::Confirmed {
+                        confirmation_time_s,
+                        ..
+                    } => format!("confirmed@{confirmation_time_s:.0}s"),
+                    RecessionStatus::PendingAtHorizon { .. } => "pending-at-horizon".to_owned(),
+                    RecessionStatus::RightCensored { .. } => "right-censored".to_owned(),
+                };
+                (onset, rec)
+            }
+            None => (None, "no-exceedance".to_owned()),
+        };
+        let budget = engine.water_budget();
+        Windowed2DOutcome {
+            triggered: true,
+            trigger_reason: reasons.join(" + "),
+            driver_model: stage2_ensemble.worst_case_model.clone(),
+            window_hours: worst_window_rain.len(),
+            max_depth_m: evolution.max_depth_m.unwrap_or(0.0),
+            onset_time_s,
+            recession_status,
+            mass_residual_m3: budget.residual_m3,
+            mass_valid: budget.within_residual_bound(),
+        }
+    } else {
+        Windowed2DOutcome {
+            triggered: false,
+            trigger_reason: "below-trigger-thresholds".to_owned(),
+            driver_model: stage2_ensemble.worst_case_model.clone(),
+            window_hours: 0,
+            max_depth_m: 0.0,
+            onset_time_s: None,
+            recession_status: "not-run".to_owned(),
+            mass_residual_m3: 0.0,
+            mass_valid: true,
+        }
+    };
+
+    let report = FourStagePipelineReport {
+        basin_id: args.basin_id,
+        label: "screening-only".to_owned(),
+        classification: RunClassification::NumericalDemonstration,
+        stage1_initial_state,
+        stage2_ensemble,
+        stage3_compound_tide,
+        stage4_windowed_2d,
+    };
+    let json = serde_json::to_string_pretty(&report).map_err(|error| error.to_string())?;
     println!("{json}");
     Ok(())
 }

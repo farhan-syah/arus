@@ -468,3 +468,107 @@ fn marine_glofas_and_commercial_nwp_catalog_entries_plan_and_parse() {
     assert_eq!(flood.river_discharge_m3_per_s, vec![Some(42.5), Some(68.0)]);
     assert_eq!(flood.river_discharge_max_m3_per_s, vec![None, Some(112.0)]);
 }
+
+#[test]
+fn four_stage_pipeline_chains_headroom_120h_hydrology_tide_lock_and_windowed_2d() {
+    let temp = TempDir::new().unwrap_or_else(|e| unreachable!("tempdir: {e}"));
+    let meteo_path = temp.path().join("meteo.json");
+    let marine_path = temp.path().join("marine.json");
+    let stations_path = temp.path().join("stations.json");
+
+    std::fs::write(&meteo_path, build_setiu_multimodel_blob())
+        .unwrap_or_else(|e| unreachable!("write meteo: {e}"));
+
+    // 168h marine series with +2.12m spring tide overlapping the GFS peak window
+    let mut m_times = Vec::with_capacity(168);
+    let mut m_msl = Vec::with_capacity(168);
+    for day in 0..7_usize {
+        for h in 0..24_usize {
+            m_times.push(format!("2026-11-{:02}T{h:02}:00", 23 + day));
+            m_msl.push(if day == 6 && (12..18).contains(&h) {
+                2.12
+            } else {
+                0.85
+            });
+        }
+    }
+    std::fs::write(
+        &marine_path,
+        serde_json::to_vec(&serde_json::json!({
+            "latitude": 5.675,
+            "longitude": 102.715,
+            "hourly": { "time": m_times, "sea_level_height_msl": m_msl }
+        }))
+        .unwrap_or_else(|e| unreachable!("marine json: {e}")),
+    )
+    .unwrap_or_else(|e| unreachable!("write marine: {e}"));
+
+    std::fs::write(
+        &stations_path,
+        serde_json::to_vec(&serde_json::json!({
+            "schema_version": "arus-stations-v1",
+            "stations": [{
+                "station_id": "5428440",
+                "name": "Sg. Nerus di Kg. Langkap",
+                "river": "Sg. Nerus",
+                "latitude": 5.387,
+                "longitude": 102.815,
+                "normal_m": 17.0,
+                "alert_m": 19.5,
+                "warning_m": 20.0,
+                "danger_m": 21.0
+            }]
+        }))
+        .unwrap_or_else(|e| unreachable!("stations json: {e}")),
+    )
+    .unwrap_or_else(|e| unreachable!("write stations: {e}"));
+
+    let output = Command::new(env!("CARGO_BIN_EXE_arus-worker"))
+        .args([
+            "pipeline",
+            "--meteo",
+            meteo_path.to_str().unwrap_or(""),
+            "--marine",
+            marine_path.to_str().unwrap_or(""),
+            "--stations",
+            stations_path.to_str().unwrap_or(""),
+            "--station-id",
+            "5428440",
+            "--current-stage-m",
+            "19.42",
+            "--basin-id",
+            "sg-nerus-langkap",
+            "--area-km2",
+            "40.0",
+            "--past-hours",
+            "48",
+            "--window-hours",
+            "3",
+            "--tide-threshold-m",
+            "1.8",
+        ])
+        .output()
+        .unwrap_or_else(|e| unreachable!("run pipeline: {e}"));
+
+    assert!(
+        output.status.success(),
+        "pipeline failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let v: serde_json::Value =
+        serde_json::from_slice(&output.stdout).unwrap_or_else(|e| unreachable!("json: {e}"));
+    assert_eq!(v["label"], "screening-only");
+    assert_eq!(v["stage1_initial_state"]["initial_stage_source"], "gauge");
+    assert!(
+        (v["stage1_initial_state"]["headroom_to_alert_m"]
+            .as_f64()
+            .unwrap_or(99.0)
+            - 0.08)
+            .abs()
+            < 1e-6
+    );
+    assert_eq!(v["stage2_ensemble"]["agreement"], "low");
+    assert_eq!(v["stage3_compound_tide"]["compound_backwater_risk"], true);
+    assert_eq!(v["stage4_windowed_2d"]["triggered"], true);
+    assert_eq!(v["stage4_windowed_2d"]["mass_valid"], true);
+}

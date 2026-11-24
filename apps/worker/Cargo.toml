@@ -11,6 +11,7 @@ arus-assets.workspace = true
 arus-domain.workspace = true
 arus-evaluation.workspace = true
 arus-forecasting.workspace = true
+arus-geo.workspace = true
 arus-hydraulics.workspace = true
 arus-hydrology.workspace = true
 arus-ingest.workspace = true

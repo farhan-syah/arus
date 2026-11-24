@@ -81,6 +81,8 @@ def run_storyboard(spec_path: Path, out_dir: Path, base_url: str | None, port: i
                 "() => window.arusDirector && window.arusDirector.isReady()",
                 timeout=35000,
             )
+            if spec.get("presentation", True):
+                page.evaluate("() => window.arusDirector.setPresentationMode(true)")
             time.sleep(1.5)
 
             for idx, step in enumerate(spec.get("steps", []), start=1):
@@ -118,6 +120,8 @@ def run_storyboard(spec_path: Path, out_dir: Path, base_url: str | None, port: i
                             "hyetograph",
                             "soil",
                             "boundary",
+                            "start_iso",
+                            "tz_label",
                         )
                     }
                     page.evaluate("(o) => window.arusDirector.setScenario(o)", opts)
