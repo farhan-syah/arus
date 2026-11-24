@@ -239,10 +239,10 @@ fn surface_probes_feed_forecasting_episode_tracker() -> Result<(), String> {
 #[test]
 fn all_component_capabilities_cover_all_hydr_modules() {
     let all = arus_hydraulics::all_component_capabilities();
-    assert_eq!(all.len(), 23);
+    assert_eq!(all.len(), 25);
     let unique: std::collections::BTreeSet<&str> =
         all.iter().map(|c| c.component.as_str()).collect();
-    assert_eq!(unique.len(), 23);
+    assert_eq!(unique.len(), 25);
     assert!(unique.contains("surface-solver"));
     assert!(unique.contains("soil"));
     assert!(unique.contains("channel-reach-surveyed"));
@@ -500,6 +500,7 @@ fn open_stage_boundary_surface_run_spec_executes_and_conserves() -> Result<(), S
         threshold_m: 0.5,
         hysteresis_m: 0.0,
         recession_persistence_s: 1.0,
+        coastal: None,
     };
 
     let mut engine = spec.build_engine().map_err(|e| e.to_string())?;

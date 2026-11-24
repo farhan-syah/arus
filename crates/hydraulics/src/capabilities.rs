@@ -12,9 +12,10 @@ use hydr::channel::{
 };
 use hydr::coupling::{
     channel_pool_capabilities, coupled_level_pool_capabilities, runoff_pool_capabilities,
-    surface_channel_capabilities, surface_drainage_capabilities,
+    surface_channel_capabilities, surface_channel_drainage_capabilities,
+    surface_drainage_capabilities,
 };
-use hydr::drainage::swmm_drainage_capabilities;
+use hydr::drainage::{native_pipe_drainage_capabilities, swmm_drainage_capabilities};
 use hydr::runoff::{reservoir_capabilities, subcatchment_capabilities};
 use hydr::soil::soil_capabilities;
 use hydr::solver::{
@@ -78,7 +79,7 @@ pub fn surface_capabilities() -> BackendCapabilities {
     map_component_capabilities(surface_solver_capabilities())
 }
 
-/// Returns the complete capability catalog across all `hydr 0.1.0` components.
+/// Returns the complete capability catalog across all 25 `hydr 0.2.0` components.
 pub fn all_component_capabilities() -> Vec<BackendCapabilities> {
     [
         surface_solver_capabilities(),
@@ -103,7 +104,9 @@ pub fn all_component_capabilities() -> Vec<BackendCapabilities> {
         runoff_pool_capabilities(),
         surface_channel_capabilities(),
         swmm_drainage_capabilities(),
+        native_pipe_drainage_capabilities(),
         surface_drainage_capabilities(),
+        surface_channel_drainage_capabilities(),
     ]
     .into_iter()
     .map(map_component_capabilities)

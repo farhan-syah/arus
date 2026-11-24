@@ -9,8 +9,8 @@ use arus_model_api::{
 use hydr::grid::CartesianGrid;
 use hydr::model::{CellState, Domain, SpatialReference as HydrSpatialReference};
 use hydr::solver::{
-    AdvanceReport, AdvanceStatus, CellResult, ForcingSchedule, InitialState, Solver, SolverConfig,
-    SolverSetup, WaterLedger,
+    AdvanceReport, AdvanceStatus, CellResult, CoastalForcing, ForcingSchedule, InitialState,
+    Solver, SolverConfig, SolverSetup, WaterLedger,
 };
 
 use crate::codec::{decode_snapshot, encode_snapshot};
@@ -69,6 +69,15 @@ impl SurfaceEngine {
             solver,
             observed_steps: 0,
         })
+    }
+
+    /// Attaches opt-in coastal wind, Coriolis, and atmospheric pressure forcing (`hydr 0.2.0`).
+    pub fn with_coastal_forcing(mut self, coastal: CoastalForcing) -> Result<Self> {
+        self.solver = self
+            .solver
+            .with_coastal_forcing(coastal)
+            .map_err(|error| ModelError::InvalidInput(error.to_string()))?;
+        Ok(self)
     }
 
     /// Builds a synthetic 5x5 closed-basin demonstration engine (60 s constant rain) without

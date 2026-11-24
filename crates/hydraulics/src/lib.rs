@@ -11,9 +11,11 @@ pub mod coupled_spec;
 pub mod demo;
 pub mod drainage;
 pub mod frames;
+pub mod pipes;
 pub mod pools;
 pub mod runtime;
 pub mod spec;
+pub mod subgrid;
 pub mod surface;
 pub mod surface_f32;
 
@@ -34,14 +36,20 @@ pub use frames::{
     EnvelopeSummary, FRAME_STREAM_MAGIC, FrameCaptureConfig, FrameSeries, GridFrame, GridMetadata,
     VELOCITY_DRY_CUTOFF_M,
 };
+pub use pipes::{
+    NativePipeEngine, NativePipeRunReport, NativePipeRunSpec, PipeConduitRunSpec,
+    PipeConduitSummary, PipeLateralInflowSpec, PipeNodeKindSpec, PipeNodeRunSpec, PipeNodeSummary,
+    PipeOutfallSpec, PipeSectionSpec,
+};
 pub use pools::{
     CoupledPoolsEngine, CulvertBarrelSpec, LevelPoolSpec, PoolFinalState, PoolKnotSpec,
     PoolStructureRunReport, PoolStructureRunSpec, PoolStructureSpec, PumpKnotSpec,
     StructureLawSpec, StructureTransferSummary,
 };
 pub use spec::{
-    BoundaryAxisSpec, BoundaryFaceSpec, BoundaryForcingSpec, LandSpec, ProbeSpec, RainIntervalSpec,
-    SurfaceRunSpec,
+    BoundaryAxisSpec, BoundaryFaceSpec, BoundaryForcingSpec, CoastalForcingSpec, LandSpec,
+    ProbeSpec, RainIntervalSpec, SurfaceRunSpec,
 };
+pub use subgrid::{SubgridFieldProjection, SubgridTerrainAdapter};
 pub use surface::{LocationProbe, ProbeSample, SurfaceEngine, domain_from_terrain};
-pub use surface_f32::{SurfaceEngineF32, SurfaceF32RunReport, SurfaceF32RunSpec};
+pub use surface_f32::{SpatialOrderSpec, SurfaceEngineF32, SurfaceF32RunReport, SurfaceF32RunSpec};

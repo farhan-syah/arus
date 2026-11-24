@@ -117,6 +117,7 @@ fn worker_run_executes_json_spec_with_pervious_soil_and_nodata() -> Result<(), S
         threshold_m: 0.0005,
         hysteresis_m: 0.0,
         recession_persistence_s: 5.0,
+        coastal: None,
     };
     let spec_bytes = serde_json::to_vec_pretty(&spec).map_err(|e| e.to_string())?;
     std::fs::write(&spec_path, spec_bytes).map_err(|e| e.to_string())?;
@@ -197,6 +198,7 @@ fn worker_compare_runs_paired_baseline_vs_pervious_intervention() -> Result<(), 
         threshold_m: 0.0005,
         hysteresis_m: 0.0,
         recession_persistence_s: 5.0,
+        coastal: None,
     };
 
     let mut int_spec = base_spec.clone();

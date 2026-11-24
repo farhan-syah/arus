@@ -7,9 +7,9 @@ use hydr::capability::{BoundaryKind, SourceKind};
 use hydr::model::{CellState, FlowState};
 use hydr::soil::{LandCell, LandModel, ModifiedGreenAmptParameters, SoilState};
 use hydr::solver::{
-    Axis, BoundaryConditions, BoundaryFace, BoundaryForcing, DischargeBoundary, ExteriorBoundary,
-    ExteriorState, FluxPort, ForcingInterval, ForcingSchedule, InitialState, SolverConfig,
-    SolverSetup, StageBoundary,
+    Axis, BoundaryConditions, BoundaryFace, BoundaryForcing, CoastalForcing, DischargeBoundary,
+    ExteriorBoundary, ExteriorState, FluxPort, ForcingInterval, ForcingSchedule, InitialState,
+    SolverConfig, SolverSetup, StageBoundary,
 };
 use serde::{Deserialize, Serialize};
 
@@ -176,6 +176,34 @@ pub struct ProbeSpec {
     pub y_m: f64,
 }
 
+/// Opt-in coastal & meteorological momentum forcing (`hydr 0.2.0`).
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize, Default)]
+pub struct CoastalForcingSpec {
+    #[serde(default)]
+    pub wind_x_m_per_s: f64,
+    #[serde(default)]
+    pub wind_y_m_per_s: f64,
+    #[serde(default)]
+    pub coriolis_f_per_s: f64,
+    #[serde(default)]
+    pub dp_dx_pa_per_m: f64,
+    #[serde(default)]
+    pub dp_dy_pa_per_m: f64,
+}
+
+impl CoastalForcingSpec {
+    fn to_hydr(self) -> CoastalForcing {
+        CoastalForcing {
+            wind_x_m_per_s: self.wind_x_m_per_s,
+            wind_y_m_per_s: self.wind_y_m_per_s,
+            coriolis_f_per_s: self.coriolis_f_per_s,
+            dp_dx_pa_per_m: self.dp_dx_pa_per_m,
+            dp_dy_pa_per_m: self.dp_dy_pa_per_m,
+            ..CoastalForcing::default()
+        }
+    }
+}
+
 /// Complete manifest-driven surface simulation specification supporting walls and open boundaries.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SurfaceRunSpec {
@@ -194,6 +222,8 @@ pub struct SurfaceRunSpec {
     pub threshold_m: f64,
     pub hysteresis_m: f64,
     pub recession_persistence_s: f64,
+    #[serde(default)]
+    pub coastal: Option<CoastalForcingSpec>,
 }
 
 impl SurfaceRunSpec {
@@ -310,7 +340,7 @@ impl SurfaceRunSpec {
         let forcing = ForcingSchedule::new(&domain, &boundaries, intervals)
             .map_err(|error| ModelError::InvalidInput(error.to_string()))?;
 
-        SurfaceEngine::new(
+        let engine = SurfaceEngine::new(
             SolverSetup {
                 domain,
                 land,
@@ -323,7 +353,11 @@ impl SurfaceRunSpec {
                 flow,
                 soil,
             },
-        )
+        )?;
+        match self.coastal {
+            Some(coastal) => engine.with_coastal_forcing(coastal.to_hydr()),
+            None => Ok(engine),
+        }
     }
 
     /// Converts declared probe specs into `LocationProbe` values.

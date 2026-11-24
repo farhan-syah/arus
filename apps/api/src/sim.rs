@@ -11,8 +11,9 @@ use arus_geo::{
     EarthworkSummary, TerrainEdit, TerrainGrid, parse_esri_ascii_bounded, write_esri_ascii,
 };
 use arus_hydraulics::{
-    BoundaryAxisSpec, BoundaryFaceSpec, BoundaryForcingSpec, EnvelopeSummary, FrameCaptureConfig,
-    FrameSeries, GridMetadata, LandSpec, ProbeSpec, RainIntervalSpec, SurfaceRunSpec,
+    BoundaryAxisSpec, BoundaryFaceSpec, BoundaryForcingSpec, CoastalForcingSpec, EnvelopeSummary,
+    FrameCaptureConfig, FrameSeries, GridMetadata, LandSpec, ProbeSpec, RainIntervalSpec,
+    SurfaceRunSpec,
 };
 use arus_jobs::{CancellationToken, StepBudget};
 use arus_model_api::WaterBudget;
@@ -134,6 +135,12 @@ pub struct CreateSimulationRequest {
     /// Optional provenance label for `terrain_elevations_m` (e.g. `BrowserTerrariumScreening`).
     #[serde(default)]
     pub terrain_provenance: Option<String>,
+    /// Optional uniform 10 m coastal wind forcing x-component (`m/s`, `hydr 0.2.0`).
+    #[serde(default)]
+    pub wind_x_m_per_s: f64,
+    /// Optional uniform 10 m coastal wind forcing y-component (`m/s`, `hydr 0.2.0`).
+    #[serde(default)]
+    pub wind_y_m_per_s: f64,
 }
 
 const fn default_lon() -> f64 {
@@ -599,6 +606,15 @@ fn execute_blocking(
         threshold_m: req.threshold_m,
         hysteresis_m: (req.threshold_m * 0.15).max(0.005),
         recession_persistence_s: 15.0,
+        coastal: if req.wind_x_m_per_s != 0.0 || req.wind_y_m_per_s != 0.0 {
+            Some(CoastalForcingSpec {
+                wind_x_m_per_s: req.wind_x_m_per_s,
+                wind_y_m_per_s: req.wind_y_m_per_s,
+                ..CoastalForcingSpec::default()
+            })
+        } else {
+            None
+        },
     };
 
     let mut engine = spec.build_engine().map_err(|e| (422, e.to_string()))?;

@@ -133,6 +133,13 @@ fn StudioShell() -> Element {
                             input { id: "ctl-manning", r#type: "range", min: "0.015", max: "0.120", step: "0.005", value: "0.035" }
                         }
                     }
+                    div { class: "field",
+                        div { class: "field-row",
+                            span { class: "field-label", "Wind Surge (hydr 0.2)" }
+                            span { id: "val-wind", class: "field-val", "0 m/s" }
+                        }
+                        input { id: "ctl-wind", r#type: "range", min: "0", max: "30", step: "2", value: "0" }
+                    }
                 }
             }
 

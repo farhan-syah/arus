@@ -37,6 +37,7 @@ fn surface_f32_screening_matches_closed_basin_rain_within_f32_envelope() -> Resu
         uniform_withdrawal_m_per_s: 0.0,
         target_time_s: 60.0,
         max_steps: 500,
+        spatial_order: Default::default(),
     };
 
     let report = spec.execute().map_err(|e| e.to_string())?;

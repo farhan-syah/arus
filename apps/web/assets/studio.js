@@ -845,6 +845,8 @@ async function buildRequestPayload() {
     ascii_dem: state.uploadedDem,
     terrain_elevations_m: sampled,
     terrain_provenance: sampled ? 'BrowserTerrariumScreening' : null,
+    wind_x_m_per_s: parseFloat($('ctl-wind').value) || 0,
+    wind_y_m_per_s: 0,
   };
 }
 
@@ -1128,6 +1130,7 @@ function wireUi() {
   $('ctl-rain').addEventListener('input', (e) => { $('val-rain').textContent = `${e.target.value} mm/hr`; });
   $('ctl-dur').addEventListener('input', (e) => { $('val-dur').textContent = `${e.target.value} s`; });
   $('ctl-manning').addEventListener('input', (e) => { $('val-manning').textContent = Number(e.target.value).toFixed(3); });
+  $('ctl-wind').addEventListener('input', (e) => { $('val-wind').textContent = `${e.target.value} m/s`; });
 
   $('btn-iv-undo').addEventListener('click', () => { state.interventions.splice(-4, 4); updateInterventionBar(); renderFloodCanvas(false); });
   $('btn-iv-clear').addEventListener('click', () => { state.interventions = []; updateInterventionBar(); renderFloodCanvas(false); });

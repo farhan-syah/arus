@@ -9,13 +9,31 @@ use arus_geo::TerrainGrid;
 use arus_model_api::{ModelError, Result};
 use hydr::model::{CellState, FlowState};
 use hydr::solver::{
-    SurfaceSolverF32, SurfaceSolverF32Config, SurfaceSolverF32Ledger,
+    SurfaceF32SpatialOrder, SurfaceSolverF32, SurfaceSolverF32Config, SurfaceSolverF32Ledger,
     surface_solver_f32_capabilities,
 };
 use serde::{Deserialize, Serialize};
 
 use crate::runtime::{ReferenceRuntime, reference_cpu_client};
 use crate::surface::domain_from_terrain;
+
+/// Spatial reconstruction order for `SurfaceSolverF32` (`hydr 0.2.0`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "kebab-case")]
+pub enum SpatialOrderSpec {
+    #[default]
+    FirstOrder,
+    SecondOrderMuscl,
+}
+
+impl SpatialOrderSpec {
+    fn to_hydr(self) -> SurfaceF32SpatialOrder {
+        match self {
+            Self::FirstOrder => SurfaceF32SpatialOrder::FirstOrder,
+            Self::SecondOrderMuscl => SurfaceF32SpatialOrder::SecondOrderMuscl,
+        }
+    }
+}
 
 /// JSON-serializable manifest for an opt-in `F32` closed-basin surface screening run.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -30,6 +48,8 @@ pub struct SurfaceF32RunSpec {
     pub uniform_withdrawal_m_per_s: f32,
     pub target_time_s: f64,
     pub max_steps: usize,
+    #[serde(default)]
+    pub spatial_order: SpatialOrderSpec,
 }
 
 /// Summary report emitted by an `F32` screening execution.
@@ -62,6 +82,21 @@ impl SurfaceEngineF32 {
         uniform_manning_n: f64,
         initial_depth_m: f64,
     ) -> Result<Self> {
+        Self::from_terrain_with_order(
+            terrain,
+            uniform_manning_n,
+            initial_depth_m,
+            SpatialOrderSpec::FirstOrder,
+        )
+    }
+
+    /// Constructs an `F32` surface engine with explicit spatial reconstruction order (`hydr 0.2.0`).
+    pub fn from_terrain_with_order(
+        terrain: &TerrainGrid,
+        uniform_manning_n: f64,
+        initial_depth_m: f64,
+        spatial_order: SpatialOrderSpec,
+    ) -> Result<Self> {
         if !initial_depth_m.is_finite() || initial_depth_m < 0.0 {
             return Err(ModelError::InvalidInput(format!(
                 "initial_depth_m={initial_depth_m} must be finite nonnegative"
@@ -83,13 +118,12 @@ impl SurfaceEngineF32 {
             .collect();
         let initial = FlowState::new(&domain, flow_cells)
             .map_err(|error| ModelError::InvalidInput(error.to_string()))?;
-        let solver = SurfaceSolverF32::new(
-            reference_cpu_client(),
-            domain,
-            initial,
-            SurfaceSolverF32Config::default(),
-        )
-        .map_err(|error| ModelError::Engine(error.to_string()))?;
+        let config = SurfaceSolverF32Config {
+            spatial_order: spatial_order.to_hydr(),
+            ..SurfaceSolverF32Config::default()
+        };
+        let solver = SurfaceSolverF32::new(reference_cpu_client(), domain, initial, config)
+            .map_err(|error| ModelError::Engine(error.to_string()))?;
         Ok(Self { solver })
     }
 
@@ -142,10 +176,11 @@ impl SurfaceEngineF32 {
 impl SurfaceF32RunSpec {
     /// Checks inputs and runs the `F32` screening simulation to `target_time_s`.
     pub fn execute(&self) -> Result<SurfaceF32RunReport> {
-        let mut engine = SurfaceEngineF32::from_terrain(
+        let mut engine = SurfaceEngineF32::from_terrain_with_order(
             &self.terrain,
             self.uniform_manning_n,
             self.initial_depth_m,
+            self.spatial_order,
         )?;
         engine.advance_uniform(
             self.target_time_s,
