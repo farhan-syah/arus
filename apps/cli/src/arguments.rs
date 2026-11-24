@@ -34,6 +34,22 @@ pub(crate) enum Command {
         #[command(subcommand)]
         command: DataCommand,
     },
+    /// Inspect persisted numerical simulation runs in an archive.
+    Runs {
+        /// Archive directory containing persisted numerical runs (default: data/runs).
+        #[arg(long, default_value = "data/runs")]
+        archive: PathBuf,
+        #[command(subcommand)]
+        command: RunsCommand,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+pub(crate) enum RunsCommand {
+    /// List recorded run IDs and the latest run ID.
+    List,
+    /// Show one recorded run manifest.
+    Show { run_id: String },
 }
 
 #[derive(Debug, Subcommand)]

@@ -4,11 +4,12 @@ use std::process::ExitCode;
 
 use arus_assets::Archive;
 use arus_ingest::{Catalog, Collections, SyncOptions};
+use arus_storage::RunStore;
 use clap::Parser;
 use serde::Serialize;
 use time::OffsetDateTime;
 
-use crate::arguments::{CatalogCommand, Cli, Command, DataCommand};
+use crate::arguments::{CatalogCommand, Cli, Command, DataCommand, RunsCommand};
 
 type CommandResult<T> = Result<T, Box<dyn Error>>;
 
@@ -24,34 +25,55 @@ pub(crate) fn execute() -> ExitCode {
 }
 
 fn run(cli: Cli) -> CommandResult<bool> {
-    let catalog = Catalog::load(&cli.catalog)?;
     match cli.command {
-        Command::Catalog { command } => match command {
-            CatalogCommand::List => print_json(&catalog.sources)?,
-            CatalogCommand::Show { source_id } => {
-                let source = catalog
-                    .sources
-                    .iter()
-                    .find(|source| source.id == source_id)
-                    .ok_or_else(|| {
+        Command::Runs { archive, command } => {
+            let opened = Archive::open(&archive)?;
+            let store = RunStore::new(&opened);
+            match command {
+                RunsCommand::List => {
+                    let index = store.load_index()?;
+                    print_json(&index)?;
+                }
+                RunsCommand::Show { run_id } => {
+                    let record = store.get_run(&run_id)?.ok_or_else(|| {
                         invalid_input(format!(
-                            "Unknown source {source_id:?}. Run catalog list to select a source."
+                            "Unknown run {run_id:?}. Run `runs list` to inspect archived runs."
                         ))
                     })?;
-                print_json(source)?;
+                    print_json(&record)?;
+                }
             }
-            CatalogCommand::Check => {
-                let collections = Collections::load(&cli.collections)?;
-                arus_ingest::validate(&catalog, &collections)?;
-                print_json(&serde_json::json!({
-                    "valid": true,
-                    "sources": catalog.sources.len(),
-                    "collections": collections.collections.len(),
-                    "availability_checked": false,
-                }))?;
+        }
+        Command::Catalog { command } => {
+            let catalog = Catalog::load(&cli.catalog)?;
+            match command {
+                CatalogCommand::List => print_json(&catalog.sources)?,
+                CatalogCommand::Show { source_id } => {
+                    let source = catalog
+                        .sources
+                        .iter()
+                        .find(|source| source.id == source_id)
+                        .ok_or_else(|| {
+                            invalid_input(format!(
+                                "Unknown source {source_id:?}. Run catalog list to select a source."
+                            ))
+                        })?;
+                    print_json(source)?;
+                }
+                CatalogCommand::Check => {
+                    let collections = Collections::load(&cli.collections)?;
+                    arus_ingest::validate(&catalog, &collections)?;
+                    print_json(&serde_json::json!({
+                        "valid": true,
+                        "sources": catalog.sources.len(),
+                        "collections": collections.collections.len(),
+                        "availability_checked": false,
+                    }))?;
+                }
             }
-        },
+        }
         Command::Data { command } => {
+            let catalog = Catalog::load(&cli.catalog)?;
             let mut collections = Collections::load(&cli.collections)?;
             arus_ingest::validate(&catalog, &collections)?;
             match command {

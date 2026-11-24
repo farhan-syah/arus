@@ -101,6 +101,7 @@ name = "arus-cli"
 version = "0.1.0"
 dependencies = [
  "arus-assets",
+ "arus-domain",
  "arus-evaluation",
  "arus-ingest",
  "arus-jobs",
