@@ -122,6 +122,8 @@ dependencies = [
  "arus-domain",
  "arus-jobs",
  "arus-model-api",
+ "serde",
+ "thiserror",
 ]
 
 [[package]]
@@ -138,6 +140,7 @@ version = "0.1.0"
 dependencies = [
  "arus-assets",
  "arus-domain",
+ "arus-forecasting",
  "arus-jobs",
  "arus-model-api",
  "hydr",

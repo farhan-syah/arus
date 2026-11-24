@@ -14,4 +14,4 @@ pub use codec::{decode_snapshot, encode_snapshot};
 pub use demo::{
     ClosedBasinDemoReport, NativeWorkerDemoReport, run_closed_basin_demo, run_native_worker_demo,
 };
-pub use surface::SurfaceEngine;
+pub use surface::{LocationProbe, ProbeSample, SurfaceEngine};

@@ -5,6 +5,7 @@ use arus_model_api::{
     AdvanceOutcome, AdvanceSummary, CellSample, CheckpointPackage, ModelError, Result, StepSummary,
     WaterBudget,
 };
+use hydr::model::{CellState, Domain};
 use hydr::solver::{
     AdvanceReport, AdvanceStatus, CellResult, ForcingSchedule, InitialState, Solver, SolverConfig,
     SolverSetup, WaterLedger,
@@ -12,6 +13,22 @@ use hydr::solver::{
 
 use crate::codec::{decode_snapshot, encode_snapshot};
 use crate::runtime::{ReferenceRuntime, reference_cpu_client};
+
+/// Named projected coordinate probe evaluated at accepted solver steps.
+#[derive(Debug, Clone, PartialEq)]
+pub struct LocationProbe {
+    pub id: String,
+    pub x_m: f64,
+    pub y_m: f64,
+}
+
+/// Sample emitted for one `LocationProbe` at one accepted solver time.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ProbeSample {
+    pub id: String,
+    pub time_s: f64,
+    pub sample: CellSample,
+}
 
 /// Deterministic CPU `F64` shallow-water engine wrapping `hydr::solver::Solver`.
 pub struct SurfaceEngine {
@@ -100,6 +117,70 @@ impl SurfaceEngine {
         Ok(map_advance_report(report))
     }
 
+    /// Advances toward `target_s` and samples `probes` at every accepted step directly from
+    /// accepted cell states without spatial interpolation.
+    pub fn advance_with_probes<F>(
+        &mut self,
+        target_s: f64,
+        budget: StepBudget,
+        token: &CancellationToken,
+        probes: &[LocationProbe],
+        mut on_probes: F,
+    ) -> Result<AdvanceSummary>
+    where
+        F: FnMut(StepSummary, &[ProbeSample]),
+    {
+        let domain = self.solver.domain().clone();
+        let resolved: Vec<(&str, Option<usize>)> = probes
+            .iter()
+            .map(|probe| {
+                (
+                    probe.id.as_str(),
+                    locate_active_cell(&domain, probe.x_m, probe.y_m),
+                )
+            })
+            .collect();
+        let mut step_counter = self.observed_steps;
+        let mut samples = Vec::with_capacity(resolved.len());
+        let report = self
+            .solver
+            .advance_controlled(
+                target_s,
+                budget.max_steps,
+                || token.is_cancelled(),
+                |step, cells| {
+                    step_counter += 1;
+                    let max_depth_m = cells.iter().map(|cell| cell.h).fold(0.0, f64::max);
+                    samples.clear();
+                    for &(id, cell_index) in &resolved {
+                        let sample =
+                            match cell_index.and_then(|idx| cells.get(idx).map(|c| (idx, c))) {
+                                Some((idx, cell)) => sample_from_cell(&domain, idx, *cell),
+                                None => CellSample::Unsupported,
+                            };
+                        samples.push(ProbeSample {
+                            id: id.to_owned(),
+                            time_s: step.end,
+                            sample,
+                        });
+                    }
+                    on_probes(
+                        StepSummary {
+                            step: step_counter,
+                            start_s: step.start,
+                            end_s: step.end,
+                            residual_m3: step.residual,
+                            max_depth_m,
+                        },
+                        &samples,
+                    );
+                },
+            )
+            .map_err(|error| ModelError::Engine(error.to_string()))?;
+        self.observed_steps = step_counter;
+        Ok(map_advance_report(report))
+    }
+
     /// Splices future forcing onto accepted history without resetting state or ledgers.
     pub fn continue_with_forcing(&mut self, forcing: ForcingSchedule) -> Result<()> {
         self.solver
@@ -158,6 +239,43 @@ impl SurfaceEngine {
                 velocity_y_m_s: velocity[1],
             },
         })
+    }
+}
+
+fn locate_active_cell(domain: &Domain, x_m: f64, y_m: f64) -> Option<usize> {
+    let [ox, oy] = domain.reference().origin();
+    let (dx, dy) = domain.grid().spacing();
+    let (nx, ny) = domain.grid().dimensions();
+    let column = (x_m - ox) / dx;
+    let row = (y_m - oy) / dy;
+    if !column.is_finite()
+        || !row.is_finite()
+        || column < 0.0
+        || row < 0.0
+        || column >= nx as f64
+        || row >= ny as f64
+    {
+        return None;
+    }
+    let index = row.floor() as usize * nx + column.floor() as usize;
+    domain
+        .active()
+        .get(index)
+        .copied()
+        .unwrap_or(false)
+        .then_some(index)
+}
+
+fn sample_from_cell(domain: &Domain, index: usize, cell: CellState) -> CellSample {
+    if cell.h == 0.0 {
+        return CellSample::Dry;
+    }
+    let bed = domain.bed().get(index).copied().unwrap_or(0.0);
+    CellSample::Wet {
+        depth_m: cell.h,
+        water_elevation_m: bed + cell.h,
+        velocity_x_m_s: cell.qx / cell.h,
+        velocity_y_m_s: cell.qy / cell.h,
     }
 }
 
