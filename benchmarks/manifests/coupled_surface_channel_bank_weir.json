@@ -1,0 +1,66 @@
+{
+  "run_id": "bench-coupled-bank-weir",
+  "classification": "numerical-demonstration",
+  "terrain": {
+    "grid": {
+      "columns": 2,
+      "rows": 1,
+      "dx_m": 10.0,
+      "dy_m": 10.0
+    },
+    "reference": {
+      "projected_crs": "synthetic-metric-plane",
+      "vertical_datum": "synthetic-datum",
+      "origin_m": [0.0, 0.0]
+    },
+    "source_provenance": "analytical-benchmark-coupled-bank-weir",
+    "cells": [1.0, 1.0],
+    "conditioning_history": []
+  },
+  "uniform_manning_n": 0.03,
+  "initial_surface_depth_m": 0.8,
+  "uniform_rain_m_per_s": 0.0,
+  "reaches": [
+    {
+      "id": "reach-main",
+      "provenance": "synthetic rectangular drainage channel",
+      "cells": [
+        {
+          "id": "ch-0",
+          "length_m": 10.0,
+          "width_m": 4.0,
+          "bed_elevation_m": 0.0,
+          "maximum_depth_m": 5.0,
+          "manning_n": 0.03,
+          "initial_depth_m": 0.5
+        },
+        {
+          "id": "ch-1",
+          "length_m": 10.0,
+          "width_m": 4.0,
+          "bed_elevation_m": 0.0,
+          "maximum_depth_m": 5.0,
+          "manning_n": 0.03,
+          "initial_depth_m": 0.5
+        }
+      ]
+    }
+  ],
+  "links": [
+    {
+      "id": "bank-0",
+      "surface_cell": 0,
+      "reach_id": "reach-main",
+      "channel_cell": 0,
+      "crest_elevation_m": 1.2,
+      "crest_length_m": 5.0,
+      "weir_coefficient": 1.7,
+      "reach_tangent": [1.0, 0.0],
+      "mapping_evidence": "synthetic adjacent bank cell"
+    }
+  ],
+  "storage_exclusion_evidence": "disjoint synthetic floodplain and channel cells",
+  "target_time_s": 1.0,
+  "max_steps": 100,
+  "maximum_step_s": 0.25
+}

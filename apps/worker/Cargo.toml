@@ -12,6 +12,7 @@ arus-domain.workspace = true
 arus-evaluation.workspace = true
 arus-forecasting.workspace = true
 arus-hydraulics.workspace = true
+arus-hydrology.workspace = true
 arus-jobs.workspace = true
 arus-model-api.workspace = true
 arus-scenarios.workspace = true

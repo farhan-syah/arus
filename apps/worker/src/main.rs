@@ -15,9 +15,10 @@ use arus_forecasting::{
     OnsetStatus, PublicationCandidate, PublicationDecision, RecessionStatus, evaluate_publication,
 };
 use arus_hydraulics::{
-    LocationProbe, SurfaceEngine, SurfaceRunSpec, all_component_capabilities, package_from_bytes,
-    run_closed_basin_demo, run_native_worker_demo, surface_capabilities,
+    CoupledRunSpec, LocationProbe, SurfaceEngine, SurfaceRunSpec, all_component_capabilities,
+    package_from_bytes, run_closed_basin_demo, run_native_worker_demo, surface_capabilities,
 };
+use arus_hydrology::RunoffRunSpec;
 use arus_jobs::{CancellationToken, StepBudget};
 use arus_model_api::{AdvanceOutcome, PersistedCheckpoint};
 use arus_scenarios::{ScenarioManifest, ScenarioRunSummary, compare_paired_runs};
@@ -77,6 +78,18 @@ enum Command {
         /// Path to the intervention JSON `SurfaceRunSpec`.
         #[arg(long)]
         intervention: PathBuf,
+    },
+    /// Execute a JSON `RunoffRunSpec` subcatchment manifest and emit its water-balance JSON report.
+    Runoff {
+        /// Path to the JSON `RunoffRunSpec` manifest file.
+        #[arg(long)]
+        spec: PathBuf,
+    },
+    /// Execute a JSON `CoupledRunSpec` 2D surface + 1D channel manifest and emit its JSON report.
+    Coupled {
+        /// Path to the JSON `CoupledRunSpec` manifest file.
+        #[arg(long)]
+        spec: PathBuf,
     },
     /// Verify and resume an archived run from its exact binary checkpoint blob.
     Resume {
@@ -201,6 +214,8 @@ fn execute(command: Command) -> Result<(), String> {
             baseline,
             intervention,
         } => run_paired_comparison(baseline, intervention),
+        Command::Runoff { spec } => run_runoff_spec(spec),
+        Command::Coupled { spec } => run_coupled_spec(spec),
         Command::Resume { archive, from_run } => run_resume_check(archive, from_run),
         Command::Publish {
             archive,
@@ -224,6 +239,39 @@ fn execute(command: Command) -> Result<(), String> {
             owner_approved,
         ),
     }
+}
+
+fn run_runoff_spec(spec_path: PathBuf) -> Result<(), String> {
+    let raw = std::fs::read_to_string(&spec_path)
+        .map_err(|error| format!("read {}: {error}", spec_path.display()))?;
+    let spec: RunoffRunSpec = serde_json::from_str(&raw)
+        .map_err(|error| format!("parse {}: {error}", spec_path.display()))?;
+    let report = spec.execute().map_err(|error| error.to_string())?;
+    let json = serde_json::to_string_pretty(&report).map_err(|error| error.to_string())?;
+    println!("{json}");
+    Ok(())
+}
+
+fn run_coupled_spec(spec_path: PathBuf) -> Result<(), String> {
+    let raw = std::fs::read_to_string(&spec_path)
+        .map_err(|error| format!("read {}: {error}", spec_path.display()))?;
+    let spec: CoupledRunSpec = serde_json::from_str(&raw)
+        .map_err(|error| format!("parse {}: {error}", spec_path.display()))?;
+    let report = spec.execute().map_err(|error| error.to_string())?;
+    let budget_assessment = assess_water_budget(report.water_budget);
+    let envelope = serde_json::json!({
+        "report": report,
+        "budget_assessment": budget_assessment,
+    });
+    let json = serde_json::to_string_pretty(&envelope).map_err(|error| error.to_string())?;
+    println!("{json}");
+    if !budget_assessment.passed {
+        return Err(format!(
+            "coupled water budget failed: {:?}",
+            budget_assessment.reasons
+        ));
+    }
+    Ok(())
 }
 
 fn run_resume_check(archive_path: PathBuf, from_run: String) -> Result<(), String> {

@@ -6,9 +6,10 @@ use hydr::runoff::{
     SubcatchmentSnapshotData, SubcatchmentState,
 };
 use numr::runtime::cpu::{CpuClient, CpuDevice, CpuRuntime, ParallelismConfig};
+use serde::{Deserialize, Serialize};
 
 /// Per-step water accounting summary for one accepted subcatchment interval.
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct SubcatchmentStepSummary {
     pub start_s: f64,
     pub end_s: f64,

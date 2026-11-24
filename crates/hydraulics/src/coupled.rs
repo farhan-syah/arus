@@ -7,11 +7,12 @@ use hydr::coupling::{
     SurfaceChannelLinkLedger, SurfaceChannelSetup, SurfaceChannelWaterBalance,
 };
 use hydr::solver::CellResult;
+use serde::{Deserialize, Serialize};
 
 use crate::runtime::{ReferenceRuntime, reference_cpu_client};
 
 /// Lifetime directional bank-weir exchange through one surface-channel link.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct BankExchangeSummary {
     pub link_id: String,
     pub surface_to_channel_m3: f64,

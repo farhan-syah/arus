@@ -323,3 +323,54 @@ fn worker_resume_verifies_archived_checkpoint_and_publish_gates_demonstrations()
     assert_eq!(pub_json["status"], "refused");
     Ok(())
 }
+
+#[test]
+fn worker_runoff_and_coupled_subcommands_execute_benchmark_manifests() -> Result<(), String> {
+    let manifests =
+        std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../benchmarks/manifests");
+    let runoff_path = manifests.join("subcatchment_urban_runoff.json");
+    let runoff_arg = runoff_path
+        .to_str()
+        .ok_or_else(|| "non-utf8 runoff path".to_owned())?;
+    let runoff_out = Command::new(env!("CARGO_BIN_EXE_arus-worker"))
+        .args(["runoff", "--spec", runoff_arg])
+        .output()
+        .map_err(|e| e.to_string())?;
+    assert!(
+        runoff_out.status.success(),
+        "runoff failed: {}",
+        String::from_utf8_lossy(&runoff_out.stderr)
+    );
+    let runoff_json: serde_json::Value =
+        serde_json::from_slice(&runoff_out.stdout).map_err(|e| e.to_string())?;
+    assert_eq!(runoff_json["run_id"], "bench-subcatchment-urban-runoff");
+    assert_eq!(runoff_json["final_time_s"], 120.0);
+    assert!(
+        runoff_json["total_outlet_m3"]
+            .as_f64()
+            .is_some_and(|v| v > 0.0)
+    );
+
+    let coupled_path = manifests.join("coupled_surface_channel_bank_weir.json");
+    let coupled_arg = coupled_path
+        .to_str()
+        .ok_or_else(|| "non-utf8 coupled path".to_owned())?;
+    let coupled_out = Command::new(env!("CARGO_BIN_EXE_arus-worker"))
+        .args(["coupled", "--spec", coupled_arg])
+        .output()
+        .map_err(|e| e.to_string())?;
+    assert!(
+        coupled_out.status.success(),
+        "coupled failed: {}",
+        String::from_utf8_lossy(&coupled_out.stderr)
+    );
+    let coupled_json: serde_json::Value =
+        serde_json::from_slice(&coupled_out.stdout).map_err(|e| e.to_string())?;
+    assert_eq!(coupled_json["budget_assessment"]["passed"], true);
+    assert!(
+        coupled_json["report"]["bank_exchanges"][0]["surface_to_channel_m3"]
+            .as_f64()
+            .is_some_and(|v| v > 0.0)
+    );
+    Ok(())
+}

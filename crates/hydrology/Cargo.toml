@@ -10,6 +10,7 @@ arus-domain.workspace = true
 arus-model-api.workspace = true
 hydr.workspace = true
 numr.workspace = true
+serde.workspace = true
 
 [lints]
 workspace = true

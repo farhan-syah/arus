@@ -514,6 +514,7 @@ dependencies = [
  "arus-model-api",
  "hydr",
  "numr",
+ "serde",
 ]
 
 [[package]]
@@ -620,6 +621,7 @@ dependencies = [
  "arus-forecasting",
  "arus-geo",
  "arus-hydraulics",
+ "arus-hydrology",
  "arus-jobs",
  "arus-model-api",
  "arus-scenarios",

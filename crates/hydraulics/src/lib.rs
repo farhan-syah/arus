@@ -7,6 +7,7 @@
 pub mod capabilities;
 pub mod codec;
 pub mod coupled;
+pub mod coupled_spec;
 pub mod demo;
 pub mod runtime;
 pub mod spec;
@@ -15,6 +16,9 @@ pub mod surface;
 pub use capabilities::{all_component_capabilities, check_surface_admission, surface_capabilities};
 pub use codec::{decode_snapshot, encode_snapshot, package_from_bytes};
 pub use coupled::{BankExchangeSummary, CoupledSurfaceChannelEngine};
+pub use coupled_spec::{
+    BankLinkSpec, ChannelReachSpec, CoupledRunReport, CoupledRunSpec, RectangularChannelCellSpec,
+};
 pub use demo::{
     ClosedBasinDemoReport, NativeWorkerDemoReport, run_closed_basin_demo, run_native_worker_demo,
 };

@@ -1,0 +1,39 @@
+{
+  "run_id": "bench-subcatchment-urban-runoff",
+  "classification": "numerical-demonstration",
+  "subcatchments": [
+    {
+      "id": "urban-sub-0",
+      "total_area_m2": 100.0,
+      "width_m": 10.0,
+      "slope": 0.01,
+      "impervious_fraction": 0.5,
+      "zero_storage_impervious_fraction": 0.5,
+      "impervious_manning": 0.03,
+      "pervious_manning": 0.04,
+      "impervious_depression_m": 0.002,
+      "pervious_depression_m": 0.004,
+      "infiltration": {
+        "suction_m": 0.04,
+        "conductivity_m_per_s": 0.00001,
+        "maximum_deficit": 0.3
+      },
+      "routing": {
+        "kind": "impervious-to-pervious",
+        "fraction": 0.5
+      }
+    }
+  ],
+  "intervals": [
+    {
+      "end_time_s": 60.0,
+      "rain_rate_m_per_s": 0.0001,
+      "potential_evaporation_m_per_s": 0.0000001
+    },
+    {
+      "end_time_s": 120.0,
+      "rain_rate_m_per_s": 0.0001,
+      "potential_evaporation_m_per_s": 0.0000001
+    }
+  ]
+}
