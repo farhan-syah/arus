@@ -8,6 +8,7 @@ publish.workspace = true
 [dependencies]
 arus-assets.workspace = true
 arus-domain.workspace = true
+arus-geo.workspace = true
 arus-jobs.workspace = true
 arus-model-api.workspace = true
 hydr.workspace = true

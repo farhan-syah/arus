@@ -360,3 +360,82 @@ fn pervious_modified_green_ampt_surface_conserves_and_resumes_bitwise() -> Resul
     assert!(budget.within_adjustment_limit());
     Ok(())
 }
+
+#[test]
+fn terrain_grid_nodata_maps_to_unsupported_hydr_cell() -> Result<(), String> {
+    use arus_domain::{GridSpec, SpatialReference};
+    use arus_geo::TerrainGrid;
+    use arus_hydraulics::{SurfaceEngine, domain_from_terrain};
+    use arus_jobs::StepBudget;
+    use hydr::model::{CellState, FlowState};
+    use hydr::soil::{LandModel, SoilState};
+    use hydr::solver::{
+        BoundaryConditions, ForcingInterval, ForcingSchedule, InitialState, SolverConfig,
+        SolverSetup,
+    };
+
+    let terrain = TerrainGrid::new(
+        GridSpec {
+            columns: 2,
+            rows: 1,
+            dx_m: 10.0,
+            dy_m: 10.0,
+        },
+        SpatialReference {
+            projected_crs: "EPSG:3375".to_owned(),
+            vertical_datum: "NGVD-MY".to_owned(),
+            origin_m: [0.0, 0.0],
+        },
+        "synthetic bare earth with nodata",
+        vec![Some(1.0), None],
+    )
+    .map_err(|e| e.to_string())?;
+
+    let domain = domain_from_terrain(&terrain, vec![0.03, 0.03]).map_err(|e| e.to_string())?;
+    let land = LandModel::impervious(&domain);
+    let soil = SoilState::initialized(&land).map_err(|e| e.to_string())?;
+    let flow = FlowState::new(&domain, vec![CellState::default(); 2]).map_err(|e| e.to_string())?;
+    let boundaries = BoundaryConditions::impermeable_walls();
+    let forcing = ForcingSchedule::new(
+        &domain,
+        &boundaries,
+        vec![ForcingInterval {
+            start: 0.0,
+            end: 10.0,
+            rain: vec![1e-4, 0.0],
+            potential_evaporation: vec![0.0; 2],
+            withdrawal: vec![0.0; 2],
+            boundaries: Vec::new(),
+        }],
+    )
+    .map_err(|e| e.to_string())?;
+
+    let mut engine = SurfaceEngine::new(
+        SolverSetup {
+            domain,
+            land,
+            boundaries,
+            forcing,
+            config: SolverConfig::default(),
+        },
+        InitialState {
+            time: 0.0,
+            flow,
+            soil,
+        },
+    )
+    .map_err(|e| e.to_string())?;
+    engine
+        .advance_to(10.0, StepBudget::new(10_000))
+        .map_err(|e| e.to_string())?;
+
+    assert!(matches!(
+        engine.cell_at(5.0, 5.0).map_err(|e| e.to_string())?,
+        CellSample::Wet { depth_m, .. } if (depth_m - 0.001).abs() < 1e-12
+    ));
+    assert_eq!(
+        engine.cell_at(15.0, 5.0).map_err(|e| e.to_string())?,
+        CellSample::Unsupported
+    );
+    Ok(())
+}

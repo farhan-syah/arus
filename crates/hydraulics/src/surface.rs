@@ -1,11 +1,13 @@
 //! Surface-flow engine wrapper over `hydr::solver::Solver<CpuRuntime>`.
 
+use arus_geo::TerrainGrid;
 use arus_jobs::{CancellationToken, StepBudget};
 use arus_model_api::{
     AdvanceOutcome, AdvanceSummary, CellSample, CheckpointPackage, ModelError, Result, StepSummary,
     WaterBudget,
 };
-use hydr::model::{CellState, Domain};
+use hydr::grid::CartesianGrid;
+use hydr::model::{CellState, Domain, SpatialReference as HydrSpatialReference};
 use hydr::solver::{
     AdvanceReport, AdvanceStatus, CellResult, ForcingSchedule, InitialState, Solver, SolverConfig,
     SolverSetup, WaterLedger,
@@ -13,6 +15,28 @@ use hydr::solver::{
 
 use crate::codec::{decode_snapshot, encode_snapshot};
 use crate::runtime::{ReferenceRuntime, reference_cpu_client};
+
+/// Converts an `arus_geo::TerrainGrid` and row-major Manning roughness array into a checked
+/// `hydr::model::Domain`. Nodata (`None`) terrain cells map to inactive hydraulic cells.
+pub fn domain_from_terrain(terrain: &TerrainGrid, manning: Vec<f64>) -> Result<Domain> {
+    let spec = terrain.grid();
+    let grid = CartesianGrid::new(spec.columns, spec.rows, spec.dx_m, spec.dy_m)
+        .map_err(|error| ModelError::InvalidInput(error.to_string()))?;
+    let reference = HydrSpatialReference::new(
+        terrain.reference().projected_crs.clone(),
+        terrain.reference().vertical_datum.clone(),
+        terrain.reference().origin_m,
+    )
+    .map_err(|error| ModelError::InvalidInput(error.to_string()))?;
+    let active = terrain.active_mask();
+    let bed: Vec<f64> = terrain
+        .cells()
+        .iter()
+        .map(|cell| cell.unwrap_or(0.0))
+        .collect();
+    Domain::new(grid, bed, manning, active, reference)
+        .map_err(|error| ModelError::InvalidInput(error.to_string()))
+}
 
 /// Named projected coordinate probe evaluated at accepted solver steps.
 #[derive(Debug, Clone, PartialEq)]

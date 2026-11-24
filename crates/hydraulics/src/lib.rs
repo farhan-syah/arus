@@ -17,4 +17,4 @@ pub use coupled::{BankExchangeSummary, CoupledSurfaceChannelEngine};
 pub use demo::{
     ClosedBasinDemoReport, NativeWorkerDemoReport, run_closed_basin_demo, run_native_worker_demo,
 };
-pub use surface::{LocationProbe, ProbeSample, SurfaceEngine};
+pub use surface::{LocationProbe, ProbeSample, SurfaceEngine, domain_from_terrain};

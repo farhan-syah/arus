@@ -148,6 +148,7 @@ dependencies = [
  "arus-domain",
  "arus-evaluation",
  "arus-forecasting",
+ "arus-geo",
  "arus-jobs",
  "arus-model-api",
  "hydr",
@@ -234,6 +235,9 @@ version = "0.1.0"
 dependencies = [
  "arus-assets",
  "arus-domain",
+ "serde",
+ "tempfile",
+ "thiserror",
 ]
 
 [[package]]
