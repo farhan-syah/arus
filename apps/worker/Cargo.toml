@@ -7,8 +7,11 @@ publish.workspace = true
 
 [dependencies]
 arus-assets.workspace = true
+arus-hydraulics.workspace = true
 arus-jobs.workspace = true
 arus-model-api.workspace = true
+clap.workspace = true
+serde_json.workspace = true
 
 [lints]
 workspace = true

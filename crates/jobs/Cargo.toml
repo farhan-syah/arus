@@ -8,6 +8,8 @@ publish.workspace = true
 [dependencies]
 arus-assets.workspace = true
 arus-domain.workspace = true
+arus-model-api.workspace = true
+serde.workspace = true
 
 [lints]
 workspace = true

@@ -4,13 +4,14 @@ ARUS is a scaffold for location-specific flood forecasting, monitoring, and scen
 
 ## Status
 
-- Scope: Public data catalog and repeatable raw-data acquisition.
+- Scope: Public data catalog, raw-data acquisition, and initial `hydr` CPU `F64` surface adapter.
 - CLI: Inspect sources, check recipes, collect snapshots, and report acquisition status.
-- Other applications: Native executables print scaffold status and exit.
+- Worker: Print `hydr` capabilities and run synthetic CPU `F64` conservation, cancellation, checkpoint, and forecast-splice demonstrations.
+- Other applications: `apps/api` and `apps/web` print scaffold status and exit.
 - Forecast scope: Onset, depth evolution, peak, duration, and recession below declared thresholds.
 - Acquisition: Government weather, numerical forecast recipes, and satellite metadata discovery.
-- Product integrations: Dioxus, Axum, NodeDB Lite, GIS, and numerical engines remain unconfigured.
-- Capabilities: No flood predictions, hydraulic simulations, or optimisation run yet.
+- Product integrations: Dioxus, Axum, NodeDB Lite, and GIS remain unconfigured. `hydr 0.1.0` powers `arus-hydraulics` on CPU `F64`.
+- Capabilities: No site-calibrated flood predictions, coupled networks, or optimisation run yet.
 
 ## Requirements
 
@@ -78,11 +79,10 @@ Copy the Cargo config template before adding local dependency overrides.
 cp .cargo/config.toml.example .cargo/config.toml
 ```
 
-- `.cargo/config.toml` stays ignored. Activate path overrides during the dependency spike.
-- The template uses example paths for NodeDB and rust-llm checkouts.
+- `.cargo/config.toml` stays ignored. Activate local sibling overrides during local development, and keep committed `Cargo.lock` pinned to published crates.io versions.
+- The template uses sibling paths for `rust-llm` (`hydr`, `numr`, `solvr`) and `NodeDB` checkouts.
 - Local `nodedb-lite` uses development NodeDB packages. Check its complete override graph before integration.
-- Local `solvr` requires `numr 0.14`. Local `numr` is `0.15.2`.
-- Keep incompatible numerical adapters separate. Do not force shared tensor types.
+- `hydr 0.1.0` resolves with `numr 0.16.0` and `solvr 0.4.0`. Keep `hydr` and `numr` types inside `arus-hydraulics`.
 - `data/`, `artifacts/`, and `scratch/` hold ignored local runtime files.
 - `Cargo.lock` stays tracked for reproducible workspace resolution.
 

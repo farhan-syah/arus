@@ -7,8 +7,11 @@ ARUS separates browser contracts, forecast orchestration, numerical execution, a
 - The CLI checks the public catalog, plans collection, archives responses, and reports acquisition status.
 - `arus-ingest` implements source contracts and collection lifecycle rules.
 - `arus-assets` implements immutable raw blobs, acquisition metadata, and archive locking.
-- Other application entry points and scientific libraries remain scaffold boundaries.
-- No hydraulic models, flood predictions, or forecast publication rules exist yet.
+- `arus-domain`, `arus-model-api`, and `arus-jobs` define backend-agnostic provenance, capability, water-budget, cancellation, and checkpoint contracts.
+- `arus-hydraulics` wraps `hydr 0.1.0` on the sequential CPU `F64` reference runtime with an exact binary checkpoint codec.
+- `arus-worker` prints `hydr` surface capabilities and runs synthetic numerical demonstrations.
+- `apps/api`, `apps/web`, and remaining scientific libraries stay scaffold boundaries.
+- No calibrated flood predictions or operational forecast publication rules exist yet.
 
 ## Boundaries
 

@@ -2,13 +2,12 @@
 [alias]
 check-all = "check --workspace --all-targets --locked --offline"
 
-# Activate overrides only when adding and checking their dependencies.
-# NodeDB Lite requires additional local development-package overrides.
+# Activate overrides only when adding and checking local sibling checkouts.
+# Committed Cargo.toml and Cargo.lock stay pinned to published crates.io versions.
 # [patch.crates-io]
-# nodedb-lite = { path = "/path/to/NodeDB/nodedb-lite/nodedb-lite" }
-# numr = { path = "/path/to/rust-llm/numr" }
-# solvr = { path = "/path/to/rust-llm/solvr" }
-# boostr = { path = "/path/to/rust-llm/boostr" }
-# treeboost = { path = "/path/to/rust-llm/TreeBoost" }
-
-# solvr requires numr 0.14. The local numr checkout supplies 0.15.2.
+# hydr = { path = "../rust-llm/hydr" }
+# numr = { path = "../rust-llm/numr" }
+# solvr = { path = "../rust-llm/solvr" }
+# nodedb-lite = { path = "../NodeDB/nodedb-lite/nodedb-lite" }
+# boostr = { path = "../rust-llm/boostr" }
+# treeboost = { path = "../rust-llm/TreeBoost" }
