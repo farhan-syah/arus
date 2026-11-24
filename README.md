@@ -4,14 +4,12 @@ ARUS is a scaffold for location-specific flood forecasting, monitoring, and scen
 
 ## Status
 
-- Scope: Public data catalog, raw-data acquisition, and initial `hydr` CPU `F64` surface adapter.
-- CLI: Inspect sources, check recipes, collect snapshots, and report acquisition status.
-- Worker: Print `hydr` capabilities and run synthetic CPU `F64` conservation, cancellation, checkpoint, and forecast-splice demonstrations.
-- Other applications: `apps/api` and `apps/web` print scaffold status and exit.
-- Forecast scope: Onset, depth evolution, peak, duration, and recession below declared thresholds.
-- Acquisition: Government weather, numerical forecast recipes, and satellite metadata discovery.
-- Product integrations: Dioxus, Axum, NodeDB Lite, and GIS remain unconfigured. `hydr 0.1.0` powers `arus-hydraulics` on CPU `F64`.
-- Capabilities: No site-calibrated flood predictions, coupled networks, or optimisation run yet.
+- Scope: Public data catalog, raw-data acquisition, `hydr 0.1.0` CPU `F64` hydrology/hydraulics adapters, deterministic episode extraction, censored evaluation, scenario screening, archive-backed run storage, Axum HTTP API, and bilingual web view renderer.
+- CLI (`apps/cli`): Inspect sources, check recipes, collect snapshots, and report acquisition status.
+- Worker (`apps/worker`): Print all 23 `hydr` component capabilities, run synthetic CPU `F64` demonstrations, and emit/persist JSON `ApiLocationOutlook` + `RunRecord` bundles.
+- API (`apps/api`): Axum HTTP server serving `/health`, `/api/v1/runs`, `/api/v1/runs/{run_id}`, and `/api/v1/runs/{run_id}/outlook` from `RunStore`.
+- Web (`apps/web`): Browser-compatible bilingual (Bahasa Malaysia / English) HTML outlook renderer free of native solver, GIS, or database dependencies.
+- Scientific boundary: Synthetic demonstrations and contracts pass offline checks; site-calibrated Malaysian operational forecasts require surveyed catchment geometry, gauge history, and independent locked-event evaluation.
 
 ## Requirements
 

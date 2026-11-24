@@ -7,11 +7,12 @@ ARUS separates browser contracts, forecast orchestration, numerical execution, a
 - The CLI checks the public catalog, plans collection, archives responses, and reports acquisition status.
 - `arus-ingest` implements source contracts and collection lifecycle rules.
 - `arus-assets` implements immutable raw blobs, acquisition metadata, and archive locking.
-- `arus-domain`, `arus-model-api`, and `arus-jobs` define backend-agnostic provenance, capability, water-budget, cancellation, and checkpoint contracts.
-- `arus-hydraulics` wraps `hydr 0.1.0` on the sequential CPU `F64` reference runtime with an exact binary checkpoint codec.
-- `arus-worker` prints `hydr` surface capabilities and runs synthetic numerical demonstrations.
-- `apps/api`, `apps/web`, and remaining scientific libraries stay scaffold boundaries.
-- No calibrated flood predictions or operational forecast publication rules exist yet.
+- `arus-domain`, `arus-api-types`, `arus-model-api`, and `arus-jobs` define backend-agnostic provenance, transport, capability, water-budget, cancellation, and checkpoint contracts.
+- `arus-hydraulics` wraps `hydr 0.1.0` on CPU `F64` (2D surface, pervious Modified Green-Ampt soil, coupled `SurfaceChannelBatch`, 23-component capabilities, exact binary checkpoint codec, and `arus-geo` terrain bridge).
+- `arus-hydrology` wraps `hydr::runoff::SubcatchmentBatch` on CPU `F64`.
+- `arus-forecasting`, `arus-evaluation`, `arus-geo`, `arus-scenarios`, `arus-optimisation`, `arus-ml`, and `arus-storage` implement deterministic episode tracking, censored scoring, terrain conditioning, paired scenario comparisons, Pareto mitigation screening, ML baseline gating, and archive-backed run persistence.
+- `arus-worker`, `arus-api` (Axum), and `arus-web` (bilingual BM/EN browser-safe renderer) connect the vertical pipeline end to end.
+- No calibrated Malaysian operational forecasts exist yet; scientific qualification requires surveyed catchment inputs and locked-event evaluation.
 
 ## Boundaries
 
