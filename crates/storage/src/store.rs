@@ -8,6 +8,7 @@ use serde::{Deserialize, Serialize};
 
 const RUN_COLLECTION: &str = "runs";
 const INDEX_RELATIVE_PATH: &str = "state/runs-index.json";
+const PUBLISHED_RELATIVE_PATH: &str = "state/published-current.json";
 
 /// Typed errors returned by run storage operations.
 #[derive(Debug, thiserror::Error)]
@@ -37,6 +38,17 @@ pub struct RunRecord {
 pub struct RunIndex {
     pub latest_run_id: Option<String>,
     pub run_ids: Vec<String>,
+}
+
+/// Atomic pointer to the currently published operational forecast cycle.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PublishedPointer {
+    pub cycle_id: String,
+    pub cycle_sequence: u64,
+    pub run_id: String,
+    pub valid_from_unix_s: i64,
+    pub expires_at_unix_s: i64,
+    pub supersedes_cycle_id: Option<String>,
 }
 
 /// Durable run store backed by an immutable `arus_assets::Archive`.
@@ -91,5 +103,26 @@ impl<'a> RunStore<'a> {
             .archive
             .read_json(Path::new(INDEX_RELATIVE_PATH))?
             .unwrap_or_default())
+    }
+
+    /// Reads the currently published operational forecast pointer, if any.
+    pub fn load_published(&self) -> Result<Option<PublishedPointer>> {
+        Ok(self.archive.read_json(Path::new(PUBLISHED_RELATIVE_PATH))?)
+    }
+
+    /// Atomically advances the published pointer, refusing non-monotonic cycle sequences.
+    pub fn set_published(&self, pointer: &PublishedPointer) -> Result<()> {
+        let _guard = self.archive.lock()?;
+        if let Some(current) = self.load_published()?
+            && pointer.cycle_sequence <= current.cycle_sequence
+        {
+            return Err(StorageError::InvalidRecord(format!(
+                "cycle_sequence {} does not advance beyond published {}",
+                pointer.cycle_sequence, current.cycle_sequence
+            )));
+        }
+        self.archive
+            .write_json_atomic(Path::new(PUBLISHED_RELATIVE_PATH), pointer)?;
+        Ok(())
     }
 }

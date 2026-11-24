@@ -4,4 +4,4 @@
 
 pub mod store;
 
-pub use store::{Result, RunIndex, RunRecord, RunStore, StorageError};
+pub use store::{PublishedPointer, Result, RunIndex, RunRecord, RunStore, StorageError};

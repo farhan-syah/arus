@@ -43,3 +43,36 @@ fn run_store_persists_immutably_and_rejects_duplicate_ids() -> Result<(), String
     assert_eq!(index.run_ids, vec!["run-001", "run-002"]);
     Ok(())
 }
+
+#[test]
+fn published_pointer_enforces_monotonic_sequence() -> Result<(), String> {
+    use arus_storage::PublishedPointer;
+
+    let temp = TempDir::new().map_err(|e| e.to_string())?;
+    let archive = Archive::open(temp.path()).map_err(|e| e.to_string())?;
+    let store = RunStore::new(&archive);
+    assert_eq!(store.load_published().map_err(|e| e.to_string())?, None);
+
+    let p1 = PublishedPointer {
+        cycle_id: "cycle-1".to_owned(),
+        cycle_sequence: 1,
+        run_id: "run-1".to_owned(),
+        valid_from_unix_s: 100,
+        expires_at_unix_s: 500,
+        supersedes_cycle_id: None,
+    };
+    store.set_published(&p1).map_err(|e| e.to_string())?;
+    assert!(store.set_published(&p1).is_err());
+
+    let p2 = PublishedPointer {
+        cycle_id: "cycle-2".to_owned(),
+        cycle_sequence: 2,
+        run_id: "run-2".to_owned(),
+        valid_from_unix_s: 200,
+        expires_at_unix_s: 600,
+        supersedes_cycle_id: Some("cycle-1".to_owned()),
+    };
+    store.set_published(&p2).map_err(|e| e.to_string())?;
+    assert_eq!(store.load_published().map_err(|e| e.to_string())?, Some(p2));
+    Ok(())
+}

@@ -5,7 +5,7 @@ use std::sync::Arc;
 
 use arus_api_types::{API_SCHEMA_VERSION, ApiLocationOutlook};
 use arus_assets::Archive;
-use arus_storage::{RunIndex, RunRecord, RunStore};
+use arus_storage::{PublishedPointer, RunIndex, RunRecord, RunStore};
 use arus_web::{Locale, render_outlook_html};
 use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
@@ -49,11 +49,24 @@ struct LangQuery {
 pub fn router(state: ApiState) -> Router {
     Router::new()
         .route("/health", get(health))
+        .route("/api/v1/published", get(get_published))
         .route("/api/v1/runs", get(list_runs))
         .route("/api/v1/runs/{run_id}", get(get_run))
         .route("/api/v1/runs/{run_id}/outlook", get(get_run_outlook))
         .route("/runs/{run_id}", get(render_run_html))
         .with_state(state)
+}
+
+async fn get_published(
+    State(state): State<ApiState>,
+) -> Result<Json<PublishedPointer>, (StatusCode, Json<ErrorResponse>)> {
+    let store = RunStore::new(&state.archive);
+    match store.load_published().map_err(internal_error)? {
+        Some(pointer) => Ok(Json(pointer)),
+        None => Err(not_found(
+            "no operational forecast is currently published".to_owned(),
+        )),
+    }
 }
 
 async fn health() -> Json<HealthResponse> {

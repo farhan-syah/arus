@@ -114,6 +114,7 @@ async fn api_serves_health_runs_and_outlooks_from_archive() -> Result<(), String
     assert!(html.contains("basin-center"));
 
     let missing_resp = app
+        .clone()
         .oneshot(
             Request::builder()
                 .uri("/api/v1/runs/does-not-exist")
@@ -123,5 +124,16 @@ async fn api_serves_health_runs_and_outlooks_from_archive() -> Result<(), String
         .await
         .map_err(|e| e.to_string())?;
     assert_eq!(missing_resp.status(), StatusCode::NOT_FOUND);
+
+    let pub_resp = app
+        .oneshot(
+            Request::builder()
+                .uri("/api/v1/published")
+                .body(Body::empty())
+                .map_err(|e| e.to_string())?,
+        )
+        .await
+        .map_err(|e| e.to_string())?;
+    assert_eq!(pub_resp.status(), StatusCode::NOT_FOUND);
     Ok(())
 }

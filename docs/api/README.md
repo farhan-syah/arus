@@ -14,6 +14,7 @@ cargo run -p arus-api -- --archive data/runs --bind 127.0.0.1:8080
 | Method | Path | Response |
 | --- | --- | --- |
 | `GET` | `/health` | `{ "status": "ok", "schema_version": "arus-api-v1" }` |
+| `GET` | `/api/v1/published` | Current `PublishedPointer` or `404` when no operational forecast is published |
 | `GET` | `/api/v1/runs` | `RunIndex` (`latest_run_id`, `run_ids`) |
 | `GET` | `/api/v1/runs/{run_id}` | `RunRecord` (`provenance`, `conservation_passed`, blob refs) or `404` |
 | `GET` | `/api/v1/runs/{run_id}/outlook` | `Vec<ApiLocationOutlook>` or `404` |
