@@ -7,6 +7,8 @@ publish.workspace = true
 
 [dependencies]
 arus-api-types.workspace = true
+arus-domain.workspace = true
+serde_json.workspace = true
 
 [lints]
 workspace = true
