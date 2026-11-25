@@ -1631,9 +1631,11 @@ where
                     }
                     let slope = max_drop / terrain.grid().dx_m.max(1.0);
                     let relief_m = (z - low_z_cutoff).max(0.0);
-                    let upland_mm_hr = if relief_m > 12.0 || slope > 0.015 {
-                        ((relief_m - 12.0).max(0.0) / 50.0).clamp(0.0, 1.0) * 14.0
-                            + ((slope - 0.015).max(0.0) / 0.04).clamp(0.0, 1.0) * 12.0
+                    // Only steep hillslopes get fast subsurface interflow; flat inland valleys
+                    // and closed depressions (e.g. Ijok, Kajang) keep valley-floor drainage.
+                    let upland_mm_hr = if !depression_mask[idx] && slope > 0.015 {
+                        ((slope - 0.015) / 0.035).clamp(0.0, 1.0) * 18.0
+                            + ((relief_m - 20.0).max(0.0) / 80.0).clamp(0.0, 1.0) * 10.0
                     } else {
                         0.0
                     };

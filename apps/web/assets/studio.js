@@ -1581,11 +1581,32 @@ async function fetchTerrariumElevations(centerLon, centerLat, cols, rows, dxM) {
   let validCount = 0;
   let minZ = Infinity;
   let maxZ = -Infinity;
+  const useSubgridPool = dxM >= 150;
   for (const s of samples) {
     const data = tileData.get(s.tkey);
     if (!data) { raw.push(null); continue; }
-    const off = (s.py * 256 + s.px) * 4;
-    const z = (data[off] * 256 + data[off + 1] + data[off + 2] / 256) - 32768;
+    let z = NaN;
+    if (useSubgridPool) {
+      // 3x3 sub-grid lower-quartile (p25) pooling preserves narrow inland flood valleys
+      // (e.g. 300-500 m kampung depressions) on coarse district/statewide meshes.
+      const vals = [];
+      for (let dy = -1; dy <= 1; dy++) {
+        const py = Math.min(255, Math.max(0, s.py + dy));
+        for (let dx = -1; dx <= 1; dx++) {
+          const px = Math.min(255, Math.max(0, s.px + dx));
+          const off = (py * 256 + px) * 4;
+          const v = (data[off] * 256 + data[off + 1] + data[off + 2] / 256) - 32768;
+          if (Number.isFinite(v) && v > 0.05) vals.push(v);
+        }
+      }
+      if (vals.length >= 3) {
+        vals.sort((a, b) => a - b);
+        z = vals[Math.floor(vals.length * 0.25)];
+      }
+    } else {
+      const off = (s.py * 256 + s.px) * 4;
+      z = (data[off] * 256 + data[off + 1] + data[off + 2] / 256) - 32768;
+    }
     // Mask open ocean / sea-level water (z <= 0.05 m) as inactive nodata so coastal
     // administrative boundaries never simulate floodwater on top of the sea.
     if (Number.isFinite(z) && z > 0.05) {
