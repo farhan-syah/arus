@@ -877,9 +877,6 @@ function updateSmoothWaterImage(meta, env, frame) {
       const out = (py * W + px) * 4;
 
       if (!meta.active_mask[rNearest * cols + cNearest]) {
-        if (((px + py) % 10) < 2) {
-          data[out] = 225; data[out + 1] = 29; data[out + 2] = 72; data[out + 3] = 110;
-        }
         continue;
       }
 
@@ -1589,7 +1586,9 @@ async function fetchTerrariumElevations(centerLon, centerLat, cols, rows, dxM) {
     if (!data) { raw.push(null); continue; }
     const off = (s.py * 256 + s.px) * 4;
     const z = (data[off] * 256 + data[off + 1] + data[off + 2] / 256) - 32768;
-    if (Number.isFinite(z)) {
+    // Mask open ocean / sea-level water (z <= 0.05 m) as inactive nodata so coastal
+    // administrative boundaries never simulate floodwater on top of the sea.
+    if (Number.isFinite(z) && z > 0.05) {
       raw.push(z);
       validCount++;
       if (z < minZ) minZ = z;
@@ -1598,7 +1597,7 @@ async function fetchTerrariumElevations(centerLon, centerLat, cols, rows, dxM) {
       raw.push(null);
     }
   }
-  if (validCount < cols * rows * 0.8 || (maxZ - minZ) < 0.2) return null;
+  if (validCount < cols * rows * 0.15 || (maxZ - minZ) < 0.2) return null;
   const elevations = smoothScreeningDem(raw, cols, rows);
   state.cachedDem = { key, elevations };
   return elevations;
@@ -1992,7 +1991,7 @@ function updateFrameTelemetry() {
     let sum = 0;
     for (const pt of state.spatialRainGrid.hourly_mm) sum += (pt[hIdx] || 0);
     const meanRate = sum / state.spatialRainGrid.hourly_mm.length;
-    rainPart = `${meanRate.toFixed(1)} mm/hr spatial NWP`;
+    rainPart = `${meanRate.toFixed(1)} mm/hr NWP`;
   } else if (state.hourlyRainMm && state.hourlyRainMm.length > 0 && state.frames.length > 0) {
     const frac = state.frames.length > 1
       ? Math.min(state.frameIdx, state.frames.length - 1) / (state.frames.length - 1)
@@ -2329,7 +2328,7 @@ function updateLiveHotspots(frameIdx) {
           statusText = `${liveStage.toFixed(2)} m · ${hCur.toFixed(2)} m`;
         }
       } else {
-        tone = hCur >= 0.35 ? 'danger' : hCur >= 0.08 ? 'warn' : '';
+        tone = hCur >= 0.35 ? 'danger' : hCur >= 0.06 ? 'warn' : '';
         statusText = hCur >= 0.06 ? `~${hCur.toFixed(1)} m est.` : 'Dry (<6 cm)';
       }
 
