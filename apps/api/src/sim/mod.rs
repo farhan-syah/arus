@@ -554,6 +554,18 @@ pub struct CreateSimulationRequest {
     /// Coastal tide-lock mode (`live` uses `hourly_tide_m`, `spring-high` applies `+2.2 m`, `off` disables).
     #[serde(default)]
     pub tide_mode: TideMode,
+    /// Baseline engineered storm-drain capacity score in `0.0..=1.0`
+    /// (`0.0` = clogged/none, `0.5` = average urban/rural drains, `1.0` = high-capacity trunk drains).
+    #[serde(default = "default_storm_drain_score")]
+    pub storm_drain_score: f64,
+    /// Optional per-cell engineered storm-drain capacity grid (`cols * rows`, each `0.0..=1.0`)
+    /// replacing `storm_drain_score` when real local drainage network survey or GIS data is supplied.
+    #[serde(default)]
+    pub storm_drain_grid: Option<Vec<f64>>,
+}
+
+const fn default_storm_drain_score() -> f64 {
+    0.5
 }
 
 const fn default_lon() -> f64 {
@@ -856,6 +868,20 @@ fn validate_request(
             "drainage_mm_per_hr must be finite nonnegative".to_owned(),
         ));
     }
+    if !req.storm_drain_score.is_finite() || !(0.0..=1.0).contains(&req.storm_drain_score) {
+        return Err((
+            422,
+            "storm_drain_score must be finite in [0.0, 1.0]".to_owned(),
+        ));
+    }
+    if let Some(dg) = &req.storm_drain_grid
+        && dg.iter().any(|v| !v.is_finite() || !(0.0..=1.0).contains(v))
+    {
+        return Err((
+            422,
+            "storm_drain_grid values must be finite in [0.0, 1.0]".to_owned(),
+        ));
+    }
     if !req.evaporation_mm_per_day.is_finite() || req.evaporation_mm_per_day < 0.0 {
         return Err((
             422,
@@ -1082,6 +1108,17 @@ fn compute_request_hash(req: &CreateSimulationRequest) -> [u8; 32] {
         hash_f64(&mut h, v);
     }
     hash_f64(&mut h, req.drainage_mm_per_hr);
+    hash_f64(&mut h, req.storm_drain_score);
+    match &req.storm_drain_grid {
+        None => h.update([0u8]),
+        Some(dg) => {
+            h.update([1u8]);
+            hash_usize(&mut h, dg.len());
+            for &v in dg {
+                hash_f64(&mut h, v);
+            }
+        }
+    }
     hash_f64(&mut h, req.evaporation_mm_per_day);
     hash_usize(&mut h, req.observed_gauges.len());
     for g in &req.observed_gauges {
@@ -1555,7 +1592,7 @@ where
                         fallback_evap_m_s * cloud_rain_suppress
                     };
 
-                    // Dynamic per-cell soil moisture saturation -> infiltration capacity
+                    // Natural soil infiltration + upland hillslope subsurface interflow
                     let sm = soil_sm[idx];
                     let sat_deficit = (1.0 - sm / 0.52).clamp(0.08, 1.0);
                     let dynamic_infil_factor = sat_deficit.powf(1.4);
@@ -1567,7 +1604,7 @@ where
                     };
                     soil_sm[idx] = (sm + rain_gain - dry_loss).clamp(0.12, 0.52);
 
-                    let mut drain_factor = if depression_mask[idx] {
+                    let mut soil_factor = if depression_mask[idx] {
                         0.20 * dynamic_infil_factor
                     } else if z <= low_z_cutoff {
                         0.55 * dynamic_infil_factor
@@ -1575,9 +1612,54 @@ where
                         1.45 * dynamic_infil_factor
                     };
                     if z <= 3.5 && tide_lock > 0.0 {
-                        drain_factor *= 1.0 - 0.75 * tide_lock;
+                        soil_factor *= 1.0 - 0.75 * tide_lock;
                     }
-                    loss_grid[idx] = local_et0_m_s + eff_drain_m_s * drain_factor;
+
+                    // Local slope & relief for well-drained tropical upland hills/forests
+                    let mut max_drop = 0.0f64;
+                    for (dr, dc) in [(-1isize, 0isize), (1, 0), (0, -1), (0, 1)] {
+                        let nr = r as isize + dr;
+                        let nc = c as isize + dc;
+                        if nr >= 0
+                            && nc >= 0
+                            && nr < rows as isize
+                            && nc < cols as isize
+                            && let Some(nz) = terrain.cells()[(nr as usize) * cols + (nc as usize)]
+                        {
+                            max_drop = max_drop.max(z - nz);
+                        }
+                    }
+                    let slope = max_drop / terrain.grid().dx_m.max(1.0);
+                    let relief_m = (z - low_z_cutoff).max(0.0);
+                    let upland_mm_hr = if relief_m > 12.0 || slope > 0.015 {
+                        ((relief_m - 12.0).max(0.0) / 50.0).clamp(0.0, 1.0) * 14.0
+                            + ((slope - 0.015).max(0.0) / 0.04).clamp(0.0, 1.0) * 12.0
+                    } else {
+                        0.0
+                    };
+                    let upland_drain_m_s = (upland_mm_hr / 3_600_000.0) * time_compression;
+
+                    // Engineered storm-drain capacity (independent of soil saturation;
+                    // reduced only in closed depressions, active river channels, or coastal tide-lock)
+                    let cell_sd = req
+                        .storm_drain_grid
+                        .as_ref()
+                        .and_then(|g| g.get(idx).copied())
+                        .unwrap_or(req.storm_drain_score)
+                        .clamp(0.0, 1.0);
+                    let mut sd_factor = cell_sd * 0.25;
+                    if a >= channel_accum_min {
+                        sd_factor *= 0.15;
+                    } else if depression_mask[idx] {
+                        sd_factor *= 0.25;
+                    }
+                    if z <= 3.5 && tide_lock > 0.0 {
+                        sd_factor *= 1.0 - 0.80 * tide_lock;
+                    }
+
+                    loss_grid[idx] = local_et0_m_s
+                        + eff_drain_m_s * (soil_factor + sd_factor)
+                        + upland_drain_m_s;
                 }
             }
 

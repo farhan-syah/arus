@@ -190,6 +190,14 @@ struct WasmSimRequest {
     enable_drainage: bool,
     #[serde(default)]
     tide_mode: TideMode,
+    #[serde(default = "default_storm_drain_score")]
+    storm_drain_score: f64,
+    #[serde(default)]
+    storm_drain_grid: Option<Vec<f64>>,
+}
+
+const fn default_storm_drain_score() -> f64 {
+    0.5
 }
 
 #[derive(Debug, Serialize)]
@@ -616,6 +624,14 @@ fn prepare_problem(req: &WasmSimRequest) -> Result<PreparedProblem, String> {
                 Vec::new()
             };
 
+            let mut valid_z: Vec<f64> = cells.iter().filter_map(|&z| z).collect();
+            valid_z.sort_by(f64::total_cmp);
+            let low_z_cutoff = if valid_z.is_empty() {
+                10.0
+            } else {
+                valid_z[(valid_z.len() * 30) / 100]
+            };
+
             let mut rain = vec![0.0f32; n];
             let mut evap = vec![0.0f32; n];
             let mut withdrawal = vec![0.0f32; n];
@@ -653,7 +669,40 @@ fn prepare_problem(req: &WasmSimRequest) -> Result<PreparedProblem, String> {
                     } else {
                         local_evap as f32
                     };
-                    withdrawal[idx] = (base_drain_m_s * time_compression) as f32;
+                    let mut max_drop = 0.0f64;
+                    for (dr, dc) in [(-1isize, 0isize), (1, 0), (0, -1), (0, 1)] {
+                        let nr = r as isize + dr;
+                        let nc = c as isize + dc;
+                        if nr >= 0
+                            && nc >= 0
+                            && nr < rows as isize
+                            && nc < cols as isize
+                            && let Some(nz) = cells[(nr as usize) * cols + (nc as usize)]
+                        {
+                            max_drop = max_drop.max(z - nz);
+                        }
+                    }
+                    let slope = max_drop / req.dx_m.max(1.0);
+                    let relief_m = (z - low_z_cutoff).max(0.0);
+                    let upland_mm_hr = if relief_m > 12.0 || slope > 0.015 {
+                        ((relief_m - 12.0).max(0.0) / 50.0).clamp(0.0, 1.0) * 14.0
+                            + ((slope - 0.015).max(0.0) / 0.04).clamp(0.0, 1.0) * 12.0
+                    } else {
+                        0.0
+                    };
+                    let cell_sd = req
+                        .storm_drain_grid
+                        .as_ref()
+                        .and_then(|g| g.get(idx).copied())
+                        .unwrap_or(req.storm_drain_score)
+                        .clamp(0.0, 1.0);
+                    let mut sd_factor = cell_sd * 0.25;
+                    if z <= 3.5 && tide_lock > 0.0 {
+                        sd_factor *= 1.0 - 0.80 * tide_lock;
+                    }
+                    withdrawal[idx] = ((base_drain_m_s * (0.25 + sd_factor)
+                        + upland_mm_hr / 3_600_000.0)
+                        * time_compression) as f32;
                 }
             }
             intervals.push(ForcingInterval {
