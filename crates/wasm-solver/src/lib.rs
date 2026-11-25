@@ -695,8 +695,24 @@ fn prepare_problem(req: &WasmSimRequest) -> Result<PreparedProblem, String> {
                     if z <= 3.5 && tide_lock > 0.0 {
                         sd_factor *= 1.0 - 0.80 * tide_lock;
                     }
+                    let touches_sea = [(-1isize, 0isize), (1, 0), (0, -1), (0, 1)]
+                        .into_iter()
+                        .any(|(dr, dc)| {
+                            let nr = r as isize + dr;
+                            let nc = c as isize + dc;
+                            nr >= 0
+                                && nc >= 0
+                                && nr < rows as isize
+                                && nc < cols as isize
+                                && cells[(nr as usize) * cols + (nc as usize)].is_none()
+                        });
+                    let sea_outfall_mm_hr = if touches_sea {
+                        120.0 * (1.0 - 0.25 * tide_lock)
+                    } else {
+                        0.0
+                    };
                     withdrawal[idx] = ((base_drain_m_s * (0.25 + sd_factor)
-                        + upland_mm_hr / 3_600_000.0)
+                        + (upland_mm_hr + sea_outfall_mm_hr) / 3_600_000.0)
                         * time_compression) as f32;
                 }
             }

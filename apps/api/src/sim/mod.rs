@@ -1656,9 +1656,35 @@ where
                         sd_factor *= 1.0 - 0.80 * tide_lock;
                     }
 
+                    // Sea-adjacent shoreline cells act as physical ocean outfalls so rivers and
+                    // coastal runoff exit into the masked sea instead of backing up against the
+                    // inactive-cell wall; high tide throttles estuary outfall (tidal backwater).
+                    let touches_sea = [(-1isize, 0isize), (1, 0), (0, -1), (0, 1)]
+                        .into_iter()
+                        .any(|(dr, dc)| {
+                            let nr = r as isize + dr;
+                            let nc = c as isize + dc;
+                            nr >= 0
+                                && nc >= 0
+                                && nr < rows as isize
+                                && nc < cols as isize
+                                && terrain.cells()[(nr as usize) * cols + (nc as usize)].is_none()
+                        });
+                    let sea_outfall_m_s = if touches_sea {
+                        let tide_throttle = if a >= channel_accum_min {
+                            1.0 - 0.65 * tide_lock
+                        } else {
+                            1.0 - 0.25 * tide_lock
+                        };
+                        (120.0 * tide_throttle / 3_600_000.0) * time_compression
+                    } else {
+                        0.0
+                    };
+
                     loss_grid[idx] = local_et0_m_s
                         + eff_drain_m_s * (soil_factor + sd_factor)
-                        + upland_drain_m_s;
+                        + upland_drain_m_s
+                        + sea_outfall_m_s;
                 }
             }
 
@@ -1672,11 +1698,34 @@ where
                     .iter()
                     .copied()
                     .map(|face| {
-                        let c = face.column.min(cols - 1);
-                        let r = face.row.min(rows - 1);
-                        let idx = r * cols + c;
-                        let is_estuary = accum[idx] >= channel_accum_min;
-                        if is_estuary
+                        let land_idx = match face.axis {
+                            BoundaryAxisSpec::X => {
+                                let r = face.row.min(rows - 1);
+                                if face.column < cols && terrain.cells()[r * cols + face.column].is_some() {
+                                    Some(r * cols + face.column)
+                                } else if face.column > 0
+                                    && terrain.cells()[r * cols + (face.column - 1)].is_some()
+                                {
+                                    Some(r * cols + (face.column - 1))
+                                } else {
+                                    None
+                                }
+                            }
+                            BoundaryAxisSpec::Y => {
+                                let c = face.column.min(cols - 1);
+                                if face.row < rows && terrain.cells()[face.row * cols + c].is_some() {
+                                    Some(face.row * cols + c)
+                                } else if face.row > 0
+                                    && terrain.cells()[(face.row - 1) * cols + c].is_some()
+                                {
+                                    Some((face.row - 1) * cols + c)
+                                } else {
+                                    None
+                                }
+                            }
+                        };
+                        if let Some(idx) = land_idx
+                            && accum[idx] >= channel_accum_min
                             && let Some(z) = terrain.cells()[idx]
                             && z <= bin_tide_m + 0.5
                         {

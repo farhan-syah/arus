@@ -85,12 +85,20 @@ pub(crate) fn condition_hydrological_dem(elevations: &mut [Option<f64>], cols: u
 
     for r in 0..rows {
         for c in 0..cols {
-            if r == 0 || r + 1 == rows || c == 0 || c + 1 == cols {
-                let idx = r * cols + c;
-                if let Some(z) = elevations[idx] {
-                    visited[idx] = true;
-                    heap.push(MinF64 { val: z, idx });
-                }
+            let idx = r * cols + c;
+            let Some(z) = elevations[idx] else { continue };
+            let is_outer = r == 0 || r + 1 == rows || c == 0 || c + 1 == cols;
+            let touches_sea = !is_outer
+                && [(-1isize, 0isize), (1, 0), (0, -1), (0, 1)]
+                    .into_iter()
+                    .any(|(dr, dc)| {
+                        let nr = (r as isize + dr) as usize;
+                        let nc = (c as isize + dc) as usize;
+                        elevations[nr * cols + nc].is_none()
+                    });
+            if is_outer || touches_sea {
+                visited[idx] = true;
+                heap.push(MinF64 { val: z, idx });
             }
         }
     }

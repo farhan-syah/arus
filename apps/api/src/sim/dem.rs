@@ -157,12 +157,20 @@ pub(super) fn condition_hydrological_dem(elevations: &mut [Option<f64>], cols: u
 
     for r in 0..rows {
         for c in 0..cols {
-            if r == 0 || r + 1 == rows || c == 0 || c + 1 == cols {
-                let idx = r * cols + c;
-                if let Some(z) = elevations[idx] {
-                    visited[idx] = true;
-                    heap.push(MinF64 { val: z, idx });
-                }
+            let idx = r * cols + c;
+            let Some(z) = elevations[idx] else { continue };
+            let is_outer = r == 0 || r + 1 == rows || c == 0 || c + 1 == cols;
+            let touches_sea = !is_outer
+                && [(-1isize, 0isize), (1, 0), (0, -1), (0, 1)]
+                    .into_iter()
+                    .any(|(dr, dc)| {
+                        let nr = (r as isize + dr) as usize;
+                        let nc = (c as isize + dc) as usize;
+                        elevations[nr * cols + nc].is_none()
+                    });
+            if is_outer || touches_sea {
+                visited[idx] = true;
+                heap.push(MinF64 { val: z, idx });
             }
         }
     }
@@ -283,6 +291,22 @@ pub(super) fn build_channel_prestate(
         let depressions = detect_real_depressions(elevations, cols, rows);
         for idx in 0..n {
             let Some(z) = elevations[idx] else { continue };
+            let r = idx / cols;
+            let c = idx % cols;
+            let touches_sea = [(-1isize, 0isize), (1, 0), (0, -1), (0, 1)]
+                .into_iter()
+                .any(|(dr, dc)| {
+                    let nr = r as isize + dr;
+                    let nc = c as isize + dc;
+                    nr >= 0
+                        && nc >= 0
+                        && nr < rows as isize
+                        && nc < cols as isize
+                        && elevations[(nr as usize) * cols + (nc as usize)].is_none()
+                });
+            if touches_sea {
+                continue;
+            }
             let a = accum[idx];
             if a >= channel_accum_min && z <= low_z_cutoff + 12.0 {
                 let channel_factor = ((a as f64) / (channel_accum_min as f64)).ln_1p().min(2.2);
@@ -423,15 +447,16 @@ pub(super) fn detect_real_depressions(
             let idx = r * cols + c;
             let Some(z) = elevations[idx] else { continue };
             let mut min_nb = f64::INFINITY;
+            let mut touches_sea = false;
             for (dr, dc) in dirs {
                 let nidx = ((r as isize + dr) as usize) * cols + ((c as isize + dc) as usize);
-                if let Some(nz) = elevations[nidx]
-                    && nz < min_nb
-                {
-                    min_nb = nz;
+                match elevations[nidx] {
+                    Some(nz) if nz < min_nb => min_nb = nz,
+                    Some(_) => {}
+                    None => touches_sea = true,
                 }
             }
-            if min_nb.is_finite() && (min_nb - z) > 0.25 {
+            if !touches_sea && min_nb.is_finite() && (min_nb - z) > 0.25 {
                 mask[idx] = true;
             }
         }
