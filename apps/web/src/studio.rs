@@ -133,7 +133,7 @@ fn StudioShell() -> Element {
                 button { class: "btn tool-btn", "data-tool": "xsection", "Profile A–B" }
                 button { class: "btn tool-btn", "data-tool": "pick", "Pick Basin" }
                 button { class: "btn tool-btn", "data-tool": "floodpin", title: "Drop observed ground-report flood depth pin to seed top-level map", "Flood Pin" }
-                button { class: "btn tool-btn", "data-tool": "bund", "Bund +0.8m" }
+                button { class: "btn tool-btn", "data-tool": "bund", title: "Click points along a riverbank to draw a continuous levee bund", "Bund Line" }
                 button { class: "btn tool-btn", "data-tool": "pond", "Pond -0.8m" }
             }
 
@@ -153,6 +153,13 @@ fn StudioShell() -> Element {
             div { id: "intervention-bar", class: "intervention-bar hidden",
                 span { "Edits: " strong { id: "iv-count", "0 cells" } }
                 div { class: "iv-actions",
+                    select { id: "bund-height", class: "ctl-select ctl-select-xs", title: "Bund crest height above terrain",
+                        option { value: "0.8", "+0.8m" }
+                        option { value: "1.5", "+1.5m" }
+                        option { value: "2.0", selected: true, "+2.0m" }
+                        option { value: "2.5", "+2.5m" }
+                    }
+                    button { id: "btn-iv-breach", class: "btn btn-xs", title: "Punch a breach gap in the middle of the bund to compare Intact vs Destroyed", "Breach" }
                     button { id: "btn-iv-undo", class: "btn btn-xs", "Undo" }
                     button { id: "btn-iv-clear", class: "btn btn-xs", "Clear" }
                 }

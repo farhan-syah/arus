@@ -4,6 +4,7 @@
 const PRESETS = [
   { id: 'shah-alam', name: 'Shah Alam · Taman Sri Muda (MY)', lon: 101.535, lat: 3.031, zoom: 14.3 },
   { id: 'ijok', name: 'Ijok · Kuala Selangor (MY)', lon: 101.415, lat: 3.310, zoom: 13.0 },
+  { id: 'bukit-changgang', name: 'Bukit Changgang · Sg. Langat (MY)', lon: 101.622, lat: 2.825, zoom: 13.8 },
   { id: 'kl', name: 'Kuala Lumpur · Sg. Klang (MY)', lon: 101.696, lat: 3.149, zoom: 14.3 },
   { id: 'kota-bharu', name: 'Kota Bharu · Sg. Kelantan (MY)', lon: 102.238, lat: 6.125, zoom: 14.0 },
   { id: 'jakarta', name: 'Jakarta · Ciliwung (ID)', lon: 106.845, lat: -6.208, zoom: 14.1 },
@@ -32,6 +33,8 @@ const state = {
   frames: [],
   diffData: null,
   interventions: [],
+  baselineInterventions: [],
+  lastBundCell: null,
   xsecPts: [],
   selectedCell: null,
   uploadedDem: null,
@@ -812,8 +815,8 @@ function colorForHazard(hr) {
 
 // Colorblind-safe diverging Teal (safer < 0) <-> Crimson (worse > 0)
 function colorForDiff(d) {
-  if (Math.abs(d) < 0.012) return null;
-  const mag = Math.min(1, Math.abs(d) / 0.14);
+  if (Math.abs(d) < 0.015) return null;
+  const mag = Math.min(1, Math.abs(d) / 0.30);
   if (d < 0) return [13, 148, 136, 110 + mag * 125];
   return [225, 29, 72, 110 + mag * 125];
 }
@@ -1104,6 +1107,72 @@ function handleHover(lon, lat) {
   el.textContent = `z ${fmtDepth(z, 1)} · h ${fmtDepth(h, 2)} · |v| ${fmtSpeed(sp, 2)}`;
 }
 
+function addInterventionCell(col, row, delta_m, reason) {
+  if (!state.grid) return;
+  const { cols, rows } = state.grid.metadata;
+  if (col < 0 || row < 0 || col >= cols || row >= rows) return;
+  const existing = state.interventions.findIndex((iv) => iv.col === col && iv.row === row);
+  if (existing >= 0) {
+    state.interventions[existing] = { col, row, delta_m, reason };
+  } else {
+    state.interventions.push({ col, row, delta_m, reason });
+  }
+}
+
+function rasterizeBundSegment(c0, r0, c1, r1, delta_m, reason) {
+  let x0 = c0, y0 = r0;
+  const dx = Math.abs(c1 - c0), dy = Math.abs(r1 - r0);
+  const sx = c0 < c1 ? 1 : -1, sy = r0 < r1 ? 1 : -1;
+  let err = dx - dy;
+  while (true) {
+    addInterventionCell(x0, y0, delta_m, reason);
+    if (x0 + 1 < state.grid.metadata.cols && dx < dy) addInterventionCell(x0 + 1, y0, delta_m, reason);
+    else if (y0 + 1 < state.grid.metadata.rows && dy <= dx) addInterventionCell(x0, y0 + 1, delta_m, reason);
+    if (x0 === c1 && y0 === r1) break;
+    const e2 = 2 * err;
+    if (e2 > -dy) { err -= dy; x0 += sx; }
+    if (e2 < dx) { err += dx; y0 += sy; }
+  }
+}
+
+function addBundLine(points, heightM = 2.0, reason = 'riverbank flood bund') {
+  if (!state.grid || !Array.isArray(points) || points.length === 0) return;
+  const cells = points
+    .map(([lat, lon]) => lngLatToCell(lon, lat))
+    .filter(Boolean);
+  if (cells.length === 0) return;
+  const delta = Number.isFinite(heightM) ? heightM : 2.0;
+  if (cells.length === 1) {
+    addInterventionCell(cells[0].col, cells[0].row, delta, reason);
+  } else {
+    for (let i = 0; i < cells.length - 1; i++) {
+      rasterizeBundSegment(cells[i].col, cells[i].row, cells[i + 1].col, cells[i + 1].row, delta, reason);
+    }
+  }
+  state.lastBundCell = cells[cells.length - 1];
+  state.staticVectorsDirty = true;
+  updateInterventionBar();
+  renderFloodCanvas(false);
+}
+
+function breachBund(lat, lon, radiusCells = 2) {
+  if (!state.grid || state.interventions.length === 0) return;
+  const hit = lngLatToCell(lon, lat);
+  if (!hit) return;
+  if (state.baselineInterventions.length === 0) {
+    state.baselineInterventions = state.interventions.map((iv) => ({ ...iv }));
+  }
+  const r2 = radiusCells * radiusCells;
+  state.interventions = state.interventions.filter((iv) => {
+    const dc = iv.col - hit.col;
+    const dr = iv.row - hit.row;
+    return dc * dc + dr * dr > r2;
+  });
+  state.staticVectorsDirty = true;
+  updateInterventionBar();
+  renderFloodCanvas(false);
+}
+
 function handleMapClick(lon, lat) {
   if (state.pickingStressSite) {
     state.pickingStressSite = false;
@@ -1141,16 +1210,27 @@ function handleMapClick(lon, lat) {
     return;
   }
 
-  if (state.tool === 'bund' || state.tool === 'pond') {
-    const delta = state.tool === 'bund' ? 0.8 : -0.8;
-    const reason = state.tool === 'bund' ? 'raised flood bund' : 'detention pond';
+  if (state.tool === 'bund') {
+    const heightM = parseFloat($('bund-height')?.value || '2.0') || 2.0;
+    const reason = `raised flood bund (+${heightM.toFixed(1)} m)`;
+    if (state.lastBundCell) {
+      rasterizeBundSegment(state.lastBundCell.col, state.lastBundCell.row, hit.col, hit.row, heightM, reason);
+    } else {
+      addInterventionCell(hit.col, hit.row, heightM, reason);
+    }
+    state.lastBundCell = { col: hit.col, row: hit.row };
+    state.staticVectorsDirty = true;
+    updateInterventionBar();
+    renderFloodCanvas(false);
+    return;
+  }
+
+  if (state.tool === 'pond') {
+    const delta = -0.8;
+    const reason = 'detention pond';
     for (let dr = 0; dr <= 1; dr++) {
       for (let dc = 0; dc <= 1; dc++) {
-        const c = hit.col + dc;
-        const r = hit.row + dr;
-        if (c < state.grid.metadata.cols && r < state.grid.metadata.rows) {
-          state.interventions.push({ col: c, row: r, delta_m: delta, reason });
-        }
+        addInterventionCell(hit.col + dc, hit.row + dr, delta, reason);
       }
     }
     state.staticVectorsDirty = true;
@@ -1575,6 +1655,7 @@ async function buildRequestPayload() {
     threshold_m: 0.12,
     precision: 'f64',
     interventions: state.interventions,
+    baseline_interventions: state.baselineInterventions,
     ascii_dem: state.uploadedDem,
     terrain_elevations_m: sampled,
     terrain_provenance: sampled ? 'BrowserTerrariumScreening' : null,
@@ -1742,14 +1823,22 @@ async function runSimulation(compareMode) {
       state.frameRasterCache.clear();
       setSimProgress('Loading frames…');
       await loadRun(state.diffData.intervention_run_id);
+      state.staticVectorsDirty = true;
       setLayer('diff');
       $('inspector').classList.remove('hidden');
       $('inspector-svg').classList.add('hidden');
-      $('inspector-title').textContent = 'Intervention Δh Impact';
+      const isPres = document.documentElement.dataset.presentation === 'true';
+      if ($('btn-inspector-pin')) $('btn-inspector-pin').classList.toggle('hidden', isPres);
+      const isBreach = state.baselineInterventions.length > 0;
+      const breachedCells = Math.max(0, state.baselineInterventions.length - state.interventions.length);
+      $('inspector-title').textContent = isBreach ? 'Bund Breach Δh Impact' : 'Intervention Δh Impact';
+      const earthworkRow = isBreach
+        ? `<div class="mini-stat"><div class="mini-k">Breach Gap</div><div class="mini-v bad">${breachedCells} cells removed</div></div>`
+        : `<div class="mini-stat"><div class="mini-k">Earthwork</div><div class="mini-v">${Math.round(state.diffData.earthwork.fill_volume_m3).toLocaleString()} m³ fill</div></div>`;
       $('inspector-stats').innerHTML = `
-        <div class="mini-stat"><div class="mini-k">Protected</div><div class="mini-v good">${state.diffData.improved_cells} cells (−${fmtDepth(state.diffData.max_reduction_m, 2)})</div></div>
+        <div class="mini-stat"><div class="mini-k">${isBreach ? 'River Drawdown' : 'Protected'}</div><div class="mini-v good">${state.diffData.improved_cells} cells (−${fmtDepth(state.diffData.max_reduction_m, 2)})</div></div>
         <div class="mini-stat"><div class="mini-k">Worsened</div><div class="mini-v bad">${state.diffData.worsened_cells} cells (+${fmtDepth(state.diffData.max_worsening_m, 2)})</div></div>
-        <div class="mini-stat"><div class="mini-k">Earthwork</div><div class="mini-v">${state.diffData.earthwork.fill_volume_m3.toFixed(0)} m³ fill</div></div>
+        ${earthworkRow}
         <div class="mini-stat"><div class="mini-k">Mass Check</div><div class="mini-v good">${state.diffData.conservation_valid ? 'PASS' : 'FAIL'}</div></div>
       `;
     } else {
@@ -2356,8 +2445,8 @@ function setLayer(layer) {
     note.textContent = 'Flood arrival time (onset ETA from storm start).';
   } else {
     bar.style.background = 'linear-gradient(90deg, #0d9488, #cbd5e1 50%, #e11d48)';
-    ticks.innerHTML = `<span>−${fmtDepth(0.14, 2)} Safer</span><span>0</span><span>+${fmtDepth(0.14, 2)} Worse</span>`;
-    note.textContent = 'Max depth change: Intervention minus Baseline.';
+    ticks.innerHTML = `<span>−${fmtDepth(0.3, 1)} Safer</span><span>0</span><span>+${fmtDepth(0.3, 1)} Worse</span>`;
+    note.textContent = 'Max depth change: Breached/Edited minus Baseline.';
   }
   renderFloodCanvas(true);
 }
@@ -2722,7 +2811,24 @@ function wireUi() {
   });
 
   $('btn-iv-undo').addEventListener('click', () => { state.interventions.splice(-4, 4); updateInterventionBar(); renderFloodCanvas(false); });
-  $('btn-iv-clear').addEventListener('click', () => { state.interventions = []; updateInterventionBar(); renderFloodCanvas(false); });
+  $('btn-iv-clear').addEventListener('click', () => {
+    state.interventions = [];
+    state.baselineInterventions = [];
+    state.lastBundCell = null;
+    updateInterventionBar();
+    renderFloodCanvas(false);
+  });
+  if ($('btn-iv-breach')) {
+    $('btn-iv-breach').addEventListener('click', () => {
+      if (state.interventions.length === 0) return;
+      const mid = state.interventions[Math.floor(state.interventions.length / 2)];
+      const [minLon, minLat, maxLon, maxLat] = state.grid.metadata.wgs84_bounds;
+      const lon = minLon + ((mid.col + 0.5) / state.grid.metadata.cols) * (maxLon - minLon);
+      const lat = minLat + ((mid.row + 0.5) / state.grid.metadata.rows) * (maxLat - minLat);
+      breachBund(lat, lon, 2);
+      showToast('Punched breach gap in bund. Click Compare vs Baseline to view Breach Impact Δh.');
+    });
+  }
   if ($('btn-fp-clear')) {
     $('btn-fp-clear').addEventListener('click', () => {
       state.observedGauges = [];
@@ -2960,9 +3066,14 @@ window.arusDirector = {
   },
   clearInterventions: () => {
     state.interventions = [];
+    state.baselineInterventions = [];
+    state.lastBundCell = null;
+    state.staticVectorsDirty = true;
     updateInterventionBar();
     renderFloodCanvas(false);
   },
+  addBundLine: (points, heightM, reason) => addBundLine(points, heightM, reason),
+  breachBund: (lat, lon, radiusCells) => breachBund(lat, lon, radiusCells),
   setCaption: (text) => {
     const el = $('director-caption');
     if (!text) {

@@ -376,6 +376,33 @@ fn apply_instant_action(cdp: &mut CdpClient, step: &Value) -> Result<(), String>
         "clear_interventions" => {
             cdp.eval("window.arusDirector.clearInterventions()")?;
         }
+        "add_bund_line" => {
+            let pts = step
+                .get("points")
+                .cloned()
+                .unwrap_or_else(|| Value::Array(Vec::new()));
+            let height_m = step.get("height_m").and_then(Value::as_f64).unwrap_or(2.0);
+            let reason = step
+                .get("reason")
+                .and_then(Value::as_str)
+                .unwrap_or("riverbank flood bund");
+            let js_pts = serde_json::to_string(&pts).map_err(|e| e.to_string())?;
+            let js_reason = serde_json::to_string(reason).map_err(|e| e.to_string())?;
+            cdp.eval(&format!(
+                "window.arusDirector.addBundLine({js_pts}, {height_m}, {js_reason})"
+            ))?;
+        }
+        "breach_bund" => {
+            let lat = step.get("lat").and_then(Value::as_f64).unwrap_or(0.0);
+            let lon = step.get("lon").and_then(Value::as_f64).unwrap_or(0.0);
+            let radius = step
+                .get("radius_cells")
+                .and_then(Value::as_u64)
+                .unwrap_or(2);
+            cdp.eval(&format!(
+                "window.arusDirector.breachBund({lat}, {lon}, {radius})"
+            ))?;
+        }
         "compare" => {
             cdp.eval("window.arusDirector.compare()")?;
         }

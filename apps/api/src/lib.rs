@@ -264,7 +264,7 @@ async fn post_compare(
             "BYOD ASCII DEM upload is disabled on this server",
         ));
     }
-    if request.interventions.is_empty() {
+    if request.interventions.is_empty() && request.baseline_interventions.is_empty() {
         return Err((
             StatusCode::UNPROCESSABLE_ENTITY,
             Json(ErrorResponse {
@@ -273,7 +273,10 @@ async fn post_compare(
         ));
     }
     let mut baseline_req = request.clone();
-    baseline_req.interventions.clear();
+    baseline_req.interventions = request.baseline_interventions.clone();
+    baseline_req.baseline_interventions.clear();
+    let mut int_req = request;
+    int_req.baseline_interventions.clear();
     let baseline = state
         .interactive
         .run_simulation(baseline_req, None)
@@ -281,7 +284,7 @@ async fn post_compare(
         .map_err(map_sim_error)?;
     let intervention = state
         .interactive
-        .run_simulation(request, None)
+        .run_simulation(int_req, None)
         .await
         .map_err(map_sim_error)?;
 

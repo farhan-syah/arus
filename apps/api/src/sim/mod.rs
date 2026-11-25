@@ -502,6 +502,9 @@ pub struct CreateSimulationRequest {
     pub precision: PrecisionChoice,
     #[serde(default)]
     pub interventions: Vec<InterventionCellDelta>,
+    /// Optional baseline terrain edits for paired compare (e.g. intact bund vs breached bund).
+    #[serde(default)]
+    pub baseline_interventions: Vec<InterventionCellDelta>,
     #[serde(default)]
     pub ascii_dem: Option<UploadedAsciiDem>,
     /// Optional row-major bare-earth elevations (`m`) sampled from the 3D map DEM (e.g. Terrarium).
