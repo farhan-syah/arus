@@ -13,7 +13,7 @@ use vidr::media::{
     Input, InputSource, MuxSink, OutputKind, VideoOutput, plan_copy, read_stream_facts,
 };
 use vidr::pipeline::{FrameTransform, PipelineError, PumpControl, run};
-use vidr::time::{DurationHints, Rational};
+use vidr::time::{DurationHints, EditEntry, EditTimeline, Rational};
 
 struct PassthroughTransform;
 
@@ -26,8 +26,13 @@ impl FrameTransform<CpuRuntime> for PassthroughTransform {
     }
 }
 
-/// Transcodes a VP9 `.webm` recording into an H.264 Constrained Baseline `.mp4` via `vidr`.
-pub fn transcode_webm_to_mp4(input_path: &Path, output_path: &Path) -> Result<u64, String> {
+/// Transcodes a VP9 `.webm` recording into an H.264 Constrained Baseline `.mp4` via `vidr`,
+/// optionally trimming leading loading frames before `trim_start_s` using `vidr`'s native edit window.
+pub fn transcode_webm_to_mp4(
+    input_path: &Path,
+    output_path: &Path,
+    trim_start_s: f64,
+) -> Result<u64, String> {
     let mut input = Input::open(input_path)
         .map_err(|e| format!("open {} failed: {e}", input_path.display()))?;
     let facts = read_stream_facts(&input).map_err(|e| format!("read_stream_facts failed: {e}"))?;
@@ -45,6 +50,21 @@ pub fn transcode_webm_to_mp4(input_path: &Path, output_path: &Path) -> Result<u6
         average_frame_rate: Some(fps),
         ..DurationHints::default()
     };
+    if trim_start_s > 0.0 {
+        let ticks_per_sec = timing.time_base.den() as f64 / timing.time_base.num().max(1) as f64;
+        let skip_ticks = (trim_start_s * ticks_per_sec).round() as i64;
+        if skip_ticks > 0 {
+            let entry = EditEntry {
+                segment_duration: 0,
+                media_time: skip_ticks,
+                rate: Rational::ONE,
+            };
+            timing.timeline = Some(
+                EditTimeline::resolve(&[entry], timing.time_base, timing.time_base)
+                    .map_err(|e| format!("edit timeline failed: {e}"))?,
+            );
+        }
+    }
 
     let mut config = EncodeConfig::new(
         EncodeCodec::H264,

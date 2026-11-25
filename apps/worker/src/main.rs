@@ -188,6 +188,9 @@ enum Command {
         /// Path to the output H.264 `.mp4` file.
         #[arg(long)]
         output: PathBuf,
+        /// Optional leading seconds to trim from the start of the recording (e.g. browser boot/tile load).
+        #[arg(long, default_value_t = 0.0)]
+        trim_start_s: f64,
     },
     /// Execute a pure-Rust Preissmann-slot pressurized storm-drain network manifest (`hydr 0.2.0`).
     Pipes {
@@ -372,10 +375,14 @@ fn execute(command: Command) -> Result<(), String> {
             trigger_rain_mm,
             wind_m_per_s,
         }),
-        Command::Transcode { input, output } => {
-            let frames = video::transcode_webm_to_mp4(&input, &output)?;
+        Command::Transcode {
+            input,
+            output,
+            trim_start_s,
+        } => {
+            let frames = video::transcode_webm_to_mp4(&input, &output, trim_start_s)?;
             println!(
-                "{{\"input\":\"{}\",\"output\":\"{}\",\"frames_encoded\":{frames}}}",
+                "{{\"input\":\"{}\",\"output\":\"{}\",\"trim_start_s\":{trim_start_s},\"frames_encoded\":{frames}}}",
                 input.display(),
                 output.display()
             );

@@ -16,6 +16,7 @@ const state = {
   initZoom: 14.3,
   initPitch: 48,
   initBearing: -16,
+  fixedView: false,
   tool: 'inspect', // inspect | pick | bund | pond | xsection
   layer: 'depth',  // depth | velocity | hazard | diff
   envelopeMode: false,
@@ -872,7 +873,9 @@ async function loadRun(runId) {
   state.grid = await gridResp.json();
   state.frames = decodeFramesBin(await binResp.arrayBuffer());
   state.runId = runId;
-  state.frameIdx = Math.min(Math.floor(state.frames.length * 0.72), state.frames.length - 1);
+  state.frameIdx = state.playing
+    ? Math.min(Math.floor(state.frames.length * 0.72), state.frames.length - 1)
+    : 0;
   seedParticles();
   ensureMapLayers();
   updateDomainOutline(state.grid.metadata.wgs84_bounds);
@@ -924,13 +927,15 @@ async function runSimulation(compareMode) {
       if (!resp.ok) throw new Error(await resp.text());
       const summary = await resp.json();
       await loadRun(summary.run_id);
-      const [minLon, minLat, maxLon, maxLat] = summary.wgs84_bounds;
-      map.flyTo({
-        center: [(minLon + maxLon) * 0.5, (minLat + maxLat) * 0.5],
-        zoom: 14.4,
-        pitch: state.is3D ? 48 : 0,
-        duration: 800,
-      });
+      if (!state.fixedView) {
+        const [minLon, minLat, maxLon, maxLat] = summary.wgs84_bounds;
+        map.flyTo({
+          center: [(minLon + maxLon) * 0.5, (minLat + maxLat) * 0.5],
+          zoom: 14.4,
+          pitch: state.is3D ? 48 : 0,
+          duration: 800,
+        });
+      }
     }
   } catch (err) {
     $('inspector').classList.remove('hidden');
@@ -1342,6 +1347,7 @@ function toggleVideoRecording() {
 // Public Director API for declarative storyboard scripts (scripts/record_storyboard.py)
 window.arusDirector = {
   isReady: () => Boolean(state.grid && state.frames.length > 0),
+  isSettled: () => Boolean(state.grid && state.frames.length > 0 && map && map.loaded()),
   getState: () => ({
     runId: state.runId,
     basemap: state.basemap,
@@ -1502,6 +1508,9 @@ function applyStartupParams() {
   }
   if (qs.get('presentation') === '1' || qs.get('presentation') === 'true') {
     document.documentElement.dataset.presentation = 'true';
+  }
+  if (qs.get('fixed') === '1' || qs.get('fixed') === 'true') {
+    state.fixedView = true;
   }
   if (qs.get('autoplay') === '0' || qs.get('autoplay') === 'false') {
     state.playing = false;

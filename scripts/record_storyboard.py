@@ -103,6 +103,7 @@ def run_storyboard(
             "start_iso",
             "tz",
             "autoplay",
+            "fixed",
         ):
             if key in init_cfg and init_cfg[key] is not None:
                 val = init_cfg[key]
@@ -134,6 +135,7 @@ def run_storyboard(
                 record_video_dir=str(video_raw_dir),
                 record_video_size={"width": width, "height": height},
             )
+            rec_start_t = time.time()
             page = context.new_page()
             page.goto(url, wait_until="domcontentloaded", timeout=30000)
             page.wait_for_function(
@@ -142,7 +144,28 @@ def run_storyboard(
             )
             if spec.get("presentation", True):
                 page.evaluate("() => window.arusDirector.setPresentationMode(true)")
-            time.sleep(1.5)
+
+            for setup_step in spec.get("setup_steps", []):
+                act = setup_step.get("action")
+                if act == "caption":
+                    page.evaluate("(t) => window.arusDirector.setCaption(t)", setup_step.get("text", ""))
+                elif act == "set_outlook":
+                    cfg = {k: v for k, v in setup_step.items() if k != "action"}
+                    page.evaluate("(c) => window.arusDirector.setPublicOutlook(c)", cfg if cfg else None)
+                elif act == "set_frame":
+                    page.evaluate("(f) => window.arusDirector.setFrame(f)", int(setup_step["frame"]))
+                elif act == "set_layer":
+                    page.evaluate("(l) => window.arusDirector.setLayer(l)", str(setup_step["layer"]))
+
+            try:
+                page.wait_for_function(
+                    "() => window.arusDirector && window.arusDirector.isSettled()",
+                    timeout=12000,
+                )
+            except Exception:
+                pass
+            time.sleep(1.2)
+            trim_start_s = round(time.time() - rec_start_t, 3) if spec.get("trim_loading", True) else 0.0
 
             for idx, step in enumerate(spec.get("steps", []), start=1):
                 action = step.get("action")
@@ -274,8 +297,11 @@ def run_storyboard(
                 worker = find_worker_binary()
                 if worker and spec.get("export_mp4", True):
                     dest_mp4 = out_dir / f"{stem}.mp4"
+                    cmd = [worker, "transcode", "--input", str(dest_video), "--output", str(dest_mp4)]
+                    if trim_start_s > 0.0:
+                        cmd.extend(["--trim-start-s", f"{trim_start_s:.3f}"])
                     res = subprocess.run(
-                        [worker, "transcode", "--input", str(dest_video), "--output", str(dest_mp4)],
+                        cmd,
                         capture_output=True,
                         text=True,
                     )
