@@ -766,14 +766,27 @@ input[type="range"] {
   max-width: 520px;
   text-align: center;
 }
-.public-outlook {
+.left-stack {
+  position: fixed;
   top: 14px;
-  left: 14px;
-  width: 318px;
-  padding: 12px 14px;
+  left: 12px;
+  width: 288px;
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: 10px;
+  z-index: 20;
+  pointer-events: none;
+}
+.left-stack > .hud {
+  position: static;
+  width: 100%;
+  box-sizing: border-box;
+}
+.public-outlook {
+  padding: 11px 13px;
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
   pointer-events: none;
 }
 .po-head {
@@ -847,15 +860,13 @@ input[type="range"] {
   box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.85);
 }
 
-/* Live Per-Frame Area Flood Gauge (below Public Outlook card on left) */
+/* Live Per-Frame Area Flood Gauge (aligned in .left-stack below Public Outlook card) */
 .live-metrics {
-  top: 318px;
-  left: 12px;
-  width: 300px;
-  padding: 11px 14px;
+  padding: 10px 13px;
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: 7px;
+  pointer-events: auto;
 }
 .lm-head {
   display: flex;
