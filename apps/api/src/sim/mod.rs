@@ -40,7 +40,7 @@ pub const MAX_INTERACTIVE_FRAMES: usize = 120;
 /// Maximum concurrent interactive CPU simulations per API process.
 pub const MAX_CONCURRENT_SIMS: usize = 2;
 /// Maximum wall-clock duration per interactive simulation before cancellation.
-pub const SIM_TIMEOUT_SECS: u64 = 20;
+pub const SIM_TIMEOUT_SECS: u64 = 45;
 /// Maximum interactive runs kept in the bounded in-memory LRU cache.
 pub const MAX_CACHED_RUNS: usize = 16;
 /// Maximum 2D grid cells permitted in an async high-resolution basin job (`512x512`).

@@ -3,6 +3,7 @@
 
 const PRESETS = [
   { id: 'shah-alam', name: 'Shah Alam · Taman Sri Muda (MY)', lon: 101.535, lat: 3.031, zoom: 14.3 },
+  { id: 'ijok', name: 'Ijok · Kuala Selangor (MY)', lon: 101.415, lat: 3.310, zoom: 13.0 },
   { id: 'kl', name: 'Kuala Lumpur · Sg. Klang (MY)', lon: 101.696, lat: 3.149, zoom: 14.3 },
   { id: 'kota-bharu', name: 'Kota Bharu · Sg. Kelantan (MY)', lon: 102.238, lat: 6.125, zoom: 14.0 },
   { id: 'jakarta', name: 'Jakarta · Ciliwung (ID)', lon: 106.845, lat: -6.208, zoom: 14.1 },
@@ -1072,6 +1073,14 @@ function handleMapClick(lon, lat) {
     return;
   }
 
+  if (state.tool === 'floodpin') {
+    const depthM = parseFloat($('fp-depth')?.value || '0.5') || 0.5;
+    state.observedGauges.push({ lat, lon, depth_m: depthM, radius_cells: 3 });
+    updateFloodPinBar();
+    showToast(`Added observed ${fmtDepth(depthM, 1)} flood pin (${state.observedGauges.length} total). Click Run Simulation to update top-level map.`);
+    return;
+  }
+
   if (state.tool === 'bund' || state.tool === 'pond') {
     const delta = state.tool === 'bund' ? 0.8 : -0.8;
     const reason = state.tool === 'bund' ? 'raised flood bund' : 'detention pond';
@@ -1103,6 +1112,58 @@ function handleMapClick(lon, lat) {
   renderHydrographInspector();
 }
 
+function updateFloodPinBar() {
+  const bar = $('floodpin-bar');
+  if (!bar) return;
+  const n = (state.observedGauges || []).length;
+  $('fp-count').textContent = String(n);
+  bar.classList.toggle('hidden', n === 0 && state.tool !== 'floodpin');
+}
+
+function fmtSimOffset(sec, totalSec) {
+  if (!Number.isFinite(sec) || sec < 0) return '—';
+  if (state.spanHours > 0 && totalSec > 0) {
+    const realHrs = (sec / totalSec) * state.spanHours;
+    if (realHrs >= 24) {
+      const d = Math.floor(realHrs / 24);
+      const h = Math.round(realHrs % 24);
+      return `+${d}d ${h}h`;
+    }
+    return `+${realHrs.toFixed(1)}h`;
+  }
+  return `+${fmtMMSS(sec)}`;
+}
+
+function computeRecessionSummary(idx, thresholdM) {
+  if (!state.frames || state.frames.length < 2) return { label: '—', receded: false, endDepth: 0 };
+  const totalSec = Math.max(1, state.frames[state.frames.length - 1].time_s || 1);
+  let peakIdx = -1;
+  let peakVal = 0;
+  for (let i = 0; i < state.frames.length; i++) {
+    const d = state.frames[i].depth[idx] || 0;
+    if (d > peakVal) {
+      peakVal = d;
+      peakIdx = i;
+    }
+  }
+  const endDepth = state.frames[state.frames.length - 1].depth[idx] || 0;
+  if (peakVal < thresholdM) return { label: 'Dry', receded: true, endDepth };
+  for (let i = Math.max(0, peakIdx); i < state.frames.length; i++) {
+    if ((state.frames[i].depth[idx] || 0) < thresholdM) {
+      return {
+        label: `Recedes ${fmtSimOffset(state.frames[i].time_s, totalSec)}`,
+        receded: true,
+        endDepth,
+      };
+    }
+  }
+  return {
+    label: `Still flooded (${fmtDepth(endDepth, 2)})`,
+    receded: false,
+    endDepth,
+  };
+}
+
 function renderSiteVerdict() {
   const card = $('site-verdict');
   if (!card || !state.verdictTarget || !state.grid || !state.frames.length) return;
@@ -1127,6 +1188,8 @@ function renderSiteVerdict() {
   const bedM = meta.bed_m[idx] || 0;
   const onsetS = env.onset_time_s[idx];
   const cut = state.displayPrefs.depthCutoffM || 0.06;
+  const totalSec = Math.max(1, state.frames[state.frames.length - 1].time_s || 1);
+  const recInfo = computeRecessionSummary(idx, env.threshold_m || 0.15);
 
   let lvl = 'low';
   let label = 'DRY';
@@ -1134,23 +1197,23 @@ function renderSiteVerdict() {
   if (netM >= 0.30) {
     lvl = 'danger';
     label = 'FLOOD EXPECTED';
-    msg = `Peak depth reaches ${fmtDepth(netM, 2)} above floor (${fmtDepth(peakM, 2)} above ground). Consider raising the pad or moving valuables.`;
+    msg = `Peak reaches ${fmtDepth(netM, 2)} above floor (${fmtDepth(peakM, 2)} ground). ${recInfo.receded ? recInfo.label : 'Water does not recede within forecast window'}.`;
   } else if (netM >= cut) {
     lvl = 'moderate';
     label = 'WATCH';
-    msg = `Shallow water up to ${fmtDepth(netM, 2)} above floor (${fmtDepth(peakM, 2)} above ground). Monitor access roads and drainage.`;
+    msg = `Shallow water up to ${fmtDepth(netM, 2)} above floor (${fmtDepth(peakM, 2)} ground). ${recInfo.receded ? recInfo.label : 'Stagnant ponding persists through forecast end'}.`;
   }
 
   $('sv-title').textContent = `${lat.toFixed(4)}°, ${lon.toFixed(4)}°`;
   $('sv-badge').className = `lm-badge ${lvl}`;
   $('sv-badge').textContent = label;
   $('sv-summary').textContent = msg;
-  const onsetTxt = onsetS >= 0 ? `+${fmtMMSS(onsetS)}` : 'Never';
+  const onsetTxt = onsetS >= 0 ? fmtSimOffset(onsetS, totalSec) : 'Never';
   $('sv-stats').innerHTML = `
     <div class="mini-stat"><div class="mini-k">Peak Depth</div><div class="mini-v">${fmtDepth(peakM, 2)}</div></div>
     <div class="mini-stat"><div class="mini-k">Above Floor</div><div class="mini-v">${fmtDepth(netM, 2)}</div></div>
-    <div class="mini-stat"><div class="mini-k">Ground Elev</div><div class="mini-v">${fmtDepth(bedM, 1)}</div></div>
-    <div class="mini-stat"><div class="mini-k">Arrival ETA</div><div class="mini-v">${onsetTxt}</div></div>
+    <div class="mini-stat"><div class="mini-k">Arrival</div><div class="mini-v">${onsetTxt}</div></div>
+    <div class="mini-stat"><div class="mini-k">Recession</div><div class="mini-v">${recInfo.label}</div></div>
   `;
 }
 
@@ -1211,13 +1274,14 @@ function renderHydrographInspector() {
     <text x="34" y="107" text-anchor="end" fill="#64748b" font-family="JetBrains Mono, monospace" font-size="10">0.00</text>
     <text x="324" y="${(ty - 4).toFixed(1)}" text-anchor="end" fill="#e11d48" font-family="Inter, sans-serif" font-size="10" font-weight="500">Threshold ${fmtDepth(env.threshold_m, 2)}</text>
   `;
-  const onset = env.onset_time_s[idx] >= 0 ? `+${fmtMMSS(env.onset_time_s[idx])}` : '—';
-  const rec = depths[depths.length - 1] >= env.threshold_m ? 'Active' : 'Receded';
+  const totalSec = Math.max(1, times[times.length - 1] || 1);
+  const onset = env.onset_time_s[idx] >= 0 ? fmtSimOffset(env.onset_time_s[idx], totalSec) : '—';
+  const rec = computeRecessionSummary(idx, env.threshold_m || 0.15).label;
   $('inspector-stats').innerHTML = `
     <div class="mini-stat"><div class="mini-k">Peak Depth</div><div class="mini-v">${fmtDepth(dPeak, 2)}</div></div>
     <div class="mini-stat"><div class="mini-k">Max Speed</div><div class="mini-v">${fmtSpeed(env.max_speed_m_s[idx], 2)}</div></div>
     <div class="mini-stat"><div class="mini-k">Onset</div><div class="mini-v">${onset}</div></div>
-    <div class="mini-stat"><div class="mini-k">Status</div><div class="mini-v">${rec}</div></div>
+    <div class="mini-stat"><div class="mini-k">Recession</div><div class="mini-v">${rec}</div></div>
   `;
 }
 
@@ -1656,14 +1720,66 @@ async function runSimulation(compareMode) {
           });
         }
       } else {
-        const resp = await fetch('/api/v1/simulations', {
-          method: 'POST',
-          headers: { 'content-type': 'application/json' },
-          body: JSON.stringify(payload),
-          signal: abort.signal,
-        });
-        if (!resp.ok) throw new Error(await parseErrorText(resp));
-        const summary = await resp.json();
+        const useAsyncJob = payload.duration_s > 900 || payload.cols * payload.rows > 8192;
+        let summary = null;
+        if (!useAsyncJob) {
+          const resp = await fetch('/api/v1/simulations', {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify(payload),
+            signal: abort.signal,
+          });
+          if (resp.status === 408) {
+            setSimProgress('Long run queued as async basin job…');
+          } else if (!resp.ok) {
+            throw new Error(await parseErrorText(resp));
+          } else {
+            summary = await resp.json();
+          }
+        }
+        if (!summary) {
+          const jobResp = await fetch('/api/v1/jobs', {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify(payload),
+            signal: abort.signal,
+          });
+          if (!jobResp.ok) throw new Error(await parseErrorText(jobResp));
+          const job = await jobResp.json();
+          const jobId = job.job_id;
+          const onCancelJob = () => {
+            fetch(`/api/v1/jobs/${jobId}/cancel`, { method: 'POST' }).catch(() => {});
+          };
+          abort.signal.addEventListener('abort', onCancelJob, { once: true });
+          try {
+            while (true) {
+              if (abort.signal.aborted) {
+                const err = new Error('Aborted');
+                err.name = 'AbortError';
+                throw err;
+              }
+              const pollResp = await fetch(`/api/v1/jobs/${jobId}`, { signal: abort.signal });
+              if (!pollResp.ok) throw new Error(await parseErrorText(pollResp));
+              const rec = await pollResp.json();
+              if (rec.status === 'completed' && rec.summary) {
+                summary = rec.summary;
+                break;
+              }
+              if (rec.status === 'failed') {
+                throw new Error(rec.error || 'Async basin job failed');
+              }
+              if (rec.status === 'cancelled') {
+                const err = new Error('Aborted');
+                err.name = 'AbortError';
+                throw err;
+              }
+              setSimProgress(`Solving basin job… ${Math.round(rec.progress_pct || 0)}%`);
+              await new Promise((r) => setTimeout(r, 450));
+            }
+          } finally {
+            abort.signal.removeEventListener('abort', onCancelJob);
+          }
+        }
         state.frameRasterCache.clear();
         setSimProgress('Loading frames…');
         await loadRun(summary.run_id);
@@ -2132,9 +2248,10 @@ function setTool(tool) {
   document.querySelectorAll('[data-tool]').forEach((el) => {
     el.classList.toggle('active', el.dataset.tool === tool);
   });
+  updateFloodPinBar();
   if (map && layersReady && map.getLayer('arus-domain-outline')) {
     const isPres = document.documentElement.dataset.presentation === 'true';
-    const showBox = !isPres && !state.boundaryGeoJson && ['pick', 'bund', 'pond'].includes(tool);
+    const showBox = !isPres && !state.boundaryGeoJson && ['pick', 'floodpin', 'bund', 'pond'].includes(tool);
     map.setLayoutProperty('arus-domain-outline', 'visibility', showBox ? 'visible' : 'none');
   }
 }
@@ -2533,6 +2650,13 @@ function wireUi() {
 
   $('btn-iv-undo').addEventListener('click', () => { state.interventions.splice(-4, 4); updateInterventionBar(); renderFloodCanvas(false); });
   $('btn-iv-clear').addEventListener('click', () => { state.interventions = []; updateInterventionBar(); renderFloodCanvas(false); });
+  if ($('btn-fp-clear')) {
+    $('btn-fp-clear').addEventListener('click', () => {
+      state.observedGauges = [];
+      updateFloodPinBar();
+      showToast('Cleared observed flood pins.');
+    });
+  }
   $('btn-run').addEventListener('click', () => runSimulation(false));
   $('btn-compare').addEventListener('click', () => runSimulation(true));
   $('btn-nwp').addEventListener('click', fetchLiveMultiModelNwp);

@@ -132,8 +132,22 @@ fn StudioShell() -> Element {
                 button { class: "btn tool-btn active", "data-tool": "inspect", "Inspect" }
                 button { class: "btn tool-btn", "data-tool": "xsection", "Profile A–B" }
                 button { class: "btn tool-btn", "data-tool": "pick", "Pick Basin" }
+                button { class: "btn tool-btn", "data-tool": "floodpin", title: "Drop observed ground-report flood depth pin to seed top-level map", "Flood Pin" }
                 button { class: "btn tool-btn", "data-tool": "bund", "Bund +0.8m" }
                 button { class: "btn tool-btn", "data-tool": "pond", "Pond -0.8m" }
+            }
+
+            div { id: "floodpin-bar", class: "intervention-bar hidden",
+                span { "Pins: " strong { id: "fp-count", "0" } }
+                div { class: "iv-actions",
+                    select { id: "fp-depth", class: "ctl-select ctl-select-xs", title: "Observed water depth for next pin",
+                        option { value: "0.2", "0.2m Ankle" }
+                        option { value: "0.5", selected: true, "0.5m Knee" }
+                        option { value: "1.0", "1.0m Waist" }
+                        option { value: "1.5", "1.5m Chest" }
+                    }
+                    button { id: "btn-fp-clear", class: "btn btn-xs", "Clear" }
+                }
             }
 
             div { id: "intervention-bar", class: "intervention-bar hidden",

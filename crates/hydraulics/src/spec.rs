@@ -466,13 +466,18 @@ impl SurfaceRunSpec {
         let forcing = ForcingSchedule::new(&domain, &boundaries, intervals)
             .map_err(|error| ModelError::InvalidInput(error.to_string()))?;
 
+        let min_dx = self.terrain.grid().dx_m.min(self.terrain.grid().dy_m);
+        let config = SolverConfig {
+            max_step: (min_dx / 15.0).clamp(1.0, 10.0),
+            ..SolverConfig::default()
+        };
         let engine = SurfaceEngine::new(
             SolverSetup {
                 domain,
                 land,
                 boundaries,
                 forcing,
-                config: SolverConfig::default(),
+                config,
             },
             InitialState {
                 time: 0.0,
