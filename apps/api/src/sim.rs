@@ -1,6 +1,7 @@
 //! Bounded interactive `hydr 0.1.0` simulation execution, binary frame cache, paired diff, and exports.
 
-use std::collections::{BTreeMap, VecDeque};
+use std::cmp::Ordering as CmpOrdering;
+use std::collections::{BTreeMap, BinaryHeap, VecDeque};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, RwLock};
 use std::time::Duration;
@@ -96,6 +97,20 @@ pub struct UploadedAsciiDem {
     pub wgs84_bounds: [f64; 4],
 }
 
+/// Optional observed live gauge / flooded hotspot depth assimilated into valley cells at `t = 0`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ObservedGaugeSeed {
+    pub lat: f64,
+    pub lon: f64,
+    pub depth_m: f64,
+    #[serde(default = "default_gauge_radius")]
+    pub radius_cells: usize,
+}
+
+fn default_gauge_radius() -> usize {
+    3
+}
+
 /// Request body for `POST /api/v1/simulations` and `POST /api/v1/compare`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct CreateSimulationRequest {
@@ -136,10 +151,22 @@ pub struct CreateSimulationRequest {
     #[serde(default)]
     pub terrain_provenance: Option<String>,
     /// Optional uniform 10 m coastal wind forcing x-component (`m/s`, `hydr 0.2.0`).
-    /// Optional antecedent rainfall total (mm) spun up BEFORE Frame 0 so the simulation starts
-    /// from an already-wet / actively flooding current basin state instead of a bone-dry bed.
+    /// Optional antecedent rainfall total (mm) used to seed valley/channel pre-state before `t = 0`.
     #[serde(default)]
     pub antecedent_rain_mm: f64,
+    /// Optional real hourly NWP rainfall forecast series (mm/hr per hour) driving multi-band
+    /// build-up and dry-window recession (`waktu surut`).
+    #[serde(default)]
+    pub hourly_rain_mm: Vec<f64>,
+    /// Continuous subsurface / river / storm-drainage loss rate (mm/hr) during simulation.
+    #[serde(default)]
+    pub drainage_mm_per_hr: f64,
+    /// Daily daytime potential evaporation (`sejat` / solar drying, mm/day), applied diurnally.
+    #[serde(default)]
+    pub evaporation_mm_per_day: f64,
+    /// Optional live observed flooded gauge seeds assimilated into local valley cells at `t = 0`.
+    #[serde(default)]
+    pub observed_gauges: Vec<ObservedGaugeSeed>,
     #[serde(default)]
     pub wind_x_m_per_s: f64,
     /// Optional uniform 10 m coastal wind forcing y-component (`m/s`, `hydr 0.2.0`).
@@ -453,6 +480,10 @@ fn execute_blocking(
                     req.rows,
                     req.dx_m,
                 );
+                let mut conditioned = sampled.clone();
+                if prov == "BrowserTerrariumScreening" {
+                    condition_hydrological_dem(&mut conditioned, req.cols, req.rows);
+                }
                 let grid = TerrainGrid::new(
                     GridSpec {
                         columns: req.cols,
@@ -469,7 +500,7 @@ fn execute_blocking(
                         origin_m: [0.0, 0.0],
                     },
                     prov.clone(),
-                    sampled.clone(),
+                    conditioned,
                 )
                 .map_err(|e| (422, e.to_string()))?;
                 (grid, bounds, prov)
@@ -519,14 +550,59 @@ fn execute_blocking(
     let rain_m_per_s = req.rainfall_mm_per_hr / 3_600_000.0;
     let open_faces: Vec<BoundaryFaceSpec> = match req.boundary {
         BoundaryChoice::Closed => Vec::new(),
-        BoundaryChoice::Transmissive | BoundaryChoice::OpenStage { .. } => (0..rows)
-            .filter(|&r| terrain.cells()[r * cols + (cols - 1)].is_some())
-            .map(|row| BoundaryFaceSpec {
-                axis: BoundaryAxisSpec::X,
-                column: cols,
-                row,
-            })
-            .collect(),
+        BoundaryChoice::Transmissive | BoundaryChoice::OpenStage { .. } => {
+            // Open perimeter faces on low-lying coastal/valley outlets (never steep mountain cliffs)
+            let mut perim_z: Vec<f64> = Vec::new();
+            for r in 0..rows {
+                for c in 0..cols {
+                    if (r == 0 || r + 1 == rows || c == 0 || c + 1 == cols)
+                        && let Some(z) = terrain.cells()[r * cols + c]
+                    {
+                        perim_z.push(z);
+                    }
+                }
+            }
+            perim_z.sort_by(f64::total_cmp);
+            let outlet_max_z = if perim_z.is_empty() {
+                f64::INFINITY
+            } else {
+                perim_z[(perim_z.len() * 45) / 100]
+            };
+            let mut faces = Vec::new();
+            for row in 0..rows {
+                if terrain.cells()[row * cols].is_some_and(|z| z <= outlet_max_z) {
+                    faces.push(BoundaryFaceSpec {
+                        axis: BoundaryAxisSpec::X,
+                        column: 0,
+                        row,
+                    });
+                }
+                if terrain.cells()[row * cols + (cols - 1)].is_some_and(|z| z <= outlet_max_z) {
+                    faces.push(BoundaryFaceSpec {
+                        axis: BoundaryAxisSpec::X,
+                        column: cols,
+                        row,
+                    });
+                }
+            }
+            for col in 0..cols {
+                if terrain.cells()[col].is_some_and(|z| z <= outlet_max_z) {
+                    faces.push(BoundaryFaceSpec {
+                        axis: BoundaryAxisSpec::Y,
+                        column: col,
+                        row: 0,
+                    });
+                }
+                if terrain.cells()[(rows - 1) * cols + col].is_some_and(|z| z <= outlet_max_z) {
+                    faces.push(BoundaryFaceSpec {
+                        axis: BoundaryAxisSpec::Y,
+                        column: col,
+                        row: rows,
+                    });
+                }
+            }
+            faces
+        }
     };
     let boundary_forcings: Vec<BoundaryForcingSpec> = match req.boundary {
         BoundaryChoice::Closed => Vec::new(),
@@ -546,60 +622,113 @@ fn execute_blocking(
             .collect(),
     };
 
-    let warmup_s = if req.antecedent_rain_mm > 0.0 {
-        600.0
+    // Stage 1: Channel-only initial water depth (hills = 0.0 m; rivers/valleys + observed gauges wet)
+    let has_prestate = req.antecedent_rain_mm > 0.0 || !req.observed_gauges.is_empty();
+    let per_cell_initial: Option<Vec<f64>> = if has_prestate {
+        Some(build_channel_prestate(
+            terrain.cells(),
+            cols,
+            rows,
+            wgs84_bounds,
+            req.antecedent_rain_mm,
+            &req.observed_gauges,
+        ))
     } else {
-        0.0
+        None
     };
+
+    let warmup_s = 0.0;
+    let base_drain_m_per_s = req.drainage_mm_per_hr.max(0.0) / 3_600_000.0;
+    let base_evap_mean_m_per_s = req.evaporation_mm_per_day.max(0.0) / 86_400_000.0;
+
     let mut forcing = Vec::new();
+    let mut interval_losses: Vec<(f64, f64)> = Vec::new();
     if warmup_s > 0.0 {
-        // Pre-state / Nowcast warm-up: rain for 70% of warmup_s, then 30% hydraulic settling
-        // so valleys, rivers, and floodplains reflect current wet/flooding state at t = 0.
-        let rain_dur = warmup_s * 0.70;
-        let ant_rate = (req.antecedent_rain_mm / 1000.0) / rain_dur;
+        // Short hydraulic relaxation so valley/gauge seeds settle smoothly before t = 0
         forcing.push(RainIntervalSpec {
             start_s: 0.0,
-            end_s: rain_dur,
-            uniform_rain_m_per_s: ant_rate,
-            boundaries: boundary_forcings.clone(),
-        });
-        forcing.push(RainIntervalSpec {
-            start_s: rain_dur,
             end_s: warmup_s,
             uniform_rain_m_per_s: 0.0,
             boundaries: boundary_forcings.clone(),
         });
+        interval_losses.push((0.0, 0.0));
     }
-    match req.hyetograph {
-        HyetographPreset::Uniform => forcing.push(RainIntervalSpec {
-            start_s: warmup_s,
-            end_s: warmup_s + req.duration_s,
-            uniform_rain_m_per_s: rain_m_per_s,
-            boundaries: boundary_forcings,
-        }),
-        HyetographPreset::PeakStorm => {
-            let t1 = warmup_s + req.duration_s * 0.25;
-            let t2 = warmup_s + req.duration_s * 0.55;
+
+    if !req.hourly_rain_mm.is_empty() {
+        // Stage 2-3: Real multi-hour NWP forcing preserving total storm rainfall volume across
+        // req.duration_s, with diurnal solar evaporation (sejat) and continuous basin drainage.
+        let n_hours = req.hourly_rain_mm.len();
+        let n_bins = n_hours.clamp(1, 24);
+        let bin_dur_s = req.duration_s / (n_bins as f64);
+        let time_compression = ((n_hours as f64) * 3600.0 / req.duration_s).clamp(1.0, 240.0);
+        for b in 0..n_bins {
+            let h0 = (b * n_hours) / n_bins;
+            let h1 = (((b + 1) * n_hours) / n_bins).max(h0 + 1).min(n_hours);
+            let mean_mm_hr: f64 = req.hourly_rain_mm[h0..h1]
+                .iter()
+                .copied()
+                .filter(|v| v.is_finite() && *v > 0.0)
+                .sum::<f64>()
+                / ((h1 - h0).max(1) as f64);
+            let eff_rain_m_s = (mean_mm_hr / 3_600_000.0) * time_compression;
+
+            // Diurnal solar evaporation (sejat/panas): peaks around midday (hour % 24 in 9..17)
+            let mid_h = ((h0 + h1) / 2 + 8) % 24;
+            let solar_weight = if (7..=18).contains(&mid_h) {
+                let phase = ((mid_h as f64 - 7.0) / 11.0) * std::f64::consts::PI;
+                phase.sin().max(0.0) * 2.2
+            } else {
+                0.05
+            };
+            let eff_evap_m_s = base_evap_mean_m_per_s * solar_weight * time_compression;
+            let eff_drain_m_s = base_drain_m_per_s * time_compression;
+
             forcing.push(RainIntervalSpec {
-                start_s: warmup_s,
-                end_s: t1,
-                uniform_rain_m_per_s: rain_m_per_s * 0.65,
+                start_s: warmup_s + (b as f64) * bin_dur_s,
+                end_s: warmup_s + ((b + 1) as f64) * bin_dur_s,
+                uniform_rain_m_per_s: eff_rain_m_s,
                 boundaries: boundary_forcings.clone(),
             });
-            forcing.push(RainIntervalSpec {
-                start_s: t1,
-                end_s: t2,
-                uniform_rain_m_per_s: rain_m_per_s * 1.6,
-                boundaries: boundary_forcings.clone(),
-            });
-            forcing.push(RainIntervalSpec {
-                start_s: t2,
-                end_s: warmup_s + req.duration_s,
-                uniform_rain_m_per_s: 0.0,
-                boundaries: boundary_forcings,
-            });
+            interval_losses.push((eff_evap_m_s, eff_drain_m_s));
         }
-    };
+    } else {
+        match req.hyetograph {
+            HyetographPreset::Uniform => {
+                forcing.push(RainIntervalSpec {
+                    start_s: warmup_s,
+                    end_s: warmup_s + req.duration_s,
+                    uniform_rain_m_per_s: rain_m_per_s,
+                    boundaries: boundary_forcings,
+                });
+                interval_losses.push((base_evap_mean_m_per_s, base_drain_m_per_s));
+            }
+            HyetographPreset::PeakStorm => {
+                let t1 = warmup_s + req.duration_s * 0.25;
+                let t2 = warmup_s + req.duration_s * 0.55;
+                forcing.push(RainIntervalSpec {
+                    start_s: warmup_s,
+                    end_s: t1,
+                    uniform_rain_m_per_s: rain_m_per_s * 0.65,
+                    boundaries: boundary_forcings.clone(),
+                });
+                interval_losses.push((base_evap_mean_m_per_s, base_drain_m_per_s));
+                forcing.push(RainIntervalSpec {
+                    start_s: t1,
+                    end_s: t2,
+                    uniform_rain_m_per_s: rain_m_per_s * 1.6,
+                    boundaries: boundary_forcings.clone(),
+                });
+                interval_losses.push((base_evap_mean_m_per_s * 0.5, base_drain_m_per_s));
+                forcing.push(RainIntervalSpec {
+                    start_s: t2,
+                    end_s: warmup_s + req.duration_s,
+                    uniform_rain_m_per_s: 0.0,
+                    boundaries: boundary_forcings,
+                });
+                interval_losses.push((base_evap_mean_m_per_s * 1.8, base_drain_m_per_s));
+            }
+        }
+    }
 
     let land = match req.land {
         LandChoice::Impervious => LandSpec::UniformImpervious,
@@ -649,7 +778,9 @@ fn execute_blocking(
         },
     };
 
-    let mut engine = spec.build_engine().map_err(|e| (422, e.to_string()))?;
+    let mut engine = spec
+        .build_engine_with_physics(per_cell_initial.as_deref(), Some(&interval_losses))
+        .map_err(|e| (422, e.to_string()))?;
     if warmup_s > 0.0 {
         engine
             .advance_to(warmup_s, StepBudget::new(MAX_INTERACTIVE_STEPS))
@@ -833,4 +964,269 @@ pub fn export_envelope_csv(sim: &CachedSimulation) -> String {
         }
     }
     out
+}
+
+#[derive(Clone, Copy)]
+struct MinF64 {
+    val: f64,
+    idx: usize,
+}
+
+impl PartialEq for MinF64 {
+    fn eq(&self, other: &Self) -> bool {
+        self.val.to_bits() == other.val.to_bits() && self.idx == other.idx
+    }
+}
+impl Eq for MinF64 {}
+impl PartialOrd for MinF64 {
+    fn partial_cmp(&self, other: &Self) -> Option<CmpOrdering> {
+        Some(self.cmp(other))
+    }
+}
+impl Ord for MinF64 {
+    fn cmp(&self, other: &Self) -> CmpOrdering {
+        // Reverse order for min-heap
+        other
+            .val
+            .total_cmp(&self.val)
+            .then_with(|| other.idx.cmp(&self.idx))
+    }
+}
+
+/// Barnes Priority-Flood depression filling with a gentle monotonic drainage gradient (`epsilon`)
+/// so coarse Terrarium DEMs do not trap water in artificial single-cell hilltop pits.
+fn condition_hydrological_dem(elevations: &mut [Option<f64>], cols: usize, rows: usize) {
+    let n = cols * rows;
+    if elevations.len() != n || cols < 3 || rows < 3 {
+        return;
+    }
+    let mut visited = vec![false; n];
+    let mut heap: BinaryHeap<MinF64> = BinaryHeap::with_capacity(n);
+
+    for r in 0..rows {
+        for c in 0..cols {
+            if r == 0 || r + 1 == rows || c == 0 || c + 1 == cols {
+                let idx = r * cols + c;
+                if let Some(z) = elevations[idx] {
+                    visited[idx] = true;
+                    heap.push(MinF64 { val: z, idx });
+                }
+            }
+        }
+    }
+
+    let eps = 0.04;
+    let dirs: [(isize, isize); 8] = [
+        (-1, 0),
+        (1, 0),
+        (0, -1),
+        (0, 1),
+        (-1, -1),
+        (-1, 1),
+        (1, -1),
+        (1, 1),
+    ];
+
+    while let Some(cur) = heap.pop() {
+        let r = (cur.idx / cols) as isize;
+        let c = (cur.idx % cols) as isize;
+        for (dr, dc) in dirs {
+            let nr = r + dr;
+            let nc = c + dc;
+            if nr < 0 || nc < 0 || nr >= rows as isize || nc >= cols as isize {
+                continue;
+            }
+            let nidx = (nr as usize) * cols + (nc as usize);
+            if visited[nidx] {
+                continue;
+            }
+            visited[nidx] = true;
+            if let Some(nz) = elevations[nidx] {
+                let filled = if nz < cur.val + eps {
+                    cur.val + eps
+                } else {
+                    nz
+                };
+                elevations[nidx] = Some(filled);
+                heap.push(MinF64 {
+                    val: filled,
+                    idx: nidx,
+                });
+            }
+        }
+    }
+}
+
+/// Computes D8 contributing drainage area (in cell count) on a hydrologically conditioned DEM.
+fn compute_d8_flow_accum(elevations: &[Option<f64>], cols: usize, rows: usize) -> Vec<u32> {
+    let n = cols * rows;
+    let mut order: Vec<(f64, usize)> = elevations
+        .iter()
+        .enumerate()
+        .filter_map(|(i, z)| z.map(|v| (v, i)))
+        .collect();
+    order.sort_by(|a, b| b.0.total_cmp(&a.0));
+
+    let mut accum = vec![1u32; n];
+    let dirs: [(isize, isize); 8] = [
+        (-1, 0),
+        (1, 0),
+        (0, -1),
+        (0, 1),
+        (-1, -1),
+        (-1, 1),
+        (1, -1),
+        (1, 1),
+    ];
+    for (z, idx) in order {
+        let r = (idx / cols) as isize;
+        let c = (idx % cols) as isize;
+        let mut best_slope = 0.0;
+        let mut best_n = None;
+        for (dr, dc) in dirs {
+            let nr = r + dr;
+            let nc = c + dc;
+            if nr < 0 || nc < 0 || nr >= rows as isize || nc >= cols as isize {
+                continue;
+            }
+            let nidx = (nr as usize) * cols + (nc as usize);
+            if let Some(nz) = elevations[nidx] {
+                let dist = if dr != 0 && dc != 0 {
+                    std::f64::consts::SQRT_2
+                } else {
+                    1.0
+                };
+                let slope = (z - nz) / dist;
+                if slope > best_slope {
+                    best_slope = slope;
+                    best_n = Some(nidx);
+                }
+            }
+        }
+        if let Some(target) = best_n {
+            accum[target] = accum[target].saturating_add(accum[idx]);
+        }
+    }
+    accum
+}
+
+/// Builds a channel-only / valley-only pre-state depth array at `t = 0`:
+/// hillslopes start at `0.0 m`, while high flow-accumulation river corridors, coastal lowlands,
+/// and localized valley cells around live observed flooded gauges start wet.
+fn build_channel_prestate(
+    elevations: &[Option<f64>],
+    cols: usize,
+    rows: usize,
+    bounds: [f64; 4],
+    antecedent_rain_mm: f64,
+    gauges: &[ObservedGaugeSeed],
+) -> Vec<f64> {
+    let n = cols * rows;
+    let mut depths = vec![0.0f64; n];
+    let accum = compute_d8_flow_accum(elevations, cols, rows);
+
+    // Determine elevation 25th percentile (lowland/valley floor) and flow-accumulation threshold
+    let mut valid_z: Vec<f64> = elevations.iter().filter_map(|&z| z).collect();
+    valid_z.sort_by(f64::total_cmp);
+    let low_z_cutoff = if valid_z.is_empty() {
+        10.0
+    } else {
+        valid_z[(valid_z.len() * 35) / 100]
+    };
+    let channel_accum_min = ((n as f64).sqrt() * 0.22).round().max(4.0) as u32;
+
+    if antecedent_rain_mm > 0.0 {
+        let scale = (antecedent_rain_mm / 60.0).clamp(0.25, 2.5);
+        for idx in 0..n {
+            let Some(z) = elevations[idx] else { continue };
+            let a = accum[idx];
+            if a >= channel_accum_min && z <= low_z_cutoff + 18.0 {
+                let channel_factor = ((a as f64) / (channel_accum_min as f64)).ln_1p().min(2.6);
+                depths[idx] = (0.14 * scale * channel_factor).min(0.45);
+            }
+        }
+    }
+
+    // Assimilate live observed gauge excess depths into local valley/channel cells around each gauge
+    let [min_lon, min_lat, max_lon, max_lat] = bounds;
+    let lon_span = (max_lon - min_lon).max(1e-6);
+    let lat_span = (max_lat - min_lat).max(1e-6);
+    for g in gauges {
+        if !g.depth_m.is_finite() || g.depth_m <= 0.0 {
+            continue;
+        }
+        let fx = ((g.lon - min_lon) / lon_span) * (cols as f64);
+        let fy = ((g.lat - min_lat) / lat_span) * (rows as f64);
+        if fx < -2.0 || fx > (cols as f64 + 2.0) || fy < -2.0 || fy > (rows as f64 + 2.0) {
+            continue;
+        }
+        let gc = (fx.floor() as isize).clamp(0, cols as isize - 1);
+        let gr = (fy.floor() as isize).clamp(0, rows as isize - 1);
+        let rad = (g.radius_cells.clamp(1, 6)) as isize;
+
+        // Find local valley floor near gauge so water stays in the valley, never on adjacent peaks
+        let mut local_min_z = f64::INFINITY;
+        for dr in -rad..=rad {
+            for dc in -rad..=rad {
+                let nr = gr + dr;
+                let nc = gc + dc;
+                if nr >= 0
+                    && nc >= 0
+                    && nr < rows as isize
+                    && nc < cols as isize
+                    && let Some(z) = elevations[(nr as usize) * cols + (nc as usize)]
+                    && z < local_min_z
+                {
+                    local_min_z = z;
+                }
+            }
+        }
+        if !local_min_z.is_finite() {
+            continue;
+        }
+
+        let rad_f = rad as f64;
+        for dr in -rad..=rad {
+            for dc in -rad..=rad {
+                let nr = gr + dr;
+                let nc = gc + dc;
+                if nr < 0 || nc < 0 || nr >= rows as isize || nc >= cols as isize {
+                    continue;
+                }
+                let dist = ((dr * dr + dc * dc) as f64).sqrt();
+                if dist > rad_f {
+                    continue;
+                }
+                let idx = (nr as usize) * cols + (nc as usize);
+                if let Some(z) = elevations[idx] {
+                    // Flood cells within 14m of local valley floor around observed gauge
+                    let elev_drop = ((z - local_min_z) / 14.0).clamp(0.0, 1.0);
+                    let w = (1.0 - dist / (rad_f + 0.6)) * (1.0 - elev_drop * 0.75);
+                    let seeded = (g.depth_m * w).min(0.55);
+                    if seeded > depths[idx] {
+                        depths[idx] = seeded;
+                    }
+                }
+            }
+        }
+    }
+
+    // One gentle smoothing pass on initial depths to avoid unphysical wet-dry step shocks
+    let mut smoothed = depths.clone();
+    for r in 1..rows.saturating_sub(1) {
+        for c in 1..cols.saturating_sub(1) {
+            let idx = r * cols + c;
+            if elevations[idx].is_none() {
+                continue;
+            }
+            let avg = (depths[idx] * 2.0
+                + depths[idx - 1]
+                + depths[idx + 1]
+                + depths[idx - cols]
+                + depths[idx + cols])
+                / 6.0;
+            smoothed[idx] = avg;
+        }
+    }
+    smoothed
 }

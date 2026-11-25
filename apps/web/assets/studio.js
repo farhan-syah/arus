@@ -40,6 +40,10 @@ const state = {
   tzLabel: 'UTC',
   spanHours: 0,
   antecedentMm: 0,
+  hourlyRainMm: [],
+  drainageMmHr: 0,
+  evapMmDay: 0,
+  observedGauges: [],
   boundaryGeoJson: null,
   boundaryGrid: null,
   boundaryCellMask: null,
@@ -377,7 +381,7 @@ async function loadBoundaryByQuery(query) {
       state.cachedDem = null;
       applyRegionBoundary();
       map.fitBounds([[minLon, minLat], [maxLon, maxLat]], {
-        padding: { top: 40, bottom: 72, left: 255, right: 32 },
+        padding: { top: 64, bottom: 74, left: 255, right: 32 },
         pitch: 8,
         bearing: 0,
         duration: 0,
@@ -1030,6 +1034,10 @@ async function buildRequestPayload() {
     terrain_elevations_m: sampled,
     terrain_provenance: sampled ? 'BrowserTerrariumScreening' : null,
     antecedent_rain_mm: state.antecedentMm || 0,
+    hourly_rain_mm: state.hourlyRainMm || [],
+    drainage_mm_per_hr: state.drainageMmHr || 0,
+    evaporation_mm_per_day: state.evapMmDay || 0,
+    observed_gauges: state.observedGauges || [],
     wind_x_m_per_s: parseFloat($('ctl-wind').value) || 0,
     wind_y_m_per_s: 0,
   };
@@ -1124,10 +1132,24 @@ function updateFrameTelemetry() {
   if (!map) return;
   const c = map.getCenter();
   const z = map.getZoom();
-  const rain = $('ctl-rain')?.value || '0';
+  let rainPart;
+  if (state.hourlyRainMm && state.hourlyRainMm.length > 0 && state.frames.length > 0) {
+    const frac = state.frames.length > 1
+      ? Math.min(state.frameIdx, state.frames.length - 1) / (state.frames.length - 1)
+      : 0;
+    const hIdx = Math.min(
+      state.hourlyRainMm.length - 1,
+      Math.floor(frac * state.hourlyRainMm.length),
+    );
+    const curRate = state.hourlyRainMm[hIdx] || 0;
+    rainPart = `${curRate.toFixed(1)} mm/hr NWP`;
+  } else {
+    const rain = $('ctl-rain')?.value || '0';
+    rainPart = `${rain} mm/hr`;
+  }
   const wind = parseFloat($('ctl-wind')?.value || '0') || 0;
   const windPart = wind > 0 ? ` · ${wind} m/s` : '';
-  $('telemetry').textContent = `${c.lat.toFixed(4)}°, ${c.lng.toFixed(4)}° · z${z.toFixed(1)} · ${rain} mm/hr${windPart}`;
+  $('telemetry').textContent = `${c.lat.toFixed(4)}°, ${c.lng.toFixed(4)}° · z${z.toFixed(1)} · ${rainPart}${windPart}`;
 }
 
 function updateHonestyPill() {
@@ -1305,6 +1327,31 @@ function updateLiveMetrics() {
   else if (score >= 0.22) { lvl = 'moderate'; label = 'MODERATE'; }
   badge.className = `lm-badge ${lvl}`;
   badge.textContent = label;
+  const trendEl = $('lm-trend');
+  if (trendEl) {
+    if (idx === 0) {
+      trendEl.className = 'lm-trend';
+      trendEl.textContent = 'Current';
+    } else {
+      const prevDepth = state.frames[idx - 1].depth;
+      let prevSum = 0;
+      for (let i = 0; i < prevDepth.length; i++) {
+        if (mask[i] && prevDepth[i] > 0) prevSum += prevDepth[i];
+      }
+      const prevAvg = totalCells > 0 ? prevSum / totalCells : 0;
+      const diff = avgDepth - prevAvg;
+      if (diff > 0.0008) {
+        trendEl.className = 'lm-trend rising';
+        trendEl.textContent = 'Rising ▲';
+      } else if (diff < -0.0008) {
+        trendEl.className = 'lm-trend receding';
+        trendEl.textContent = 'Surut ▼';
+      } else {
+        trendEl.className = 'lm-trend';
+        trendEl.textContent = 'Steady ●';
+      }
+    }
+  }
   $('lm-marker').style.left = `${(score * 100).toFixed(1)}%`;
   $('lm-avg').textContent = `${avgDepth.toFixed(2)} m`;
   $('lm-peak').textContent = `${peakDepth.toFixed(2)} m`;
@@ -1329,10 +1376,23 @@ function updateTimeReadout() {
     callout.style.left = `${Math.max(12, Math.min(88, pct)).toFixed(2)}%`;
     const segNodes = document.querySelectorAll('#fb-segments .fb-seg');
     if (segNodes.length > 0) {
-      const activeIdx = Math.min(segNodes.length - 1, Math.floor(frac * segNodes.length));
+      let activeIdx;
+      if (state.spanHours >= 24) {
+        const d0 = new Date(state.startEpochMs);
+        const day0Midnight = Date.UTC(d0.getUTCFullYear(), d0.getUTCMonth(), d0.getUTCDate());
+        const dCur = new Date(epochMs);
+        const curMidnight = Date.UTC(dCur.getUTCFullYear(), dCur.getUTCMonth(), dCur.getUTCDate());
+        activeIdx = Math.max(
+          0,
+          Math.min(segNodes.length - 1, Math.round((curMidnight - day0Midnight) / 86_400_000)),
+        );
+      } else {
+        activeIdx = Math.min(segNodes.length - 1, Math.floor(frac * segNodes.length));
+      }
       segNodes.forEach((n, i) => n.classList.toggle('active', i === activeIdx));
     }
   }
+  updateFrameTelemetry();
   updateLiveMetrics();
 }
 
@@ -1766,6 +1826,18 @@ window.arusDirector = {
     }
     if (typeof opts.antecedent_rain_mm === 'number' && Number.isFinite(opts.antecedent_rain_mm)) {
       state.antecedentMm = Math.max(0, Math.min(500, opts.antecedent_rain_mm));
+    }
+    if (Array.isArray(opts.hourly_rain_mm)) {
+      state.hourlyRainMm = opts.hourly_rain_mm.map(Number).filter(Number.isFinite);
+    }
+    if (typeof opts.drainage_mm_per_hr === 'number' && Number.isFinite(opts.drainage_mm_per_hr)) {
+      state.drainageMmHr = Math.max(0, opts.drainage_mm_per_hr);
+    }
+    if (typeof opts.evaporation_mm_per_day === 'number' && Number.isFinite(opts.evaporation_mm_per_day)) {
+      state.evapMmDay = Math.max(0, opts.evaporation_mm_per_day);
+    }
+    if (Array.isArray(opts.observed_gauges)) {
+      state.observedGauges = opts.observed_gauges;
     }
     updateTimeReadout();
   },

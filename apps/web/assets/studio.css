@@ -849,6 +849,18 @@ input[type="range"] {
   font-weight: 600;
   color: var(--ink-1);
 }
+.lm-head-right {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.lm-trend {
+  font-size: 10.5px;
+  font-weight: 600;
+  color: var(--ink-2);
+}
+.lm-trend.rising { color: var(--danger); }
+.lm-trend.receding { color: var(--ok); }
 .lm-badge {
   font-size: 10px;
   font-weight: 700;

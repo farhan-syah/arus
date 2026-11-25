@@ -71,7 +71,10 @@ fn StudioShell() -> Element {
         section { id: "live-metrics", class: "hud live-metrics hidden",
             div { class: "lm-head",
                 span { class: "lm-title", "Area Flood Index" }
-                span { id: "lm-badge", class: "lm-badge low", "LOW" }
+                div { class: "lm-head-right",
+                    span { id: "lm-trend", class: "lm-trend", "" }
+                    span { id: "lm-badge", class: "lm-badge low", "LOW" }
+                }
             }
             div { class: "lm-bar-wrap",
                 div { class: "lm-bar" }

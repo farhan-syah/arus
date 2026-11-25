@@ -229,6 +229,16 @@ pub struct SurfaceRunSpec {
 impl SurfaceRunSpec {
     /// Checks capabilities and constructs a `SurfaceEngine` from this manifest.
     pub fn build_engine(&self) -> Result<SurfaceEngine> {
+        self.build_engine_with_physics(None, None)
+    }
+
+    /// Constructs a `SurfaceEngine` with optional per-cell initial water depths (for valley/gauge
+    /// pre-state assimilation) and per-interval `(potential_evaporation_m_per_s, drainage_m_per_s)`.
+    pub fn build_engine_with_physics(
+        &self,
+        initial_depths_m: Option<&[f64]>,
+        interval_losses: Option<&[(f64, f64)]>,
+    ) -> Result<SurfaceEngine> {
         let required_sources = match self.land {
             LandSpec::UniformImpervious => [SourceKind::Rain, SourceKind::ImperviousLand],
             LandSpec::UniformModifiedGreenAmpt { .. } => {
@@ -289,14 +299,36 @@ impl SurfaceRunSpec {
                 self.initial_depth_m
             )));
         }
-        let flow_cells: Vec<CellState> = active
-            .iter()
-            .map(|&is_active| CellState {
-                h: if is_active { self.initial_depth_m } else { 0.0 },
-                qx: 0.0,
-                qy: 0.0,
-            })
-            .collect();
+        let flow_cells: Vec<CellState> = if let Some(per_cell) = initial_depths_m {
+            if per_cell.len() != n {
+                return Err(ModelError::InvalidInput(format!(
+                    "initial_depths_m len {} != grid cell count {n}",
+                    per_cell.len()
+                )));
+            }
+            active
+                .iter()
+                .zip(per_cell.iter())
+                .map(|(&is_active, &h)| CellState {
+                    h: if is_active && h.is_finite() && h > 0.0 {
+                        h
+                    } else {
+                        0.0
+                    },
+                    qx: 0.0,
+                    qy: 0.0,
+                })
+                .collect()
+        } else {
+            active
+                .iter()
+                .map(|&is_active| CellState {
+                    h: if is_active { self.initial_depth_m } else { 0.0 },
+                    qx: 0.0,
+                    qy: 0.0,
+                })
+                .collect()
+        };
         let flow = FlowState::new(&domain, flow_cells)
             .map_err(|error| ModelError::InvalidInput(error.to_string()))?;
 
@@ -315,26 +347,41 @@ impl SurfaceRunSpec {
         let intervals: Vec<ForcingInterval> = self
             .forcing
             .iter()
-            .map(|item| ForcingInterval {
-                start: item.start_s,
-                end: item.end_s,
-                rain: active
-                    .iter()
-                    .map(|&is_active| {
-                        if is_active {
-                            item.uniform_rain_m_per_s
-                        } else {
-                            0.0
-                        }
-                    })
-                    .collect(),
-                potential_evaporation: vec![0.0; n],
-                withdrawal: vec![0.0; n],
-                boundaries: item
-                    .boundaries
-                    .iter()
-                    .map(BoundaryForcingSpec::to_hydr)
-                    .collect(),
+            .enumerate()
+            .map(|(idx, item)| {
+                let (evap, drain) = interval_losses
+                    .and_then(|losses| losses.get(idx).copied())
+                    .unwrap_or((0.0, 0.0));
+                ForcingInterval {
+                    start: item.start_s,
+                    end: item.end_s,
+                    rain: active
+                        .iter()
+                        .map(|&is_active| {
+                            if is_active {
+                                item.uniform_rain_m_per_s
+                            } else {
+                                0.0
+                            }
+                        })
+                        .collect(),
+                    potential_evaporation: active
+                        .iter()
+                        .map(|&is_active| {
+                            if is_active {
+                                evap.max(0.0) + drain.max(0.0)
+                            } else {
+                                0.0
+                            }
+                        })
+                        .collect(),
+                    withdrawal: vec![0.0; n],
+                    boundaries: item
+                        .boundaries
+                        .iter()
+                        .map(BoundaryForcingSpec::to_hydr)
+                        .collect(),
+                }
             })
             .collect();
         let forcing = ForcingSchedule::new(&domain, &boundaries, intervals)
