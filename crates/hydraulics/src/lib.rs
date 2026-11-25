@@ -48,7 +48,7 @@ pub use pools::{
 };
 pub use spec::{
     BoundaryAxisSpec, BoundaryFaceSpec, BoundaryForcingSpec, CoastalForcingSpec, LandSpec,
-    ProbeSpec, RainIntervalSpec, SurfaceRunSpec,
+    ProbeSpec, RainIntervalSpec, SurfacePhysicsOverrides, SurfaceRunSpec,
 };
 pub use subgrid::{SubgridFieldProjection, SubgridTerrainAdapter};
 pub use surface::{LocationProbe, ProbeSample, SurfaceEngine, domain_from_terrain};

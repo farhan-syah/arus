@@ -226,10 +226,25 @@ pub struct SurfaceRunSpec {
     pub coastal: Option<CoastalForcingSpec>,
 }
 
+/// Optional per-cell and per-interval physical overrides passed to `SurfaceRunSpec::build_engine_with_overrides`.
+#[derive(Debug, Default, Clone, Copy)]
+pub struct SurfacePhysicsOverrides<'a> {
+    /// Per-cell Manning roughness `n` (`len == cols * rows`) overriding `uniform_manning_n`.
+    pub manning_n_per_cell: Option<&'a [f64]>,
+    /// Per-cell initial water depths (m) (`len == cols * rows`) overriding `initial_depth_m`.
+    pub initial_depths_m: Option<&'a [f64]>,
+    /// Per-interval spatially varying rainfall grids (`rain[interval][cell]` in m/s).
+    pub interval_rain_grids: Option<&'a [Vec<f64>]>,
+    /// Per-interval spatially varying depth-limited evaporation+drainage grids (`loss[interval][cell]` in m/s).
+    pub interval_loss_grids: Option<&'a [Vec<f64>]>,
+    /// Scalar fallback `(evap_m_s, drain_m_s)` per interval when `interval_loss_grids` is `None`.
+    pub interval_losses: Option<&'a [(f64, f64)]>,
+}
+
 impl SurfaceRunSpec {
     /// Checks capabilities and constructs a `SurfaceEngine` from this manifest.
     pub fn build_engine(&self) -> Result<SurfaceEngine> {
-        self.build_engine_with_physics(None, None)
+        self.build_engine_with_overrides(SurfacePhysicsOverrides::default())
     }
 
     /// Constructs a `SurfaceEngine` with optional per-cell initial water depths (for valley/gauge
@@ -239,19 +254,23 @@ impl SurfaceRunSpec {
         initial_depths_m: Option<&[f64]>,
         interval_losses: Option<&[(f64, f64)]>,
     ) -> Result<SurfaceEngine> {
-        self.build_engine_with_spatial_physics(initial_depths_m, None, None, interval_losses)
+        self.build_engine_with_overrides(SurfacePhysicsOverrides {
+            initial_depths_m,
+            interval_losses,
+            ..SurfacePhysicsOverrides::default()
+        })
     }
 
-    /// Constructs a `SurfaceEngine` with optional per-cell initial water depths, per-interval
-    /// spatially varying rainfall grids (`rain[interval][cell]`), and per-interval spatially
-    /// varying depth-limited loss grids (`loss[interval][cell]`).
-    pub fn build_engine_with_spatial_physics(
+    /// Constructs a `SurfaceEngine` with full per-cell roughness, initial depth, spatial rainfall,
+    /// and spatial Penman-Monteith evaporation + dynamic infiltration loss grids.
+    pub fn build_engine_with_overrides(
         &self,
-        initial_depths_m: Option<&[f64]>,
-        interval_rain_grids: Option<&[Vec<f64>]>,
-        interval_loss_grids: Option<&[Vec<f64>]>,
-        interval_losses: Option<&[(f64, f64)]>,
+        overrides: SurfacePhysicsOverrides<'_>,
     ) -> Result<SurfaceEngine> {
+        let initial_depths_m = overrides.initial_depths_m;
+        let interval_rain_grids = overrides.interval_rain_grids;
+        let interval_loss_grids = overrides.interval_loss_grids;
+        let interval_losses = overrides.interval_losses;
         let required_sources = match self.land {
             LandSpec::UniformImpervious => [SourceKind::Rain, SourceKind::ImperviousLand],
             LandSpec::UniformModifiedGreenAmpt { .. } => {
@@ -273,7 +292,18 @@ impl SurfaceRunSpec {
             self.terrain.grid().cell_count().ok_or_else(|| {
                 ModelError::InvalidInput("terrain cell count overflow".to_owned())
             })?;
-        let domain = domain_from_terrain(&self.terrain, vec![self.uniform_manning_n; n])?;
+        let manning_cells = if let Some(per_cell) = overrides.manning_n_per_cell {
+            if per_cell.len() != n {
+                return Err(ModelError::InvalidInput(format!(
+                    "manning_n_per_cell len {} != grid cell count {n}",
+                    per_cell.len()
+                )));
+            }
+            per_cell.to_vec()
+        } else {
+            vec![self.uniform_manning_n; n]
+        };
+        let domain = domain_from_terrain(&self.terrain, manning_cells)?;
         let active = domain.active();
 
         let land_cells = match self.land {
