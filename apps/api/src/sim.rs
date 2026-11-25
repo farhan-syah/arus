@@ -111,6 +111,15 @@ fn default_gauge_radius() -> usize {
     3
 }
 
+/// Optional coarse spatial NWP rainfall grid (`nx` lon x `ny` lat points, row-major south-to-north)
+/// bilinearly interpolated onto the 2D hydraulic mesh per interval.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SpatialRainGrid {
+    pub nx: usize,
+    pub ny: usize,
+    pub hourly_mm: Vec<Vec<f64>>,
+}
+
 /// Request body for `POST /api/v1/simulations` and `POST /api/v1/compare`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct CreateSimulationRequest {
@@ -155,13 +164,20 @@ pub struct CreateSimulationRequest {
     #[serde(default)]
     pub antecedent_rain_mm: f64,
     /// Optional real hourly NWP rainfall forecast series (mm/hr per hour) driving multi-band
-    /// build-up and dry-window recession (`waktu surut`).
+    /// build-up and dry-window recession.
     #[serde(default)]
     pub hourly_rain_mm: Vec<f64>,
+    /// Optional spatially varying NWP rainfall grid (`nx x ny` points across the domain bbox).
+    #[serde(default)]
+    pub spatial_rain_grid: Option<SpatialRainGrid>,
+    /// Optional hourly coastal tide level (m MSL) applied as a tide-lock `Stage` boundary on
+    /// low-lying coastal outlet faces when above `1.2 m`.
+    #[serde(default)]
+    pub hourly_tide_m: Vec<f64>,
     /// Continuous subsurface / river / storm-drainage loss rate (mm/hr) during simulation.
     #[serde(default)]
     pub drainage_mm_per_hr: f64,
-    /// Daily daytime potential evaporation (`sejat` / solar drying, mm/day), applied diurnally.
+    /// Daily daytime potential evaporation (mm/day), applied diurnally.
     #[serde(default)]
     pub evaporation_mm_per_day: f64,
     /// Optional live observed flooded gauge seeds assimilated into local valley cells at `t = 0`.
@@ -643,36 +659,46 @@ fn execute_blocking(
 
     let mut forcing = Vec::new();
     let mut interval_losses: Vec<(f64, f64)> = Vec::new();
-    if warmup_s > 0.0 {
-        // Short hydraulic relaxation so valley/gauge seeds settle smoothly before t = 0
-        forcing.push(RainIntervalSpec {
-            start_s: 0.0,
-            end_s: warmup_s,
-            uniform_rain_m_per_s: 0.0,
-            boundaries: boundary_forcings.clone(),
-        });
-        interval_losses.push((0.0, 0.0));
-    }
+    let mut interval_rain_grids: Vec<Vec<f64>> = Vec::new();
+    let mut interval_loss_grids: Vec<Vec<f64>> = Vec::new();
+    let mut use_spatial_grids = false;
 
-    if !req.hourly_rain_mm.is_empty() {
-        // Stage 2-3: Real multi-hour NWP forcing preserving total storm rainfall volume across
-        // req.duration_s, with diurnal solar evaporation (sejat) and continuous basin drainage.
-        let n_hours = req.hourly_rain_mm.len();
+    let has_spatial = req.spatial_rain_grid.as_ref().is_some_and(|g| {
+        g.nx >= 2 && g.ny >= 2 && g.hourly_mm.len() == g.nx * g.ny && !g.hourly_mm[0].is_empty()
+    });
+
+    if has_spatial || !req.hourly_rain_mm.is_empty() {
+        // Stage 2-3: Real multi-hour NWP forcing (spatial 2D grid + D8 channel concentration +
+        // coastal tide-lock + diurnal evaporation + slow lowland/depression drainage for stagnant ponding).
+        let n_hours = if let Some(sg) = &req.spatial_rain_grid
+            && has_spatial
+        {
+            sg.hourly_mm[0].len()
+        } else {
+            req.hourly_rain_mm.len()
+        };
         let n_bins = n_hours.clamp(1, 24);
         let bin_dur_s = req.duration_s / (n_bins as f64);
         let time_compression = ((n_hours as f64) * 3600.0 / req.duration_s).clamp(1.0, 240.0);
+
+        let accum = compute_d8_flow_accum(terrain.cells(), cols, rows);
+        let depression_mask = detect_real_depressions(terrain.cells(), cols, rows);
+        let mut valid_z: Vec<f64> = terrain.cells().iter().filter_map(|&z| z).collect();
+        valid_z.sort_by(f64::total_cmp);
+        let low_z_cutoff = if valid_z.is_empty() {
+            10.0
+        } else {
+            valid_z[(valid_z.len() * 30) / 100]
+        };
+        let channel_accum_min = ((cols * rows) as f64).sqrt().mul_add(0.28, 0.0).max(5.0) as u32;
+        use_spatial_grids = true;
+
         for b in 0..n_bins {
             let h0 = (b * n_hours) / n_bins;
             let h1 = (((b + 1) * n_hours) / n_bins).max(h0 + 1).min(n_hours);
-            let mean_mm_hr: f64 = req.hourly_rain_mm[h0..h1]
-                .iter()
-                .copied()
-                .filter(|v| v.is_finite() && *v > 0.0)
-                .sum::<f64>()
-                / ((h1 - h0).max(1) as f64);
-            let eff_rain_m_s = (mean_mm_hr / 3_600_000.0) * time_compression;
+            let bin_len = (h1 - h0).max(1) as f64;
 
-            // Diurnal solar evaporation (sejat/panas): peaks around midday (hour % 24 in 9..17)
+            // Diurnal solar evaporation: peaks around midday (local hour 9..17)
             let mid_h = ((h0 + h1) / 2 + 8) % 24;
             let solar_weight = if (7..=18).contains(&mid_h) {
                 let phase = ((mid_h as f64 - 7.0) / 11.0) * std::f64::consts::PI;
@@ -683,13 +709,116 @@ fn execute_blocking(
             let eff_evap_m_s = base_evap_mean_m_per_s * solar_weight * time_compression;
             let eff_drain_m_s = base_drain_m_per_s * time_compression;
 
+            // Build per-cell rainfall grid (bilinear spatial NWP + D8 upstream channel routing)
+            let mut rain_grid = vec![0.0f64; cols * rows];
+            let mut loss_grid = vec![0.0f64; cols * rows];
+
+            let bin_pt_means: Vec<f64> = if let Some(sg) = &req.spatial_rain_grid
+                && has_spatial
+            {
+                sg.hourly_mm
+                    .iter()
+                    .map(|series| {
+                        let end = h1.min(series.len());
+                        let start = h0.min(end);
+                        series[start..end]
+                            .iter()
+                            .copied()
+                            .filter(|v| v.is_finite() && *v > 0.0)
+                            .sum::<f64>()
+                            / (end.saturating_sub(start).max(1) as f64)
+                    })
+                    .collect()
+            } else {
+                Vec::new()
+            };
+            let fallback_mean_mm: f64 = if !has_spatial {
+                req.hourly_rain_mm[h0..h1]
+                    .iter()
+                    .copied()
+                    .filter(|v| v.is_finite() && *v > 0.0)
+                    .sum::<f64>()
+                    / bin_len
+            } else {
+                bin_pt_means.iter().sum::<f64>() / (bin_pt_means.len().max(1) as f64)
+            };
+
+            let bin_tide_m = if !req.hourly_tide_m.is_empty() {
+                let t_end = h1.min(req.hourly_tide_m.len());
+                let t_start = h0.min(t_end);
+                req.hourly_tide_m[t_start..t_end]
+                    .iter()
+                    .copied()
+                    .fold(f64::NEG_INFINITY, f64::max)
+            } else {
+                0.0
+            };
+            let tide_lock = if bin_tide_m > 1.2 {
+                ((bin_tide_m - 1.2) / 1.0).clamp(0.0, 1.0)
+            } else {
+                0.0
+            };
+
+            for r in 0..rows {
+                for c in 0..cols {
+                    let idx = r * cols + c;
+                    let Some(z) = terrain.cells()[idx] else {
+                        continue;
+                    };
+                    let local_mm_hr = if let Some(sg) = &req.spatial_rain_grid
+                        && has_spatial
+                    {
+                        bilinear_sample_grid(
+                            &bin_pt_means,
+                            sg.nx,
+                            sg.ny,
+                            (c as f64 + 0.5) / (cols as f64),
+                            (r as f64 + 0.5) / (rows as f64),
+                        )
+                    } else {
+                        fallback_mean_mm
+                    };
+                    // D8 upstream channel concentration: river cells receive routed upstream inflow
+                    let a = accum[idx];
+                    let routing_mult = if a >= channel_accum_min {
+                        1.0 + ((a as f64) / (channel_accum_min as f64)).ln_1p().min(1.6) * 0.55
+                    } else {
+                        0.85
+                    };
+                    // High-tide backwater lock on coastal lowlands (z <= 3.5 m)
+                    let coastal_surge_m_s = if z <= 3.5 && tide_lock > 0.0 {
+                        (0.45 * tide_lock / 3_600_000.0) * time_compression
+                    } else {
+                        0.0
+                    };
+                    rain_grid[idx] = (local_mm_hr / 3_600_000.0) * time_compression * routing_mult
+                        + coastal_surge_m_s;
+
+                    // Spatially varying drainage: uplands drain faster; real depressions,
+                    // tide-locked coastal lowlands, and saturated valleys drain slowly so stagnant ponded water persists.
+                    let mut drain_factor = if depression_mask[idx] {
+                        0.20
+                    } else if z <= low_z_cutoff {
+                        0.50
+                    } else {
+                        1.35
+                    };
+                    if z <= 3.5 && tide_lock > 0.0 {
+                        drain_factor *= 1.0 - 0.75 * tide_lock;
+                    }
+                    loss_grid[idx] = eff_evap_m_s + eff_drain_m_s * drain_factor;
+                }
+            }
+
             forcing.push(RainIntervalSpec {
                 start_s: warmup_s + (b as f64) * bin_dur_s,
                 end_s: warmup_s + ((b + 1) as f64) * bin_dur_s,
-                uniform_rain_m_per_s: eff_rain_m_s,
+                uniform_rain_m_per_s: (fallback_mean_mm / 3_600_000.0) * time_compression,
                 boundaries: boundary_forcings.clone(),
             });
             interval_losses.push((eff_evap_m_s, eff_drain_m_s));
+            interval_rain_grids.push(rain_grid);
+            interval_loss_grids.push(loss_grid);
         }
     } else {
         match req.hyetograph {
@@ -779,7 +908,20 @@ fn execute_blocking(
     };
 
     let mut engine = spec
-        .build_engine_with_physics(per_cell_initial.as_deref(), Some(&interval_losses))
+        .build_engine_with_spatial_physics(
+            per_cell_initial.as_deref(),
+            if use_spatial_grids {
+                Some(&interval_rain_grids)
+            } else {
+                None
+            },
+            if use_spatial_grids {
+                Some(&interval_loss_grids)
+            } else {
+                None
+            },
+            Some(&interval_losses),
+        )
         .map_err(|e| (422, e.to_string()))?;
     if warmup_s > 0.0 {
         engine
@@ -1042,14 +1184,16 @@ fn condition_hydrological_dem(elevations: &mut [Option<f64>], cols: usize, rows:
             }
             visited[nidx] = true;
             if let Some(nz) = elevations[nidx] {
-                let filled = if nz < cur.val + eps {
+                // Selective pit conditioning: fill shallow DEM quantization noise (<= 0.6 m),
+                // but preserve deeper natural depressions/backswamps so stagnant water can trap.
+                let filled = if nz < cur.val + eps && (cur.val - nz) <= 0.6 {
                     cur.val + eps
                 } else {
                     nz
                 };
                 elevations[nidx] = Some(filled);
                 heap.push(MinF64 {
-                    val: filled,
+                    val: filled.max(cur.val),
                     idx: nidx,
                 });
             }
@@ -1229,4 +1373,59 @@ fn build_channel_prestate(
         }
     }
     smoothed
+}
+
+/// Identifies natural topographic depressions/backswamps (cells lower than all 8 neighbors
+/// by > 0.25 m) where stagnant ponded floodwater naturally traps.
+fn detect_real_depressions(elevations: &[Option<f64>], cols: usize, rows: usize) -> Vec<bool> {
+    let mut mask = vec![false; cols * rows];
+    let dirs: [(isize, isize); 8] = [
+        (-1, 0),
+        (1, 0),
+        (0, -1),
+        (0, 1),
+        (-1, -1),
+        (-1, 1),
+        (1, -1),
+        (1, 1),
+    ];
+    for r in 1..rows.saturating_sub(1) {
+        for c in 1..cols.saturating_sub(1) {
+            let idx = r * cols + c;
+            let Some(z) = elevations[idx] else { continue };
+            let mut min_nb = f64::INFINITY;
+            for (dr, dc) in dirs {
+                let nidx = ((r as isize + dr) as usize) * cols + ((c as isize + dc) as usize);
+                if let Some(nz) = elevations[nidx]
+                    && nz < min_nb
+                {
+                    min_nb = nz;
+                }
+            }
+            if min_nb.is_finite() && (min_nb - z) > 0.25 {
+                mask[idx] = true;
+            }
+        }
+    }
+    mask
+}
+
+/// Bilinearly interpolates a coarse `nx x ny` spatial grid (row-major south-to-north) at `(u, v) in [0, 1]^2`.
+fn bilinear_sample_grid(values: &[f64], nx: usize, ny: usize, u: f64, v: f64) -> f64 {
+    if values.len() != nx * ny || nx == 0 || ny == 0 {
+        return 0.0;
+    }
+    let fx = u.clamp(0.0, 1.0) * ((nx - 1) as f64);
+    let fy = v.clamp(0.0, 1.0) * ((ny - 1) as f64);
+    let x0 = (fx.floor() as usize).min(nx - 1);
+    let y0 = (fy.floor() as usize).min(ny - 1);
+    let x1 = (x0 + 1).min(nx - 1);
+    let y1 = (y0 + 1).min(ny - 1);
+    let tx = fx - (x0 as f64);
+    let ty = fy - (y0 as f64);
+    let v00 = values[y0 * nx + x0];
+    let v10 = values[y0 * nx + x1];
+    let v01 = values[y1 * nx + x0];
+    let v11 = values[y1 * nx + x1];
+    (v00 * (1.0 - tx) + v10 * tx) * (1.0 - ty) + (v01 * (1.0 - tx) + v11 * tx) * ty
 }

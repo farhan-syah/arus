@@ -100,8 +100,8 @@ fn StudioShell() -> Element {
                     strong { id: "lm-pct", class: "lm-v", "0%" }
                 }
                 div { class: "lm-cell",
-                    span { class: "lm-k", "Active Extent" }
-                    strong { id: "lm-km2", class: "lm-v", "0.0 km²" }
+                    span { class: "lm-k", "Stagnant" }
+                    strong { id: "lm-stagnant", class: "lm-v", "0.0 km²" }
                 }
             }
         }
@@ -232,6 +232,10 @@ fn StudioShell() -> Element {
             div { id: "legend-bar", class: "legend-bar" }
             div { id: "legend-ticks", class: "legend-ticks" }
             div { id: "legend-note", class: "legend-note" }
+            div { class: "legend-river",
+                span { class: "river-swatch" }
+                span { "Normal river channel" }
+            }
         }
 
         // Floating Probe / Cross-Section / Diff Inspector

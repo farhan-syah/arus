@@ -239,6 +239,19 @@ impl SurfaceRunSpec {
         initial_depths_m: Option<&[f64]>,
         interval_losses: Option<&[(f64, f64)]>,
     ) -> Result<SurfaceEngine> {
+        self.build_engine_with_spatial_physics(initial_depths_m, None, None, interval_losses)
+    }
+
+    /// Constructs a `SurfaceEngine` with optional per-cell initial water depths, per-interval
+    /// spatially varying rainfall grids (`rain[interval][cell]`), and per-interval spatially
+    /// varying depth-limited loss grids (`loss[interval][cell]`).
+    pub fn build_engine_with_spatial_physics(
+        &self,
+        initial_depths_m: Option<&[f64]>,
+        interval_rain_grids: Option<&[Vec<f64>]>,
+        interval_loss_grids: Option<&[Vec<f64>]>,
+        interval_losses: Option<&[(f64, f64)]>,
+    ) -> Result<SurfaceEngine> {
         let required_sources = match self.land {
             LandSpec::UniformImpervious => [SourceKind::Rain, SourceKind::ImperviousLand],
             LandSpec::UniformModifiedGreenAmpt { .. } => {
@@ -352,10 +365,23 @@ impl SurfaceRunSpec {
                 let (evap, drain) = interval_losses
                     .and_then(|losses| losses.get(idx).copied())
                     .unwrap_or((0.0, 0.0));
-                ForcingInterval {
-                    start: item.start_s,
-                    end: item.end_s,
-                    rain: active
+                let rain: Vec<f64> = if let Some(grid) =
+                    interval_rain_grids.and_then(|grids| grids.get(idx))
+                    && grid.len() == n
+                {
+                    active
+                        .iter()
+                        .zip(grid.iter())
+                        .map(|(&is_active, &r)| {
+                            if is_active && r.is_finite() && r > 0.0 {
+                                r
+                            } else {
+                                0.0
+                            }
+                        })
+                        .collect()
+                } else {
+                    active
                         .iter()
                         .map(|&is_active| {
                             if is_active {
@@ -364,8 +390,25 @@ impl SurfaceRunSpec {
                                 0.0
                             }
                         })
-                        .collect(),
-                    potential_evaporation: active
+                        .collect()
+                };
+                let potential_evaporation: Vec<f64> = if let Some(grid) =
+                    interval_loss_grids.and_then(|grids| grids.get(idx))
+                    && grid.len() == n
+                {
+                    active
+                        .iter()
+                        .zip(grid.iter())
+                        .map(|(&is_active, &l)| {
+                            if is_active && l.is_finite() && l > 0.0 {
+                                l
+                            } else {
+                                0.0
+                            }
+                        })
+                        .collect()
+                } else {
+                    active
                         .iter()
                         .map(|&is_active| {
                             if is_active {
@@ -374,7 +417,13 @@ impl SurfaceRunSpec {
                                 0.0
                             }
                         })
-                        .collect(),
+                        .collect()
+                };
+                ForcingInterval {
+                    start: item.start_s,
+                    end: item.end_s,
+                    rain,
+                    potential_evaporation,
                     withdrawal: vec![0.0; n],
                     boundaries: item
                         .boundaries

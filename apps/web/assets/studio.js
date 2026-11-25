@@ -41,6 +41,8 @@ const state = {
   spanHours: 0,
   antecedentMm: 0,
   hourlyRainMm: [],
+  spatialRainGrid: null,
+  hourlyTideM: [],
   drainageMmHr: 0,
   evapMmDay: 0,
   observedGauges: [],
@@ -220,6 +222,45 @@ function ensureMapLayers() {
     },
     beforeLabels,
   );
+
+  // High-contrast emerald green original river channel line above flood water
+  const style = map.getStyle();
+  const vecSourceId = style && style.sources
+    ? Object.keys(style.sources).find((k) => style.sources[k].type === 'vector')
+    : null;
+  if (vecSourceId) {
+    map.addLayer(
+      {
+        id: 'arus-river-halo',
+        type: 'line',
+        source: vecSourceId,
+        'source-layer': 'waterway',
+        filter: ['in', ['get', 'class'], ['literal', ['river', 'canal']]],
+        paint: {
+          'line-color': isDark ? 'rgba(15, 23, 42, 0.85)' : 'rgba(255, 255, 255, 0.88)',
+          'line-width': ['interpolate', ['linear'], ['zoom'], 8, 2.2, 12, 3.6, 15, 5.2],
+        },
+        layout: { 'line-cap': 'round', 'line-join': 'round' },
+      },
+      beforeLabels,
+    );
+    map.addLayer(
+      {
+        id: 'arus-river-line',
+        type: 'line',
+        source: vecSourceId,
+        'source-layer': 'waterway',
+        filter: ['in', ['get', 'class'], ['literal', ['river', 'canal']]],
+        paint: {
+          'line-color': '#059669',
+          'line-width': ['interpolate', ['linear'], ['zoom'], 8, 1.3, 12, 2.1, 15, 3.0],
+          'line-opacity': 0.95,
+        },
+        layout: { 'line-cap': 'round', 'line-join': 'round' },
+      },
+      beforeLabels,
+    );
+  }
 
   map.addSource('arus-particles', { type: 'geojson', data: empty });
   map.addLayer(
@@ -601,6 +642,7 @@ function updateSmoothWaterImage(meta, env, frame) {
     map.getSource('arus-water-img').updateImage({ url, coordinates: coords });
   } else {
     map.addSource('arus-water-img', { type: 'image', url, coordinates: coords });
+    const anchor = map.getLayer('arus-river-halo') ? 'arus-river-halo' : 'arus-particles-line';
     map.addLayer(
       {
         id: 'arus-water-smooth',
@@ -608,7 +650,7 @@ function updateSmoothWaterImage(meta, env, frame) {
         source: 'arus-water-img',
         paint: { 'raster-opacity': 0.85, 'raster-resampling': 'linear', 'raster-fade-duration': 0 },
       },
-      'arus-particles-line',
+      anchor,
     );
   }
 }
@@ -1035,6 +1077,8 @@ async function buildRequestPayload() {
     terrain_provenance: sampled ? 'BrowserTerrariumScreening' : null,
     antecedent_rain_mm: state.antecedentMm || 0,
     hourly_rain_mm: state.hourlyRainMm || [],
+    spatial_rain_grid: state.spatialRainGrid || null,
+    hourly_tide_m: state.hourlyTideM || [],
     drainage_mm_per_hr: state.drainageMmHr || 0,
     evaporation_mm_per_day: state.evapMmDay || 0,
     observed_gauges: state.observedGauges || [],
@@ -1133,7 +1177,17 @@ function updateFrameTelemetry() {
   const c = map.getCenter();
   const z = map.getZoom();
   let rainPart;
-  if (state.hourlyRainMm && state.hourlyRainMm.length > 0 && state.frames.length > 0) {
+  if (state.spatialRainGrid && Array.isArray(state.spatialRainGrid.hourly_mm) && state.spatialRainGrid.hourly_mm.length > 0 && state.frames.length > 0) {
+    const nHours = state.spatialRainGrid.hourly_mm[0].length;
+    const frac = state.frames.length > 1
+      ? Math.min(state.frameIdx, state.frames.length - 1) / (state.frames.length - 1)
+      : 0;
+    const hIdx = Math.min(nHours - 1, Math.floor(frac * nHours));
+    let sum = 0;
+    for (const pt of state.spatialRainGrid.hourly_mm) sum += (pt[hIdx] || 0);
+    const meanRate = sum / state.spatialRainGrid.hourly_mm.length;
+    rainPart = `${meanRate.toFixed(1)} mm/hr spatial NWP`;
+  } else if (state.hourlyRainMm && state.hourlyRainMm.length > 0 && state.frames.length > 0) {
     const frac = state.frames.length > 1
       ? Math.min(state.frameIdx, state.frames.length - 1) / (state.frames.length - 1)
       : 0;
@@ -1296,9 +1350,13 @@ function updateLiveMetrics() {
   const meta = state.grid.metadata;
   const mask = state.boundaryCellMask;
   const idx = Math.min(state.frameIdx, state.frames.length - 1);
-  const depth = state.frames[idx].depth;
+  const frame = state.frames[idx];
+  const depth = frame.depth;
+  const vx = frame.vx;
+  const vy = frame.vy;
   let totalCells = 0;
   let floodedCells = 0;
+  let stagnantCells = 0;
   let sumDepth = 0;
   let peakDepth = 0;
   for (let i = 0; i < depth.length; i++) {
@@ -1306,13 +1364,16 @@ function updateLiveMetrics() {
     totalCells++;
     const h = depth[i];
     if (h > 0) sumDepth += h;
-    if (h >= 0.06) floodedCells++;
+    if (h >= 0.06) {
+      floodedCells++;
+      if (Math.hypot(vx[i], vy[i]) < 0.03) stagnantCells++;
+    }
     if (h > peakDepth) peakDepth = h;
   }
   const avgDepth = totalCells > 0 ? sumDepth / totalCells : 0;
   const floodedPct = totalCells > 0 ? (floodedCells / totalCells) * 100 : 0;
   const cellKm2 = (meta.dx_m * meta.dx_m) / 1_000_000;
-  const floodedKm2 = floodedCells * cellKm2;
+  const stagnantKm2 = stagnantCells * cellKm2;
 
   // Area-relative flood severity index in [0, 1] combining mean depth (0..0.45m) and flooded fraction
   const depthScore = Math.min(1, avgDepth / 0.45);
@@ -1333,19 +1394,25 @@ function updateLiveMetrics() {
       trendEl.className = 'lm-trend';
       trendEl.textContent = 'Current';
     } else {
-      const prevDepth = state.frames[idx - 1].depth;
+      const lookback = Math.max(0, idx - 3);
+      const prevDepth = state.frames[lookback].depth;
       let prevSum = 0;
+      let prevFlooded = 0;
       for (let i = 0; i < prevDepth.length; i++) {
-        if (mask[i] && prevDepth[i] > 0) prevSum += prevDepth[i];
+        if (!mask[i]) continue;
+        if (prevDepth[i] > 0) prevSum += prevDepth[i];
+        if (prevDepth[i] >= 0.06) prevFlooded++;
       }
       const prevAvg = totalCells > 0 ? prevSum / totalCells : 0;
-      const diff = avgDepth - prevAvg;
-      if (diff > 0.0008) {
+      const prevPct = totalCells > 0 ? (prevFlooded / totalCells) * 100 : 0;
+      const dAvg = avgDepth - prevAvg;
+      const dPct = floodedPct - prevPct;
+      if (dAvg > 0.0004 || dPct > 0.6) {
         trendEl.className = 'lm-trend rising';
         trendEl.textContent = 'Rising ▲';
-      } else if (diff < -0.0008) {
+      } else if (dAvg < -0.0004 || dPct < -0.6) {
         trendEl.className = 'lm-trend receding';
-        trendEl.textContent = 'Surut ▼';
+        trendEl.textContent = 'Receding ▼';
       } else {
         trendEl.className = 'lm-trend';
         trendEl.textContent = 'Steady ●';
@@ -1356,7 +1423,8 @@ function updateLiveMetrics() {
   $('lm-avg').textContent = `${avgDepth.toFixed(2)} m`;
   $('lm-peak').textContent = `${peakDepth.toFixed(2)} m`;
   $('lm-pct').textContent = `${floodedPct.toFixed(0)}%`;
-  $('lm-km2').textContent = `${floodedKm2.toFixed(1)} km²`;
+  const stagEl = $('lm-stagnant');
+  if (stagEl) stagEl.textContent = `${stagnantKm2.toFixed(1)} km²`;
 }
 
 function updateTimeReadout() {
@@ -1829,6 +1897,12 @@ window.arusDirector = {
     }
     if (Array.isArray(opts.hourly_rain_mm)) {
       state.hourlyRainMm = opts.hourly_rain_mm.map(Number).filter(Number.isFinite);
+    }
+    if (opts.spatial_rain_grid && typeof opts.spatial_rain_grid === 'object') {
+      state.spatialRainGrid = opts.spatial_rain_grid;
+    }
+    if (Array.isArray(opts.hourly_tide_m)) {
+      state.hourlyTideM = opts.hourly_tide_m.map(Number).filter(Number.isFinite);
     }
     if (typeof opts.drainage_mm_per_hr === 'number' && Number.isFinite(opts.drainage_mm_per_hr)) {
       state.drainageMmHr = Math.max(0, opts.drainage_mm_per_hr);
