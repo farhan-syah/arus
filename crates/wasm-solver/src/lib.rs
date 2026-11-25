@@ -649,13 +649,8 @@ fn prepare_problem(req: &WasmSimRequest) -> Result<PreparedProblem, String> {
                         fallback_mean_mm
                     };
                     let routing_mult = 1.0;
-                    let surge = if z <= 3.5 && tide_lock > 0.0 {
-                        (0.45 * tide_lock / 3_600_000.0) * time_compression
-                    } else {
-                        0.0
-                    };
                     rain[idx] =
-                        ((local_mm / 3_600_000.0) * time_compression * routing_mult + surge) as f32;
+                        ((local_mm / 3_600_000.0) * time_compression * routing_mult) as f32;
                     let local_evap = if let Some(sg) = &req.spatial_rain_grid
                         && has_spatial_et0
                     {

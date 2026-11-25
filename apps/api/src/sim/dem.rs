@@ -280,12 +280,16 @@ pub(super) fn build_channel_prestate(
 
     if antecedent_rain_mm > 0.0 {
         let scale = (antecedent_rain_mm / 100.0).clamp(0.15, 1.5);
+        let depressions = detect_real_depressions(elevations, cols, rows);
         for idx in 0..n {
             let Some(z) = elevations[idx] else { continue };
             let a = accum[idx];
             if a >= channel_accum_min && z <= low_z_cutoff + 12.0 {
                 let channel_factor = ((a as f64) / (channel_accum_min as f64)).ln_1p().min(2.2);
                 depths[idx] = (0.08 * scale * channel_factor).min(0.28);
+            } else if antecedent_rain_mm >= 50.0 && depressions[idx] && z <= low_z_cutoff + 12.0 {
+                // Real lowland topographic depressions retain standing water after heavy multi-day rain
+                depths[idx] = depths[idx].max((0.10 * scale).min(0.22));
             }
         }
     }

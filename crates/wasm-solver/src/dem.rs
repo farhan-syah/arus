@@ -247,6 +247,8 @@ pub(crate) fn build_channel_prestate(
             if a >= channel_accum_min && z <= low_z_cutoff + 12.0 {
                 let channel_factor = ((a as f64) / (channel_accum_min as f64)).ln_1p().min(2.2);
                 depths[idx] = depths[idx].max((0.08 * scale * channel_factor).min(0.28));
+            } else if antecedent_rain_mm >= 50.0 && a >= 6 && z <= low_z_cutoff + 8.0 {
+                depths[idx] = depths[idx].max((0.08 * scale).min(0.18));
             }
         }
     }

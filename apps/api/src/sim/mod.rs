@@ -875,7 +875,9 @@ fn validate_request(
         ));
     }
     if let Some(dg) = &req.storm_drain_grid
-        && dg.iter().any(|v| !v.is_finite() || !(0.0..=1.0).contains(v))
+        && dg
+            .iter()
+            .any(|v| !v.is_finite() || !(0.0..=1.0).contains(v))
     {
         return Err((
             422,
@@ -1572,13 +1574,8 @@ where
                         && z > low_z_cutoff
                         && a >= channel_accum_min;
                     let routing_mult = if is_perim_inlet { 1.25 } else { 1.0 };
-                    let coastal_surge_m_s = if z <= 3.5 && tide_lock > 0.0 {
-                        (0.45 * tide_lock / 3_600_000.0) * time_compression
-                    } else {
-                        0.0
-                    };
-                    rain_grid[idx] = (local_mm_hr / 3_600_000.0) * time_compression * routing_mult
-                        + coastal_surge_m_s;
+                    rain_grid[idx] =
+                        (local_mm_hr / 3_600_000.0) * time_compression * routing_mult;
 
                     // Live FAO-56 Penman-Monteith ET0 (suppressed during active rainfall > 0.2 mm/hr)
                     let local_et0_m_s = if let Some(sg) = &req.spatial_rain_grid
@@ -1665,11 +1662,43 @@ where
                 }
             }
 
+            // Apply physical Stage boundary forcing on estuary / river-mouth outlet faces during
+            // high tide so tidal backwater propagates upstream through the 2D Riemann solver
+            // without injecting synthetic surge water onto protected inland coastal plains.
+            let bin_boundaries: Vec<BoundaryForcingSpec> = if tide_lock > 0.0
+                && matches!(req.boundary, BoundaryChoice::Transmissive)
+            {
+                open_faces
+                    .iter()
+                    .copied()
+                    .map(|face| {
+                        let c = face.column.min(cols - 1);
+                        let r = face.row.min(rows - 1);
+                        let idx = r * cols + c;
+                        let is_estuary = accum[idx] >= channel_accum_min;
+                        if is_estuary
+                            && let Some(z) = terrain.cells()[idx]
+                            && z <= bin_tide_m + 0.5
+                        {
+                            BoundaryForcingSpec::Stage {
+                                face,
+                                elevation_m: bin_tide_m.min(z + 0.45),
+                                inflow_tangential_velocity_m_s: None,
+                            }
+                        } else {
+                            BoundaryForcingSpec::ExteriorDry { face }
+                        }
+                    })
+                    .collect()
+            } else {
+                boundary_forcings.clone()
+            };
+
             forcing.push(RainIntervalSpec {
                 start_s: warmup_s + (b as f64) * bin_dur_s,
                 end_s: warmup_s + ((b + 1) as f64) * bin_dur_s,
                 uniform_rain_m_per_s: (fallback_mean_mm / 3_600_000.0) * time_compression,
-                boundaries: boundary_forcings.clone(),
+                boundaries: bin_boundaries,
             });
             interval_losses.push((fallback_evap_m_s, eff_drain_m_s));
             interval_rain_grids.push(rain_grid);
