@@ -57,6 +57,12 @@ const state = {
   directorOutlookSet: false,
   pickingStressSite: false,
   stressSite: null,
+  pinnedProbes: [],
+  activeAbort: null,
+  lastCompareMode: false,
+  verdictTarget: null,
+  staticVectorsDirty: true,
+  frameRasterCache: new Map(),
   displayPrefs: {
     showFlood: true,
     showRivers: true,
@@ -747,6 +753,16 @@ function colorForDiff(d) {
   return [225, 29, 72, 110 + mag * 125];
 }
 
+// Flood arrival time (onset_time_s): early arrival = urgent crimson/amber, late arrival = cool blue
+function colorForArrival(onsetS, maxT) {
+  if (!Number.isFinite(onsetS) || onsetS < 0) return null;
+  const frac = Math.min(1, Math.max(0, onsetS / Math.max(1, maxT)));
+  if (frac < 0.25) return [225, 29, 72, 215];
+  if (frac < 0.50) return [249, 115, 22, 200];
+  if (frac < 0.75) return [250, 204, 21, 185];
+  return [56, 189, 248, 175];
+}
+
 function sampleBilinear(arr, active, cols, rows, fx, fy) {
   const c0 = Math.max(0, Math.min(cols - 1, Math.floor(fx)));
   const r0 = Math.max(0, Math.min(rows - 1, Math.floor(fy)));
@@ -813,6 +829,10 @@ function updateSmoothWaterImage(meta, env, frame) {
           ? sampleBilinear(env.max_hazard_m2_s, meta.active_mask, cols, rows, fx, fy)
           : (h !== null && sp !== null ? h * (sp + 0.5) : null);
         if (hr !== null) rgba = colorForHazard(hr);
+      } else if (state.layer === 'arrival') {
+        const onset = env.onset_time_s[rNearest * cols + cNearest];
+        const maxT = state.frames.length ? (state.frames[state.frames.length - 1].time_s || 360) : 360;
+        rgba = colorForArrival(onset, maxT);
       } else if (state.layer === 'diff' && state.diffData) {
         const d = sampleBilinear(state.diffData.delta_max_depth_m, meta.active_mask, cols, rows, fx, fy);
         if (d !== null) rgba = colorForDiff(d);
@@ -855,7 +875,12 @@ function updateSmoothWaterImage(meta, env, frame) {
     rasterCtx.restore();
   }
   const coords = [[minLon, maxLat], [maxLon, maxLat], [maxLon, minLat], [minLon, minLat]];
-  const url = rasterCanvas.toDataURL('image/png');
+  let url = state.frameRasterCache.get(lastRasterKey);
+  if (!url) {
+    url = rasterCanvas.toDataURL('image/png');
+    if (state.frameRasterCache.size > 64) state.frameRasterCache.clear();
+    state.frameRasterCache.set(lastRasterKey, url);
+  }
   if (map.getSource('arus-water-img')) {
     map.getSource('arus-water-img').updateImage({ url, coordinates: coords });
   } else {
@@ -887,7 +912,13 @@ function renderFloodCanvas(forceRaster) {
   const rasterKey = `${state.runId}:${state.frameIdx}:${state.layer}:${state.envelopeMode}:${state.displayPrefs.depthCutoffM}`;
   if (forceRaster || rasterKey !== lastRasterKey) {
     lastRasterKey = rasterKey;
-    updateSmoothWaterImage(meta, env, frame);
+    const cachedUrl = state.frameRasterCache.get(rasterKey);
+    if (cachedUrl && map.getSource('arus-water-img')) {
+      const coords = [[minLon, maxLat], [maxLon, maxLat], [maxLon, minLat], [minLon, minLat]];
+      map.getSource('arus-water-img').updateImage({ url: cachedUrl, coordinates: coords });
+    } else {
+      updateSmoothWaterImage(meta, env, frame);
+    }
   }
 
   const particleFeatures = [];
@@ -930,41 +961,53 @@ function renderFloodCanvas(forceRaster) {
     }
   }
 
-  const ivFeatures = state.interventions.map((iv) => {
-    const lon0 = minLon + iv.col * dLon;
-    const lat0 = minLat + iv.row * dLat;
-    return {
-      type: 'Feature',
-      geometry: {
-        type: 'Polygon',
-        coordinates: [[[lon0, lat0], [lon0 + dLon, lat0], [lon0 + dLon, lat0 + dLat], [lon0, lat0 + dLat], [lon0, lat0]]],
-      },
-      properties: { color: iv.delta_m > 0 ? '#d97706' : '#0d9488' },
-    };
-  });
-
-  const xsecFeatures = [];
-  if (state.xsecPts.length === 2) {
-    const [a, b] = state.xsecPts;
-    xsecFeatures.push({
-      type: 'Feature',
-      geometry: {
-        type: 'LineString',
-        coordinates: [
-          [minLon + (a.col + 0.5) * dLon, minLat + (a.row + 0.5) * dLat],
-          [minLon + (b.col + 0.5) * dLon, minLat + (b.row + 0.5) * dLat],
-        ],
-      },
-      properties: {},
-    });
-  }
-
   const pSrc = map.getSource('arus-particles');
-  const ivSrc = map.getSource('arus-iv-polys');
-  const xSrc = map.getSource('arus-xsec');
-  if (pSrc) pSrc.setData({ type: 'FeatureCollection', features: particleFeatures });
-  if (ivSrc) ivSrc.setData({ type: 'FeatureCollection', features: ivFeatures });
-  if (xSrc) xSrc.setData({ type: 'FeatureCollection', features: xsecFeatures });
+  if (pSrc && (state.playing || forceRaster || particleFeatures.length === 0)) {
+    pSrc.setData({ type: 'FeatureCollection', features: particleFeatures });
+  }
+  if (forceRaster || state.staticVectorsDirty) {
+    state.staticVectorsDirty = false;
+    const ivFeatures = state.interventions.map((iv) => {
+      const lon0 = minLon + iv.col * dLon;
+      const lat0 = minLat + iv.row * dLat;
+      return {
+        type: 'Feature',
+        geometry: {
+          type: 'Polygon',
+          coordinates: [[[lon0, lat0], [lon0 + dLon, lat0], [lon0 + dLon, lat0 + dLat], [lon0, lat0 + dLat], [lon0, lat0]]],
+        },
+        properties: { color: iv.delta_m > 0 ? '#d97706' : '#0d9488' },
+      };
+    });
+    const xsecFeatures = [];
+    if (state.xsecPts.length === 1) {
+      const a = state.xsecPts[0];
+      const cx = minLon + (a.col + 0.5) * dLon;
+      const cy = minLat + (a.row + 0.5) * dLat;
+      xsecFeatures.push({
+        type: 'Feature',
+        geometry: { type: 'LineString', coordinates: [[cx - dLon * 0.4, cy], [cx + dLon * 0.4, cy]] },
+        properties: {},
+      });
+    } else if (state.xsecPts.length === 2) {
+      const [a, b] = state.xsecPts;
+      xsecFeatures.push({
+        type: 'Feature',
+        geometry: {
+          type: 'LineString',
+          coordinates: [
+            [minLon + (a.col + 0.5) * dLon, minLat + (a.row + 0.5) * dLat],
+            [minLon + (b.col + 0.5) * dLon, minLat + (b.row + 0.5) * dLat],
+          ],
+        },
+        properties: {},
+      });
+    }
+    const ivSrc = map.getSource('arus-iv-polys');
+    const xSrc = map.getSource('arus-xsec');
+    if (ivSrc) ivSrc.setData({ type: 'FeatureCollection', features: ivFeatures });
+    if (xSrc) xSrc.setData({ type: 'FeatureCollection', features: xsecFeatures });
+  }
 }
 
 function lngLatToCell(lon, lat) {
@@ -999,6 +1042,7 @@ function handleHover(lon, lat) {
 function handleMapClick(lon, lat) {
   if (state.pickingStressSite) {
     state.pickingStressSite = false;
+    document.body.classList.remove('picking-site');
     state.stressSite = { lat, lon };
     if ($('sim-stress-coord')) {
       $('sim-stress-coord').textContent = `${lat.toFixed(4)}°, ${lon.toFixed(4)}°`;
@@ -1018,6 +1062,12 @@ function handleMapClick(lon, lat) {
   const hit = lngLatToCell(lon, lat);
   if (!hit) return;
 
+  if (state.profile === 'public') {
+    state.verdictTarget = { col: hit.col, row: hit.row, lat, lon };
+    renderSiteVerdict();
+    return;
+  }
+
   if (state.tool === 'bund' || state.tool === 'pond') {
     const delta = state.tool === 'bund' ? 0.8 : -0.8;
     const reason = state.tool === 'bund' ? 'raised flood bund' : 'detention pond';
@@ -1030,6 +1080,7 @@ function handleMapClick(lon, lat) {
         }
       }
     }
+    state.staticVectorsDirty = true;
     updateInterventionBar();
     renderFloodCanvas(false);
     return;
@@ -1038,6 +1089,7 @@ function handleMapClick(lon, lat) {
   if (state.tool === 'xsection') {
     if (state.xsecPts.length >= 2) state.xsecPts = [];
     state.xsecPts.push({ col: hit.col, row: hit.row });
+    state.staticVectorsDirty = true;
     if (state.xsecPts.length === 2) renderCrossSectionInspector();
     renderFloodCanvas(false);
     return;
@@ -1045,6 +1097,57 @@ function handleMapClick(lon, lat) {
 
   state.selectedCell = { col: hit.col, row: hit.row };
   renderHydrographInspector();
+}
+
+function renderSiteVerdict() {
+  const card = $('site-verdict');
+  if (!card || !state.verdictTarget || !state.grid || !state.frames.length) return;
+  const { col, row, lat, lon } = state.verdictTarget;
+  const meta = state.grid.metadata;
+  const env = state.grid.envelope;
+  const idx = row * meta.cols + col;
+  card.classList.remove('hidden');
+
+  if (!meta.active_mask[idx]) {
+    $('sv-title').textContent = `${lat.toFixed(4)}°, ${lon.toFixed(4)}°`;
+    $('sv-badge').className = 'lm-badge low';
+    $('sv-badge').textContent = 'NO DATA';
+    $('sv-summary').textContent = 'This coordinate lies outside the active terrain coverage mask.';
+    $('sv-stats').innerHTML = '';
+    return;
+  }
+
+  const ffeM = parseFloat($('sv-ffe-select')?.value || '0') || 0;
+  const peakM = env.max_depth_m[idx] || 0;
+  const netM = Math.max(0, peakM - ffeM);
+  const bedM = meta.bed_m[idx] || 0;
+  const onsetS = env.onset_time_s[idx];
+  const cut = state.displayPrefs.depthCutoffM || 0.06;
+
+  let lvl = 'low';
+  let label = 'DRY';
+  let msg = `Water stays below your ${fmtDepth(ffeM, 1)} floor level in this scenario.`;
+  if (netM >= 0.30) {
+    lvl = 'danger';
+    label = 'FLOOD EXPECTED';
+    msg = `Peak depth reaches ${fmtDepth(netM, 2)} above floor (${fmtDepth(peakM, 2)} above ground). Consider raising the pad or moving valuables.`;
+  } else if (netM >= cut) {
+    lvl = 'moderate';
+    label = 'WATCH';
+    msg = `Shallow water up to ${fmtDepth(netM, 2)} above floor (${fmtDepth(peakM, 2)} above ground). Monitor access roads and drainage.`;
+  }
+
+  $('sv-title').textContent = `${lat.toFixed(4)}°, ${lon.toFixed(4)}°`;
+  $('sv-badge').className = `lm-badge ${lvl}`;
+  $('sv-badge').textContent = label;
+  $('sv-summary').textContent = msg;
+  const onsetTxt = onsetS >= 0 ? `+${fmtMMSS(onsetS)}` : 'Never';
+  $('sv-stats').innerHTML = `
+    <div class="mini-stat"><div class="mini-k">Peak Depth</div><div class="mini-v">${fmtDepth(peakM, 2)}</div></div>
+    <div class="mini-stat"><div class="mini-k">Above Floor</div><div class="mini-v">${fmtDepth(netM, 2)}</div></div>
+    <div class="mini-stat"><div class="mini-k">Ground Elev</div><div class="mini-v">${fmtDepth(bedM, 1)}</div></div>
+    <div class="mini-stat"><div class="mini-k">Arrival ETA</div><div class="mini-v">${onsetTxt}</div></div>
+  `;
 }
 
 function renderHydrographInspector() {
@@ -1079,22 +1182,36 @@ function renderHydrographInspector() {
   const cx = 38 + (curT / tMax) * 288;
 
   $('inspector-title').textContent = `Hydrograph (${col}, ${row})`;
+  const pinColors = ['#0d9488', '#d97706', '#7c3aed'];
+  const pinLines = state.pinnedProbes
+    .filter((p) => !(p.col === col && p.row === row))
+    .map((p, k) => {
+      const pidx = p.row * meta.cols + p.col;
+      if (pidx < 0 || pidx >= meta.cols * meta.rows) return '';
+      const ppts = times.map((t, i) => {
+        const x = 38 + (t / tMax) * 288;
+        const y = 104 - (Math.min(yMax, state.frames[i].depth[pidx]) / yMax) * 82;
+        return `${x.toFixed(1)},${y.toFixed(1)}`;
+      }).join(' ');
+      return `<polyline points="${ppts}" fill="none" stroke="${pinColors[k % pinColors.length]}" stroke-width="1.5" stroke-dasharray="3 2"/>`;
+    }).join('');
   $('inspector-svg').innerHTML = `
     <line x1="38" y1="22" x2="326" y2="22" stroke="rgba(100,116,139,0.22)"/>
     <line x1="38" y1="104" x2="326" y2="104" stroke="rgba(100,116,139,0.45)"/>
     <polygon points="${pts} 326,104 38,104" fill="rgba(2,132,199,0.18)"/>
+    ${pinLines}
     <polyline points="${pts}" fill="none" stroke="#0284c7" stroke-width="2"/>
     <line x1="38" y1="${ty.toFixed(1)}" x2="326" y2="${ty.toFixed(1)}" stroke="#e11d48" stroke-dasharray="4 3" stroke-width="1.2"/>
     <line x1="${cx.toFixed(1)}" y1="18" x2="${cx.toFixed(1)}" y2="104" stroke="#d97706" stroke-width="1.2"/>
     <text x="34" y="25" text-anchor="end" fill="#64748b" font-family="JetBrains Mono, monospace" font-size="10">${yMax.toFixed(2)}</text>
     <text x="34" y="107" text-anchor="end" fill="#64748b" font-family="JetBrains Mono, monospace" font-size="10">0.00</text>
-    <text x="324" y="${(ty - 4).toFixed(1)}" text-anchor="end" fill="#e11d48" font-family="Inter, sans-serif" font-size="10" font-weight="500">Threshold ${env.threshold_m.toFixed(2)}m</text>
+    <text x="324" y="${(ty - 4).toFixed(1)}" text-anchor="end" fill="#e11d48" font-family="Inter, sans-serif" font-size="10" font-weight="500">Threshold ${fmtDepth(env.threshold_m, 2)}</text>
   `;
-  const onset = env.onset_time_s[idx] >= 0 ? `${env.onset_time_s[idx].toFixed(0)}s` : '—';
+  const onset = env.onset_time_s[idx] >= 0 ? `+${fmtMMSS(env.onset_time_s[idx])}` : '—';
   const rec = depths[depths.length - 1] >= env.threshold_m ? 'Active' : 'Receded';
   $('inspector-stats').innerHTML = `
-    <div class="mini-stat"><div class="mini-k">Peak Depth</div><div class="mini-v">${dPeak.toFixed(2)} m</div></div>
-    <div class="mini-stat"><div class="mini-k">Max Speed</div><div class="mini-v">${env.max_speed_m_s[idx].toFixed(2)} m/s</div></div>
+    <div class="mini-stat"><div class="mini-k">Peak Depth</div><div class="mini-v">${fmtDepth(dPeak, 2)}</div></div>
+    <div class="mini-stat"><div class="mini-k">Max Speed</div><div class="mini-v">${fmtSpeed(env.max_speed_m_s[idx], 2)}</div></div>
     <div class="mini-stat"><div class="mini-k">Onset</div><div class="mini-v">${onset}</div></div>
     <div class="mini-stat"><div class="mini-k">Status</div><div class="mini-v">${rec}</div></div>
   `;
@@ -1369,31 +1486,69 @@ async function loadRun(runId) {
   renderFloodCanvas(true);
 }
 
+function showToast(message, canRetry = false) {
+  const bar = $('toast-bar');
+  if (!bar) return;
+  $('toast-text').textContent = message;
+  $('btn-toast-retry').classList.toggle('hidden', !canRetry);
+  bar.classList.remove('hidden');
+  clearTimeout(bar._timer);
+  if (!canRetry) {
+    bar._timer = setTimeout(() => bar.classList.add('hidden'), 4200);
+  }
+}
+
+function setSimProgress(text) {
+  const pill = $('sim-progress');
+  if (!pill) return;
+  if (!text) {
+    pill.classList.add('hidden');
+  } else {
+    $('sim-progress-text').textContent = text;
+    pill.classList.remove('hidden');
+  }
+}
+
 async function runSimulation(compareMode) {
+  if (state.activeAbort) {
+    try { state.activeAbort.abort(); } catch (_) {}
+  }
+  const abort = new AbortController();
+  state.activeAbort = abort;
+  state.lastCompareMode = Boolean(compareMode);
+
   const btn = compareMode ? $('btn-compare') : $('btn-run');
-  const orig = btn.innerHTML;
-  btn.disabled = true;
-  btn.innerHTML = '<span class="spinner"></span>Solving…';
+  const orig = btn ? btn.innerHTML : '';
+  if (btn) {
+    btn.disabled = true;
+    btn.innerHTML = '<span class="spinner"></span>Solving…';
+  }
+  setSimProgress('Sampling terrain DEM…');
   try {
     const payload = await buildRequestPayload();
+    if (abort.signal.aborted) return;
+    setSimProgress(compareMode ? 'Solving Baseline vs Intervention…' : 'Solving 2D shallow water…');
     if (compareMode) {
       const resp = await fetch('/api/v1/compare', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify(payload),
+        signal: abort.signal,
       });
-      if (!resp.ok) throw new Error(await resp.text());
+      if (!resp.ok) throw new Error(await parseErrorText(resp));
       state.diffData = await resp.json();
       state.xsecPts = [];
       state.selectedCell = null;
+      state.frameRasterCache.clear();
+      setSimProgress('Loading frames…');
       await loadRun(state.diffData.intervention_run_id);
       setLayer('diff');
       $('inspector').classList.remove('hidden');
       $('inspector-svg').classList.add('hidden');
       $('inspector-title').textContent = 'Intervention Δh Impact';
       $('inspector-stats').innerHTML = `
-        <div class="mini-stat"><div class="mini-k">Protected</div><div class="mini-v good">${state.diffData.improved_cells} cells (−${state.diffData.max_reduction_m.toFixed(2)}m)</div></div>
-        <div class="mini-stat"><div class="mini-k">Worsened</div><div class="mini-v bad">${state.diffData.worsened_cells} cells (+${state.diffData.max_worsening_m.toFixed(2)}m)</div></div>
+        <div class="mini-stat"><div class="mini-k">Protected</div><div class="mini-v good">${state.diffData.improved_cells} cells (−${fmtDepth(state.diffData.max_reduction_m, 2)})</div></div>
+        <div class="mini-stat"><div class="mini-k">Worsened</div><div class="mini-v bad">${state.diffData.worsened_cells} cells (+${fmtDepth(state.diffData.max_worsening_m, 2)})</div></div>
         <div class="mini-stat"><div class="mini-k">Earthwork</div><div class="mini-v">${state.diffData.earthwork.fill_volume_m3.toFixed(0)} m³ fill</div></div>
         <div class="mini-stat"><div class="mini-k">Mass Check</div><div class="mini-v good">${state.diffData.conservation_valid ? 'PASS' : 'FAIL'}</div></div>
       `;
@@ -1403,9 +1558,12 @@ async function runSimulation(compareMode) {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify(payload),
+        signal: abort.signal,
       });
-      if (!resp.ok) throw new Error(await resp.text());
+      if (!resp.ok) throw new Error(await parseErrorText(resp));
       const summary = await resp.json();
+      state.frameRasterCache.clear();
+      setSimProgress('Loading frames…');
       await loadRun(summary.run_id);
       if (!state.fixedView) {
         const [minLon, minLat, maxLon, maxLat] = summary.wgs84_bounds;
@@ -1418,14 +1576,28 @@ async function runSimulation(compareMode) {
       }
     }
   } catch (err) {
-    $('inspector').classList.remove('hidden');
-    $('inspector-svg').classList.add('hidden');
-    $('inspector-title').textContent = 'Simulation Notice';
-    $('inspector-stats').innerHTML = `<div class="mini-stat" style="grid-column:span 2"><div class="mini-k">Error</div><div class="mini-v bad">${String(err.message).slice(0, 96)}</div></div>`;
+    if (err && err.name === 'AbortError') {
+      showToast('Simulation cancelled.');
+    } else {
+      showToast(`Simulation error: ${String(err.message || err).slice(0, 140)}`, true);
+    }
   } finally {
-    btn.disabled = false;
-    btn.innerHTML = orig;
+    if (state.activeAbort === abort) state.activeAbort = null;
+    setSimProgress(null);
+    if (btn) {
+      btn.disabled = false;
+      btn.innerHTML = orig;
+    }
   }
+}
+
+async function parseErrorText(resp) {
+  const txt = await resp.text();
+  try {
+    const j = JSON.parse(txt);
+    if (j && j.error) return j.error;
+  } catch (_) {}
+  return txt || `HTTP ${resp.status}`;
 }
 
 function updateFrameTelemetry() {
@@ -1885,6 +2057,10 @@ function setLayer(layer) {
     bar.style.background = 'linear-gradient(90deg, #38bdf8 0% 25%, #facc15 25% 50%, #f97316 50% 75%, #e11d48 75% 100%)';
     ticks.innerHTML = '<span>Low</span><span>Mod</span><span>Ext</span>';
     note.textContent = 'DEFRA FD2320 hazard rating: h × (v + 0.5).';
+  } else if (layer === 'arrival') {
+    bar.style.background = 'linear-gradient(90deg, #e11d48, #f97316, #facc15, #38bdf8)';
+    ticks.innerHTML = '<span>Early</span><span>Mid</span><span>Late</span>';
+    note.textContent = 'Flood arrival time (onset ETA from storm start).';
   } else {
     bar.style.background = 'linear-gradient(90deg, #0d9488, #cbd5e1 50%, #e11d48)';
     ticks.innerHTML = `<span>−${fmtDepth(0.14, 2)} Safer</span><span>0</span><span>+${fmtDepth(0.14, 2)} Worse</span>`;
@@ -1901,8 +2077,8 @@ function animationLoop(now) {
     if (state.xsecPts.length === 2) renderCrossSectionInspector();
     else if (state.selectedCell) renderHydrographInspector();
     state.lastTickMs = now;
+    renderFloodCanvas(false);
   }
-  renderFloodCanvas(false);
   requestAnimationFrame(animationLoop);
 }
 
@@ -2099,8 +2275,123 @@ function wireUi() {
   });
   $('btn-stress-pick').addEventListener('click', () => {
     state.pickingStressSite = true;
+    document.body.classList.add('picking-site');
     $('sim-modal').classList.add('hidden');
-    $('telemetry').textContent = 'Click anywhere on the map to select your site…';
+    showToast('Click anywhere on the map to select your site (Esc to cancel).');
+  });
+
+  $('btn-share').addEventListener('click', copyShareLink);
+  $('btn-sim-abort').addEventListener('click', () => { if (state.activeAbort) state.activeAbort.abort(); });
+  $('btn-toast-close').addEventListener('click', () => $('toast-bar').classList.add('hidden'));
+  $('btn-toast-retry').addEventListener('click', () => {
+    $('toast-bar').classList.add('hidden');
+    runSimulation(state.lastCompareMode);
+  });
+  $('btn-sv-close').addEventListener('click', () => $('site-verdict').classList.add('hidden'));
+  $('sv-ffe-select').addEventListener('change', renderSiteVerdict);
+  $('btn-sv-raise').addEventListener('click', () => {
+    if (!state.verdictTarget) return;
+    state.stressSite = { lat: state.verdictTarget.lat, lon: state.verdictTarget.lon };
+    state.simConfig.mode = 'stress';
+    state.simConfig.stressPadM = 0.8;
+    $('site-verdict').classList.add('hidden');
+    openSimModal();
+  });
+  $('btn-inspector-pin').addEventListener('click', () => {
+    if (!state.selectedCell) return;
+    const exists = state.pinnedProbes.some((p) => p.col === state.selectedCell.col && p.row === state.selectedCell.row);
+    if (!exists) {
+      if (state.pinnedProbes.length >= 3) state.pinnedProbes.shift();
+      state.pinnedProbes.push({ ...state.selectedCell });
+      showToast(`Pinned probe (${state.selectedCell.col}, ${state.selectedCell.row}) · ${state.pinnedProbes.length} pinned.`);
+    }
+    renderHydrographInspector();
+  });
+
+  const togglePlay = () => {
+    state.playing = !state.playing;
+    const icon = state.playing ? '❚❚' : '▶';
+    if ($('btn-play')) $('btn-play').textContent = icon;
+    if ($('fb-play')) $('fb-play').textContent = icon;
+  };
+  if ($('fb-play')) $('fb-play').addEventListener('click', togglePlay);
+  if ($('fb-track')) {
+    const scrubForecast = (ev) => {
+      if (!state.frames.length) return;
+      const rect = $('fb-track').getBoundingClientRect();
+      const frac = Math.min(1, Math.max(0, (ev.clientX - rect.left) / Math.max(1, rect.width)));
+      state.playing = false;
+      if ($('btn-play')) $('btn-play').textContent = '▶';
+      if ($('fb-play')) $('fb-play').textContent = '▶';
+      state.frameIdx = Math.round(frac * (state.frames.length - 1));
+      $('scrubber').value = String(state.frameIdx);
+      updateTimeReadout();
+      renderFloodCanvas(true);
+    };
+    let dragging = false;
+    $('fb-track').addEventListener('pointerdown', (e) => { dragging = true; scrubForecast(e); });
+    window.addEventListener('pointermove', (e) => { if (dragging) scrubForecast(e); });
+    window.addEventListener('pointerup', () => { dragging = false; });
+  }
+  if ($('fb-segments')) {
+    $('fb-segments').addEventListener('click', (e) => {
+      const seg = e.target.closest('.fb-seg');
+      if (!seg || !state.frames.length) return;
+      const all = Array.from(document.querySelectorAll('#fb-segments .fb-seg'));
+      const i = all.indexOf(seg);
+      if (i < 0) return;
+      state.playing = false;
+      if ($('btn-play')) $('btn-play').textContent = '▶';
+      if ($('fb-play')) $('fb-play').textContent = '▶';
+      state.frameIdx = Math.min(state.frames.length - 1, Math.round((i / Math.max(1, all.length)) * (state.frames.length - 1)));
+      $('scrubber').value = String(state.frameIdx);
+      updateTimeReadout();
+      renderFloodCanvas(true);
+    });
+  }
+
+  ['sources-modal', 'layers-modal', 'sim-modal'].forEach((id) => {
+    const el = $(id);
+    if (el) el.addEventListener('click', (e) => { if (e.target === el) el.classList.add('hidden'); });
+  });
+
+  window.addEventListener('keydown', (e) => {
+    const tag = (e.target && e.target.tagName || '').toLowerCase();
+    const typing = tag === 'input' || tag === 'select' || tag === 'textarea';
+    if (e.key === 'Escape') {
+      ['sources-modal', 'layers-modal', 'sim-modal'].forEach((id) => { const el = $(id); if (el) el.classList.add('hidden'); });
+      if (state.pickingStressSite) {
+        state.pickingStressSite = false;
+        document.body.classList.remove('picking-site');
+        showToast('Site pick cancelled.');
+      } else if (state.tool !== 'inspect') {
+        setTool('inspect');
+      }
+      return;
+    }
+    if (typing) return;
+    if (e.key === ' ') {
+      e.preventDefault();
+      togglePlay();
+    } else if (e.key === 'ArrowRight' && state.frames.length) {
+      e.preventDefault();
+      state.playing = false;
+      if ($('btn-play')) $('btn-play').textContent = '▶';
+      if ($('fb-play')) $('fb-play').textContent = '▶';
+      state.frameIdx = (state.frameIdx + 1) % state.frames.length;
+      $('scrubber').value = String(state.frameIdx);
+      updateTimeReadout();
+      renderFloodCanvas(true);
+    } else if (e.key === 'ArrowLeft' && state.frames.length) {
+      e.preventDefault();
+      state.playing = false;
+      if ($('btn-play')) $('btn-play').textContent = '▶';
+      if ($('fb-play')) $('fb-play').textContent = '▶';
+      state.frameIdx = (state.frameIdx - 1 + state.frames.length) % state.frames.length;
+      $('scrubber').value = String(state.frameIdx);
+      updateTimeReadout();
+      renderFloodCanvas(true);
+    }
   });
 
   $('btn-env').addEventListener('click', () => {
@@ -2470,8 +2761,54 @@ function setUiProfile(profile, persist = false) {
   document.querySelectorAll('[data-profile]').forEach((el) => {
     el.classList.toggle('active', el.dataset.profile === state.profile);
   });
+  if (state.profile === 'public') {
+    if (state.tool !== 'inspect') setTool('inspect');
+    if (state.layer === 'diff') setLayer('depth');
+    if ($('inspector')) $('inspector').classList.add('hidden');
+  } else {
+    if ($('site-verdict')) $('site-verdict').classList.add('hidden');
+  }
   updateLiveMetrics();
   if (persist) saveUserPrefs({ profile: state.profile });
+}
+
+function buildShareUrl() {
+  const qs = new URLSearchParams();
+  const c = map ? map.getCenter() : { lat: state.center.lat, lng: state.center.lon };
+  qs.set('lat', c.lat.toFixed(4));
+  qs.set('lon', c.lng.toFixed(4));
+  if (map) qs.set('zoom', map.getZoom().toFixed(2));
+  qs.set('profile', state.profile);
+  qs.set('basemap', state.basemap);
+  qs.set('layer', state.layer);
+  const sc = state.simConfig;
+  qs.set('mode', sc.mode);
+  if (sc.mode === 'stress') {
+    qs.set('stress_mm', String(sc.stressMmDay));
+    qs.set('stress_days', String(sc.stressDays));
+    if (sc.stressPadM > 0) qs.set('stress_pad', String(sc.stressPadM));
+  } else {
+    qs.set('rain', String(sc.rainfallMmHr));
+    qs.set('dur', String(sc.durationS));
+    if (sc.rainMult !== 1) qs.set('rain_mult', String(sc.rainMult));
+  }
+  if (sc.startDry) qs.set('start_dry', '1');
+  if (!sc.enableEvap) qs.set('evap', '0');
+  if (!sc.enableDrain) qs.set('drain', '0');
+  if (sc.tideMode !== 'live') qs.set('tide', sc.tideMode);
+  if (sc.soil !== 'impervious') qs.set('soil', sc.soil);
+  return `${window.location.origin}${window.location.pathname}?${qs.toString()}`;
+}
+
+async function copyShareLink() {
+  const url = buildShareUrl();
+  try { window.history.replaceState(null, '', url); } catch (_) {}
+  try {
+    await navigator.clipboard.writeText(url);
+    showToast('Shareable scenario link copied to clipboard.');
+  } catch (_) {
+    showToast('Scenario URL updated in address bar.');
+  }
 }
 
 function populateLayersModal() {
@@ -2829,6 +3166,30 @@ function applyStartupParams() {
   if (Number.isFinite(spanHours) && spanHours > 0) scen.span_hours = spanHours;
   const antMm = parseFloat(qs.get('antecedent_mm'));
   if (Number.isFinite(antMm) && antMm > 0) scen.antecedent_rain_mm = antMm;
+  if (qs.get('profile') === 'public' || qs.get('profile') === 'researcher') {
+    setUiProfile(qs.get('profile'), false);
+  }
+  if (qs.get('layer') && ['depth', 'velocity', 'hazard', 'arrival', 'diff'].includes(qs.get('layer'))) {
+    state.layer = qs.get('layer');
+    state.displayPrefs.layer = state.layer;
+  }
+  if (qs.get('mode') && ['forecast', 'stress', 'physics'].includes(qs.get('mode'))) {
+    state.simConfig.mode = qs.get('mode');
+  }
+  const rMult = parseFloat(qs.get('rain_mult'));
+  if (Number.isFinite(rMult) && rMult > 0) state.simConfig.rainMult = rMult;
+  const sMm = parseFloat(qs.get('stress_mm'));
+  if (Number.isFinite(sMm) && sMm > 0) state.simConfig.stressMmDay = sMm;
+  const sDays = parseInt(qs.get('stress_days'), 10);
+  if (Number.isFinite(sDays) && sDays >= 1 && sDays <= 5) state.simConfig.stressDays = sDays;
+  const sPad = parseFloat(qs.get('stress_pad'));
+  if (Number.isFinite(sPad) && sPad >= 0) state.simConfig.stressPadM = sPad;
+  if (qs.get('start_dry') === '1') state.simConfig.startDry = true;
+  if (qs.get('evap') === '0') state.simConfig.enableEvap = false;
+  if (qs.get('drain') === '0') state.simConfig.enableDrain = false;
+  if (qs.get('tide') && ['live', 'spring-high', 'off'].includes(qs.get('tide'))) {
+    state.simConfig.tideMode = qs.get('tide');
+  }
   if (Object.keys(scen).length > 0) window.arusDirector.setScenario(scen);
 }
 

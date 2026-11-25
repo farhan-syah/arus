@@ -49,6 +49,7 @@ fn StudioShell() -> Element {
                 }
                 button { id: "btn-open-layers", class: "btn", title: "Map layers, display, and units", "Layers & View" }
                 button { id: "btn-open-sim", class: "btn", title: "Forecast, Site Stress-Test, and physics settings", "Simulate…" }
+                button { id: "btn-share", class: "btn", title: "Copy shareable link to current scenario", "Share" }
                 button { id: "btn-sources", class: "btn", "Sources" }
                 button { id: "btn-snap", class: "btn", title: "Save PNG snapshot", "PNG" }
                 button { id: "btn-rec", class: "btn", title: "Record MP4 video (via vidr)", "Rec" }
@@ -57,6 +58,16 @@ fn StudioShell() -> Element {
             }
         }
         div { id: "director-caption", class: "hud director-caption hidden" }
+        div { id: "sim-progress", class: "hud sim-progress hidden", role: "status", "aria-live": "polite",
+            span { class: "sim-spinner" }
+            span { id: "sim-progress-text", "Running simulation…" }
+            button { id: "btn-sim-abort", class: "btn btn-xs", "Cancel" }
+        }
+        div { id: "toast-bar", class: "hud toast-bar hidden", role: "alert", "aria-live": "assertive",
+            span { id: "toast-text", "" }
+            button { id: "btn-toast-retry", class: "btn btn-xs hidden", "Retry" }
+            button { id: "btn-toast-close", class: "btn btn-xs", "aria-label": "Dismiss", "✕" }
+        }
         div { class: "left-stack",
             section { id: "public-outlook", class: "hud public-outlook hidden",
                 div { class: "po-head",
@@ -166,6 +177,7 @@ fn StudioShell() -> Element {
                 button { class: "btn active", "data-layer": "depth", "Depth" }
                 button { class: "btn", "data-layer": "velocity", "Velocity" }
                 button { class: "btn", "data-layer": "hazard", "Hazard" }
+                button { class: "btn", "data-layer": "arrival", "Arrival" }
                 button { class: "btn", "data-layer": "diff", "Δh Diff" }
             }
             div { id: "legend-bar", class: "legend-bar" }
@@ -177,11 +189,39 @@ fn StudioShell() -> Element {
             }
         }
 
+        // Public Click-Anywhere Site Flood Verdict Card
+        section { id: "site-verdict", class: "hud site-verdict hidden",
+            div { class: "inspector-head",
+                div { class: "sv-title-wrap",
+                    span { id: "sv-title", class: "inspector-title", "Site Flood Check" }
+                    span { id: "sv-badge", class: "lm-badge low", "DRY" }
+                }
+                button { id: "btn-sv-close", class: "btn btn-xs", "aria-label": "Close site verdict", "✕" }
+            }
+            div { id: "sv-summary", class: "sv-summary", "" }
+            div { id: "sv-stats", class: "mini-stats" }
+            div { class: "sv-actions",
+                label { class: "sv-ffe",
+                    span { "Floor height" }
+                    select { id: "sv-ffe-select", class: "ctl-select",
+                        option { value: "0", selected: true, "Ground (0 m)" }
+                        option { value: "0.3", "+0.3 m slab" }
+                        option { value: "0.6", "+0.6 m raised" }
+                        option { value: "1.2", "+1.2 m stilts" }
+                    }
+                }
+                button { id: "btn-sv-raise", class: "btn primary btn-xs", "Test +0.8 m Pad" }
+            }
+        }
+
         // Floating Probe / Cross-Section / Diff Inspector
         section { id: "inspector", class: "hud inspector hidden",
             div { class: "inspector-head",
                 span { id: "inspector-title", class: "inspector-title", "Inspector" }
-                button { id: "btn-inspector-close", class: "btn btn-xs", "✕" }
+                div { class: "iv-actions",
+                    button { id: "btn-inspector-pin", class: "btn btn-xs", title: "Pin probe to compare multiple points", "Pin" }
+                    button { id: "btn-inspector-close", class: "btn btn-xs", "aria-label": "Close inspector", "✕" }
+                }
             }
             svg { id: "inspector-svg", class: "chart-svg", view_box: "0 0 340 124" }
             div { id: "inspector-stats", class: "mini-stats" }
@@ -210,14 +250,19 @@ fn StudioShell() -> Element {
             div { class: "fb-callout-rail",
                 div { id: "fb-callout", class: "fb-callout", "Wed 25 · 08:00 MYT" }
             }
-            div { class: "fb-track",
-                div { id: "fb-fill", class: "fb-fill" }
+            div { class: "fb-controls-row",
+                button { id: "fb-play", class: "btn btn-icon active", title: "Play / Pause", "aria-label": "Play or pause forecast", "❚❚" }
+                div { class: "fb-main-col",
+                    div { id: "fb-track", class: "fb-track", role: "slider", "aria-label": "Forecast timeline",
+                        div { id: "fb-fill", class: "fb-fill" }
+                    }
+                    div { id: "fb-segments", class: "fb-segments" }
+                }
             }
-            div { id: "fb-segments", class: "fb-segments" }
         }
 
         // Data Sources Modal
-        div { id: "sources-modal", class: "modal-backdrop hidden",
+        div { id: "sources-modal", class: "modal-backdrop hidden", role: "dialog", "aria-modal": "true",
             div { class: "hud modal-card",
                 div { class: "inspector-head",
                     span { class: "inspector-title", "Public Data Sources & Coverage" }
@@ -228,7 +273,7 @@ fn StudioShell() -> Element {
         }
 
         // Popup 1: Spacious Display & Layers Modal (Zero Solver Cost, Draft + Apply)
-        div { id: "layers-modal", class: "modal-backdrop hidden",
+        div { id: "layers-modal", class: "modal-backdrop hidden", role: "dialog", "aria-modal": "true",
             div { class: "hud modal-card modal-wide",
                 div { class: "inspector-head",
                     span { class: "inspector-title", "Display & Layers" }
@@ -308,6 +353,7 @@ fn StudioShell() -> Element {
                                 option { value: "depth", selected: true, "Flood Depth (h)" }
                                 option { value: "velocity", "Flow Velocity (|v|)" }
                                 option { value: "hazard", "DEFRA FD2320 Hazard" }
+                                option { value: "arrival", "Flood Arrival Time (ETA)" }
                                 option { value: "diff", "Baseline vs Intervention (Δh)" }
                             }
                         }
@@ -347,7 +393,7 @@ fn StudioShell() -> Element {
         }
 
         // Popup 2: Spacious Simulation Settings Modal (Live Forecast / Site Stress-Test / Physics)
-        div { id: "sim-modal", class: "modal-backdrop hidden",
+        div { id: "sim-modal", class: "modal-backdrop hidden", role: "dialog", "aria-modal": "true",
             div { class: "hud modal-card modal-wide",
                 div { class: "inspector-head",
                     span { class: "inspector-title", "Simulation Settings" }
