@@ -1171,7 +1171,7 @@ where
                 let mut conditioned = sampled.clone();
                 if prov == "BrowserTerrariumScreening" {
                     condition_hydrological_dem(&mut conditioned, req.cols, req.rows);
-                    burn_river_channels(&mut conditioned, req.cols, req.rows);
+                    burn_river_channels(&mut conditioned, req.cols, req.rows, req.dx_m);
                 }
                 let grid = TerrainGrid::new(
                     GridSpec {
@@ -1534,13 +1534,7 @@ where
                     let is_perim_inlet = (r == 0 || r + 1 == rows || c == 0 || c + 1 == cols)
                         && z > low_z_cutoff
                         && a >= channel_accum_min;
-                    let routing_mult = if is_perim_inlet {
-                        1.85
-                    } else if a >= channel_accum_min {
-                        1.0 + ((a as f64) / (channel_accum_min as f64)).ln_1p().min(1.6) * 0.55
-                    } else {
-                        0.85
-                    };
+                    let routing_mult = if is_perim_inlet { 1.25 } else { 1.0 };
                     let coastal_surge_m_s = if z <= 3.5 && tide_lock > 0.0 {
                         (0.45 * tide_lock / 3_600_000.0) * time_compression
                     } else {

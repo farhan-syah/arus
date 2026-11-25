@@ -312,7 +312,7 @@ fn prepare_problem(req: &WasmSimRequest) -> Result<PreparedProblem, String> {
             let mut conditioned = sampled.clone();
             if prov == "BrowserTerrariumScreening" {
                 condition_hydrological_dem(&mut conditioned, cols, rows);
-                burn_river_channels(&mut conditioned, cols, rows);
+                burn_river_channels(&mut conditioned, cols, rows, req.dx_m);
             }
             (conditioned, prov, "egm96-terrarium-screening".to_owned())
         }
@@ -632,12 +632,7 @@ fn prepare_problem(req: &WasmSimRequest) -> Result<PreparedProblem, String> {
                     } else {
                         fallback_mean_mm
                     };
-                    let a = accum[idx];
-                    let routing_mult = if a >= channel_accum_min {
-                        1.0 + ((a as f64) / (channel_accum_min as f64)).ln_1p().min(1.6) * 0.55
-                    } else {
-                        0.85
-                    };
+                    let routing_mult = 1.0;
                     let surge = if z <= 3.5 && tide_lock > 0.0 {
                         (0.45 * tide_lock / 3_600_000.0) * time_compression
                     } else {

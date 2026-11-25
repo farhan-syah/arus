@@ -370,20 +370,28 @@ pub(super) fn build_channel_prestate(
     smoothed
 }
 
-/// Carves sub-grid D8 river channels (`0.2–1.0 m`) into coarse screening DEMs.
-pub(super) fn burn_river_channels(elevations: &mut [Option<f64>], cols: usize, rows: usize) {
+/// Carves sub-grid D8 river thalwegs scaled by cell width (`15 m / dx_m`) so coarse screening
+/// grids guide drainage without creating artificial `200 m`-wide deep canyons.
+pub(super) fn burn_river_channels(
+    elevations: &mut [Option<f64>],
+    cols: usize,
+    rows: usize,
+    dx_m: f64,
+) {
     let n = cols * rows;
     if elevations.len() != n || cols < 4 || rows < 4 {
         return;
     }
+    let width_ratio = (15.0 / dx_m.max(15.0)).clamp(0.08, 0.50);
     let accum = compute_d8_flow_accum(elevations, cols, rows);
-    let min_accum = ((n as f64).sqrt() * 0.35).round().max(6.0) as u32;
+    let min_accum = ((n as f64).sqrt() * 0.45).round().max(8.0) as u32;
     for idx in 0..n {
         if let Some(z) = elevations[idx]
             && accum[idx] >= min_accum
         {
-            let depth_carve =
-                (((accum[idx] as f64) / (min_accum as f64)).ln_1p() * 0.38).clamp(0.2, 1.0);
+            let depth_carve = (((accum[idx] as f64) / (min_accum as f64)).ln_1p() * 0.35)
+                .clamp(0.12, 0.80)
+                * width_ratio;
             elevations[idx] = Some(z - depth_carve);
         }
     }

@@ -193,20 +193,26 @@ pub(crate) fn compute_d8_flow_accum(
     accum
 }
 
-pub(crate) fn burn_river_channels(elevations: &mut [Option<f64>], cols: usize, rows: usize) {
+pub(crate) fn burn_river_channels(
+    elevations: &mut [Option<f64>],
+    cols: usize,
+    rows: usize,
+    dx_m: f64,
+) {
     let n = cols * rows;
     if elevations.len() != n || cols < 4 || rows < 4 {
         return;
     }
+    let width_ratio = (15.0 / dx_m.max(15.0)).clamp(0.08, 0.50);
     let accum = compute_d8_flow_accum(elevations, cols, rows);
-    let min_accum = ((n as f64).sqrt() * 0.35).round().max(6.0) as u32;
+    let min_accum = ((n as f64).sqrt() * 0.45).round().max(8.0) as u32;
     let max_accum = accum.iter().copied().max().unwrap_or(1).max(min_accum + 1);
     for (z_opt, &a) in elevations.iter_mut().zip(accum.iter()) {
         if a >= min_accum
             && let Some(z) = z_opt.as_mut()
         {
             let frac = ((a - min_accum) as f64 / (max_accum - min_accum) as f64).clamp(0.0, 1.0);
-            let carve = 0.35 + 1.15 * frac.sqrt();
+            let carve = (0.12 + 0.68 * frac.sqrt()) * width_ratio;
             *z -= carve;
         }
     }
