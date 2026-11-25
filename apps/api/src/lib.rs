@@ -1,5 +1,6 @@
 //! Public Axum HTTP API serving immutable archived ARUS runs, interactive simulations, and the 3D web portal.
 
+pub mod config;
 pub mod sim;
 pub mod video;
 
@@ -23,6 +24,7 @@ use axum::routing::{get, post};
 use axum::{Json, Router};
 use serde::{Deserialize, Serialize};
 
+use crate::config::ServerConfig;
 use crate::sim::{
     CompareSimulationsResponse, CreateSimulationRequest, InteractiveStore, JobStore,
     MAX_BODY_BYTES, RunGridResponse, SimulationJobRecord, SimulationSummaryResponse,
@@ -36,6 +38,7 @@ pub struct ApiState {
     catalog_path: Option<PathBuf>,
     interactive: Arc<InteractiveStore>,
     jobs: Arc<JobStore>,
+    config: Arc<ServerConfig>,
 }
 
 impl ApiState {
@@ -46,6 +49,7 @@ impl ApiState {
             catalog_path: None,
             interactive: Arc::new(InteractiveStore::default()),
             jobs: Arc::new(JobStore::default()),
+            config: Arc::new(ServerConfig::default()),
         })
     }
 
@@ -53,6 +57,13 @@ impl ApiState {
     #[must_use]
     pub fn with_catalog(mut self, catalog_path: PathBuf) -> Self {
         self.catalog_path = Some(catalog_path);
+        self
+    }
+
+    /// Attaches a validated runtime `ServerConfig` enforced on API routes and exposed at `/api/v1/config`.
+    #[must_use]
+    pub fn with_config(mut self, config: ServerConfig) -> Self {
+        self.config = Arc::new(config);
         self
     }
 }
@@ -89,6 +100,7 @@ pub fn router(state: ApiState) -> Router {
         .route("/assets/fonts/jbmono-400.woff2", get(serve_font_jbmono_400))
         .route("/assets/fonts/jbmono-500.woff2", get(serve_font_jbmono_500))
         .route("/health", get(health))
+        .route("/api/v1/config", get(get_config))
         .route("/api/v1/catalog/sources", get(get_catalog_sources))
         .route("/api/v1/published", get(get_published))
         .route("/api/v1/runs", get(list_runs))
@@ -181,6 +193,16 @@ async fn post_simulation(
     State(state): State<ApiState>,
     Json(request): Json<CreateSimulationRequest>,
 ) -> Result<(StatusCode, Json<SimulationSummaryResponse>), (StatusCode, Json<ErrorResponse>)> {
+    if request.ascii_dem.is_some() && !state.config.features.allow_byod_dem_upload {
+        return Err(forbidden(
+            "BYOD ASCII DEM upload is disabled on this server",
+        ));
+    }
+    if !request.interventions.is_empty() && !state.config.features.allow_interventions {
+        return Err(forbidden(
+            "terrain interventions are disabled on this server",
+        ));
+    }
     let sim = state
         .interactive
         .run_simulation(request, None)
@@ -193,6 +215,16 @@ async fn post_compare(
     State(state): State<ApiState>,
     Json(request): Json<CreateSimulationRequest>,
 ) -> Result<Json<CompareSimulationsResponse>, (StatusCode, Json<ErrorResponse>)> {
+    if !state.config.features.allow_interventions {
+        return Err(forbidden(
+            "terrain interventions are disabled on this server",
+        ));
+    }
+    if request.ascii_dem.is_some() && !state.config.features.allow_byod_dem_upload {
+        return Err(forbidden(
+            "BYOD ASCII DEM upload is disabled on this server",
+        ));
+    }
     if request.interventions.is_empty() {
         return Err((
             StatusCode::UNPROCESSABLE_ENTITY,
@@ -290,6 +322,9 @@ async fn export_run_max_depth_asc(
     State(state): State<ApiState>,
     Path(run_id): Path<String>,
 ) -> Result<Response, (StatusCode, Json<ErrorResponse>)> {
+    if !state.config.features.allow_gis_export {
+        return Err(forbidden("GIS export is disabled on this server"));
+    }
     let sim = state
         .interactive
         .get(&run_id)
@@ -310,6 +345,9 @@ async fn export_run_outlooks_csv(
     State(state): State<ApiState>,
     Path(run_id): Path<String>,
 ) -> Result<Response, (StatusCode, Json<ErrorResponse>)> {
+    if !state.config.features.allow_gis_export {
+        return Err(forbidden("GIS export is disabled on this server"));
+    }
     let sim = state
         .interactive
         .get(&run_id)
@@ -326,7 +364,15 @@ async fn export_run_outlooks_csv(
         .map_err(internal_error)
 }
 
-async fn post_export_mp4(body: Bytes) -> Result<Response, (StatusCode, Json<ErrorResponse>)> {
+async fn post_export_mp4(
+    State(state): State<ApiState>,
+    body: Bytes,
+) -> Result<Response, (StatusCode, Json<ErrorResponse>)> {
+    if !state.config.features.allow_mp4_export {
+        return Err(forbidden(
+            "server-side MP4 export is disabled on this server",
+        ));
+    }
     let webm = body.to_vec();
     let mp4 = tokio::task::spawn_blocking(move || video::transcode_webm_bytes_to_mp4(&webm))
         .await
@@ -516,10 +562,24 @@ async fn render_run_html(
     Ok(Html(render_run_page_html(&run_id, &outlooks, locale)))
 }
 
+async fn get_config(State(state): State<ApiState>) -> Json<ServerConfig> {
+    Json((*state.config).clone())
+}
+
 async fn post_job(
     State(state): State<ApiState>,
     Json(request): Json<CreateSimulationRequest>,
 ) -> Result<(StatusCode, Json<SimulationJobRecord>), (StatusCode, Json<ErrorResponse>)> {
+    if !state.config.features.allow_async_jobs {
+        return Err(forbidden(
+            "async high-resolution jobs are disabled on this server",
+        ));
+    }
+    if request.ascii_dem.is_some() && !state.config.features.allow_byod_dem_upload {
+        return Err(forbidden(
+            "BYOD ASCII DEM upload is disabled on this server",
+        ));
+    }
     let record = state
         .jobs
         .submit(Arc::clone(&state.interactive), request)
@@ -532,14 +592,26 @@ async fn post_job(
     Ok((StatusCode::ACCEPTED, Json(record)))
 }
 
-async fn list_jobs(State(state): State<ApiState>) -> Json<Vec<SimulationJobRecord>> {
-    Json(state.jobs.list())
+async fn list_jobs(
+    State(state): State<ApiState>,
+) -> Result<Json<Vec<SimulationJobRecord>>, (StatusCode, Json<ErrorResponse>)> {
+    if !state.config.features.allow_async_jobs {
+        return Err(forbidden(
+            "async high-resolution jobs are disabled on this server",
+        ));
+    }
+    Ok(Json(state.jobs.list()))
 }
 
 async fn get_job(
     State(state): State<ApiState>,
     Path(job_id): Path<String>,
 ) -> Result<Json<SimulationJobRecord>, (StatusCode, Json<ErrorResponse>)> {
+    if !state.config.features.allow_async_jobs {
+        return Err(forbidden(
+            "async high-resolution jobs are disabled on this server",
+        ));
+    }
     state
         .jobs
         .get(&job_id)
@@ -551,11 +623,25 @@ async fn cancel_job(
     State(state): State<ApiState>,
     Path(job_id): Path<String>,
 ) -> Result<Json<SimulationJobRecord>, (StatusCode, Json<ErrorResponse>)> {
+    if !state.config.features.allow_async_jobs {
+        return Err(forbidden(
+            "async high-resolution jobs are disabled on this server",
+        ));
+    }
     state
         .jobs
         .cancel(&job_id)
         .map(Json)
         .ok_or_else(|| not_found(format!("job {job_id} not found")))
+}
+
+fn forbidden(message: &str) -> (StatusCode, Json<ErrorResponse>) {
+    (
+        StatusCode::FORBIDDEN,
+        Json(ErrorResponse {
+            error: message.to_owned(),
+        }),
+    )
 }
 
 fn not_found(message: String) -> (StatusCode, Json<ErrorResponse>) {
@@ -584,6 +670,9 @@ pub struct ApiArgs {
     /// Optional public source catalog JSON file served at `/api/v1/catalog/sources`.
     #[arg(long, default_value = "catalog/sources.json")]
     pub catalog: PathBuf,
+    /// Optional server runtime config JSON file (feature toggles, default view, limits).
+    #[arg(long)]
+    pub config: Option<PathBuf>,
     /// Socket address to bind.
     #[arg(long, default_value = "127.0.0.1:8080")]
     pub bind: String,
@@ -632,6 +721,62 @@ mod job_queue_tests {
             .ok_or_else(|| "missing summary on completed job".to_owned())?;
         assert!(summary.budget_assessment.passed);
         assert!(state.interactive.get(&final_rec.run_id).is_some());
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn hosted_config_enforces_feature_toggles_with_403() -> Result<(), String> {
+        use axum::http::Request;
+        use tower::ServiceExt;
+
+        let dir = tempfile::tempdir().map_err(|e| e.to_string())?;
+        let state = ApiState::open(dir.path())
+            .map_err(|e| e.to_string())?
+            .with_config(ServerConfig::hosted_default());
+        let app = router(state);
+
+        // GET /api/v1/config returns hosted mode and feature flags
+        let cfg_resp = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/api/v1/config")
+                    .body(Body::empty())
+                    .map_err(|e| e.to_string())?,
+            )
+            .await
+            .map_err(|e| e.to_string())?;
+        assert_eq!(cfg_resp.status(), StatusCode::OK);
+
+        // POST /api/v1/jobs returns 403 Forbidden under hosted default config
+        let job_resp = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/v1/jobs")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        r#"{"cols":8,"rows":8,"dx_m":50.0,"rainfall_mm_per_hr":80.0,"duration_s":30.0}"#,
+                    ))
+                    .map_err(|e| e.to_string())?,
+            )
+            .await
+            .map_err(|e| e.to_string())?;
+        assert_eq!(job_resp.status(), StatusCode::FORBIDDEN);
+
+        // POST /api/v1/export/mp4 returns 403 Forbidden under hosted default config
+        let mp4_resp = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/v1/export/mp4")
+                    .body(Body::from(vec![0u8; 8]))
+                    .map_err(|e| e.to_string())?,
+            )
+            .await
+            .map_err(|e| e.to_string())?;
+        assert_eq!(mp4_resp.status(), StatusCode::FORBIDDEN);
         Ok(())
     }
 }

@@ -2207,7 +2207,133 @@ window.arusDirector = {
     card.classList.remove('hidden');
     if (state.frames.length > 0) updateLiveHotspots(state.frameIdx);
   },
+  getPrefs: () => loadUserPrefs(),
+  resetPrefs: () => resetUserPrefs(),
+  getServerConfig: () => state.serverConfig || null,
 };
+
+const PREFS_KEY = 'arus.studio.prefs.v1';
+
+function loadUserPrefs() {
+  try {
+    const raw = window.localStorage.getItem(PREFS_KEY);
+    if (!raw) return {};
+    const parsed = JSON.parse(raw);
+    return parsed && typeof parsed === 'object' ? parsed : {};
+  } catch (_) {
+    return {};
+  }
+}
+
+function saveUserPrefs(patch) {
+  if (document.documentElement.dataset.presentation === 'true' || state.fixedView) return;
+  try {
+    const merged = { ...loadUserPrefs(), ...patch };
+    window.localStorage.setItem(PREFS_KEY, JSON.stringify(merged));
+  } catch (_) { /* storage unavailable in private mode */ }
+}
+
+function resetUserPrefs() {
+  try {
+    window.localStorage.removeItem(PREFS_KEY);
+  } catch (_) { /* ignore */ }
+}
+
+function applyUserPrefs(qs) {
+  if (qs.get('presentation') === '1' || qs.get('presentation') === 'true') return;
+  if (qs.get('fixed') === '1' || qs.get('fixed') === 'true') return;
+  const prefs = loadUserPrefs();
+  if (!qs.has('basemap') && (prefs.basemap === 'topo' || prefs.basemap === 'sat' || prefs.basemap === 'dark')) {
+    state.basemap = prefs.basemap;
+    document.documentElement.dataset.theme = prefs.basemap === 'topo' ? 'light' : 'dark';
+    document.querySelectorAll('[data-basemap]').forEach((el) => {
+      el.classList.toggle('active', el.dataset.basemap === prefs.basemap);
+    });
+  }
+  if (typeof prefs.is3D === 'boolean') {
+    state.is3D = prefs.is3D;
+    const btn = $('btn-2d3d');
+    if (btn) {
+      btn.textContent = state.is3D ? '3D' : '2D';
+      btn.classList.toggle('active', state.is3D);
+    }
+  }
+  if (prefs.layer && ['depth', 'hazard', 'velocity'].includes(prefs.layer)) {
+    state.layer = prefs.layer;
+  }
+  if (!qs.has('soil') && prefs.soil && $('ctl-soil')) $('ctl-soil').value = prefs.soil;
+  if (!qs.has('hyetograph') && prefs.hyetograph && $('ctl-hyeto')) $('ctl-hyeto').value = prefs.hyetograph;
+  if (!qs.has('boundary') && prefs.boundary && $('ctl-boundary')) $('ctl-boundary').value = prefs.boundary;
+  if (Number.isFinite(prefs.manning_n) && $('ctl-manning')) {
+    $('ctl-manning').value = String(prefs.manning_n);
+    if ($('val-manning')) $('val-manning').textContent = Number(prefs.manning_n).toFixed(3);
+  }
+}
+
+function wirePreferencePersistence() {
+  document.querySelectorAll('[data-basemap]').forEach((el) => {
+    el.addEventListener('click', () => saveUserPrefs({ basemap: el.dataset.basemap }));
+  });
+  document.querySelectorAll('[data-layer]').forEach((el) => {
+    el.addEventListener('click', () => saveUserPrefs({ layer: el.dataset.layer }));
+  });
+  if ($('btn-2d3d')) {
+    $('btn-2d3d').addEventListener('click', () => saveUserPrefs({ is3D: state.is3D }));
+  }
+  if ($('ctl-soil')) {
+    $('ctl-soil').addEventListener('change', (e) => saveUserPrefs({ soil: e.target.value }));
+  }
+  if ($('ctl-hyeto')) {
+    $('ctl-hyeto').addEventListener('change', (e) => saveUserPrefs({ hyetograph: e.target.value }));
+  }
+  if ($('ctl-boundary')) {
+    $('ctl-boundary').addEventListener('change', (e) => saveUserPrefs({ boundary: e.target.value }));
+  }
+  if ($('ctl-manning')) {
+    $('ctl-manning').addEventListener('change', (e) => saveUserPrefs({ manning_n: parseFloat(e.target.value) }));
+  }
+}
+
+async function fetchAndApplyServerConfig(qs) {
+  try {
+    const resp = await fetch('/api/v1/config');
+    if (!resp.ok) return;
+    const cfg = await resp.json();
+    state.serverConfig = cfg;
+    if (cfg.instance_title) document.title = cfg.instance_title;
+    const f = cfg.features || {};
+    const hide = (el) => { if (el) el.style.display = 'none'; };
+    if (f.allow_interventions === false) {
+      document.querySelectorAll('[data-tool="bund"], [data-tool="pond"]').forEach(hide);
+      hide($('btn-compare'));
+    }
+    if (f.allow_byod_dem_upload === false) {
+      hide($('dem-file')?.parentElement);
+    }
+    if (f.allow_mp4_export === false) {
+      hide($('btn-rec'));
+    }
+    if (f.allow_direct_nwp_fetch === false) {
+      hide($('btn-nwp-fetch'));
+    }
+    if (f.allow_gis_export === false) {
+      hide($('btn-exp-asc'));
+      hide($('btn-exp-csv'));
+    }
+    const prefs = loadUserPrefs();
+    const dv = cfg.default_view;
+    if (dv && !qs.has('lat') && !qs.has('lon') && !prefs.last_center) {
+      if (Number.isFinite(dv.lat) && Number.isFinite(dv.lon)) {
+        state.center = { lat: dv.lat, lon: dv.lon };
+      }
+      if (!qs.has('zoom') && Number.isFinite(dv.zoom)) state.initZoom = dv.zoom;
+      if (!qs.has('basemap') && !prefs.basemap && (dv.basemap === 'topo' || dv.basemap === 'sat' || dv.basemap === 'dark')) {
+        state.basemap = dv.basemap;
+        document.documentElement.dataset.theme = dv.basemap === 'topo' ? 'light' : 'dark';
+      }
+    }
+  } catch (_) { /* server config optional in offline mode */ }
+}
 
 function applyStartupParams() {
   const qs = new URLSearchParams(window.location.search);
@@ -2260,10 +2386,14 @@ function applyStartupParams() {
   if (Object.keys(scen).length > 0) window.arusDirector.setScenario(scen);
 }
 
-window.addEventListener('DOMContentLoaded', () => {
+window.addEventListener('DOMContentLoaded', async () => {
+  const qs = new URLSearchParams(window.location.search);
   wireUi();
+  wirePreferencePersistence();
+  await fetchAndApplyServerConfig(qs);
+  applyUserPrefs(qs);
   applyStartupParams();
   initMap();
-  setLayer('depth');
+  setLayer(state.layer || 'depth');
   requestAnimationFrame(animationLoop);
 });

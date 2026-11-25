@@ -2,6 +2,7 @@
 
 use std::process::ExitCode;
 
+use arus_api::config::ServerConfig;
 use arus_api::{ApiArgs, ApiState, router};
 use clap::Parser;
 use tokio::net::TcpListener;
@@ -22,6 +23,10 @@ async fn serve(args: ApiArgs) -> Result<(), String> {
     let mut state = ApiState::open(&args.archive).map_err(|error| error.to_string())?;
     if args.catalog.exists() {
         state = state.with_catalog(args.catalog);
+    }
+    if let Some(config_path) = args.config {
+        let cfg = ServerConfig::load_json(&config_path)?;
+        state = state.with_config(cfg);
     }
     let listener = TcpListener::bind(&args.bind)
         .await

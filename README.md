@@ -39,7 +39,13 @@ Requires Rust `1.98.0` (pinned in `rust-toolchain.toml`).
 cargo run --release -p arus-api -- --archive data/runs --bind 127.0.0.1:8080
 ```
 
-Open `http://127.0.0.1:8080/` in a browser.
+For public hosted deployments, pass a server config file (`config/arus.hosted.example.json`) to toggle endpoints (`--config`):
+
+```sh
+cargo run --release -p arus-api -- --archive data/runs --config config/arus.hosted.example.json --bind 0.0.0.0:8080
+```
+
+Open `http://127.0.0.1:8080/` in a browser. Studio persists per-user display preferences in browser `localStorage` (`arus.studio.prefs.v1`) while URL query parameters override both browser and server defaults.
 
 ## Data Sources & Inputs
 

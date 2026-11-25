@@ -18,6 +18,7 @@ cargo run --release -p arus-api -- --archive data/runs --bind 127.0.0.1:8080
 | `GET` | `/sources?lang=en\|bm` | Public source catalog page |
 | `GET` | `/runs/{run_id}?lang=en\|bm` | Dioxus SSR location outlook page rendered by `arus-web` |
 | `GET` | `/health` | `{ "status": "ok", "schema_version": "arus-api-v1" }` |
+| `GET` | `/api/v1/config` | Active `ServerConfig` (`mode`, `default_view`, `features`, `limits`, `disclaimer`) |
 | `GET` | `/api/v1/catalog/sources` | Public `Catalog` from `catalog/sources.json` or `404` when unconfigured |
 | `GET` | `/api/v1/published` | Current `PublishedPointer` or `404` when no operational forecast is published |
 | `GET` | `/api/v1/runs` | `RunIndex` (`latest_run_id`, `run_ids`) |

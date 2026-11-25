@@ -1,0 +1,25 @@
+{
+  "schema_version": 1,
+  "mode": "hosted",
+  "instance_title": "ARUS Public Flood Outlook",
+  "default_view": {
+    "lat": 5.4853,
+    "lon": 102.6861,
+    "zoom": 10.2,
+    "basemap": "topo"
+  },
+  "features": {
+    "allow_interventions": true,
+    "allow_byod_dem_upload": false,
+    "allow_mp4_export": false,
+    "allow_async_jobs": false,
+    "allow_direct_nwp_fetch": false,
+    "allow_gis_export": true
+  },
+  "limits": {
+    "max_interactive_cells": 16384,
+    "max_job_cells": 65536,
+    "sim_timeout_secs": 20
+  },
+  "disclaimer": "Unvalidated screening simulation. Follow official national hydrological and meteorological warnings."
+}
