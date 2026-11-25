@@ -6,7 +6,7 @@ ARUS separates browser contracts, forecast orchestration, numerical execution, a
 
 - **Acquisition (`arus-cli`, `arus-ingest`, `arus-assets`)**: Checks the catalog, plans collection, archives payloads with SHA-256 receipts, and locks archives.
 - **Contracts (`arus-domain`, `arus-api-types`, `arus-model-api`, `arus-jobs`)**: Defines backend-agnostic provenance, transport, capability, water-budget, cancellation, and checkpoint contracts.
-- **Hydraulics (`arus-hydraulics`)**: Wraps `hydr 0.2.0` `F64` and `F32` MUSCL surface solvers, Modified Green-Ampt soil, coupled 1D–2D channels, and coastal forcing. Supports Preissmann-slot pipes, detention pools, HDS-5 culverts, 25-component capabilities, and exact binary checkpoints.
+- **Hydraulics (`arus-hydraulics`)**: Wraps `hydr 0.3.0` `F64` and `F32` MUSCL surface solvers, Modified Green-Ampt soil, coupled 1D–2D channels, and coastal forcing. Supports Preissmann-slot pipes, detention pools, HDS-5 culverts, 25-component capabilities, and exact binary checkpoints.
 - **Hydrology (`arus-hydrology`)**: Wraps `hydr::runoff::SubcatchmentBatch` and translates hourly NWP series into antecedent soil states and peak runoff windows.
 - **Forecasting & Evaluation (`arus-forecasting`, `arus-evaluation`, `arus-geo`)**: Runs episode tracking, censored scoring, NSE/KGE hydrograph skill, spatial CSI/F1 extent scoring, and DEM conditioning.
 - **Scenarios & Storage (`arus-scenarios`, `arus-optimisation`, `arus-ml`, `arus-storage`)**: Runs paired diffs, Pareto screening, ML baseline gating, and `nodedb-lite` archive persistence.

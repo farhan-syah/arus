@@ -3,6 +3,7 @@
 **/target/
 /dist/
 **/node_modules/
+/apps/web/assets/wasm/
 
 # Machine config and session state
 /.cargo/config.toml

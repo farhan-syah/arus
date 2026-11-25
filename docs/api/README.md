@@ -1,6 +1,6 @@
 # ARUS Public API (`arus-api-v1`)
 
-`apps/api` serves the 3D Studio, archived runs, interactive `hydr 0.2.0` simulations, GIS exports, and `vidr 0.1.1` MP4 encoding via Axum.
+`apps/api` serves the 3D Studio, archived runs, interactive `hydr 0.3.0` simulations, GIS exports, and `vidr 0.1.1` MP4 encoding via Axum.
 
 ## Run locally
 
@@ -29,7 +29,7 @@ cargo run --release -p arus-api -- --archive data/runs --bind 127.0.0.1:8080
 | `GET` | `/api/v1/runs/{run_id}/frames.bin` | Compact binary frame series (`h`, `vx`, `vy`) for 60 FPS WebGL playback |
 | `GET` | `/api/v1/runs/{run_id}/export/max-depth.asc` | Projected ESRI ASCII `.asc` maximum flood depth grid |
 | `GET` | `/api/v1/runs/{run_id}/export/outlooks.csv` | CSV flood envelope and location outlook summary |
-| `POST` | `/api/v1/simulations` | Executes a bounded interactive 2D `hydr 0.2.0` simulation (`<= 16,384` cells, `20s` timeout) |
+| `POST` | `/api/v1/simulations` | Executes a bounded interactive 2D `hydr 0.3.0` simulation (`<= 16,384` cells, `20s` timeout) |
 | `POST` | `/api/v1/compare` | Runs paired Baseline vs Intervention (`bund` / `pond`) simulations and returns `Δh` plus cut/fill volumes |
 | `POST` | `/api/v1/jobs` | Enqueues an async high-resolution basin job (`<= 262,144` cells, `<= 12h` duration, `300s` timeout) |
 | `GET` | `/api/v1/jobs` | Lists tracked async basin jobs with live status and progress |

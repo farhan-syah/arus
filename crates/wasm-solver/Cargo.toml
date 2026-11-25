@@ -1,0 +1,24 @@
+[package]
+name = "arus-wasm-solver"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.96"
+publish = false
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+getrandom = { version = "0.3", features = ["wasm_js"] }
+hydr = { version = "0.3.0", default-features = false, features = ["wgpu"] }
+js-sys = "0.3"
+numr = { version = "0.17.0", default-features = false, features = ["wgpu"] }
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.154"
+wasm-bindgen = "=0.2.126"
+wasm-bindgen-futures = "0.4"
+
+[profile.release]
+opt-level = "s"
+lto = "thin"
+codegen-units = 1

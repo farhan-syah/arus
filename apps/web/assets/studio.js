@@ -61,6 +61,10 @@ const state = {
   activeAbort: null,
   lastCompareMode: false,
   verdictTarget: null,
+  activeEngine: 'Server · F64',
+  simWorker: null,
+  simWorkerSeq: 0,
+  wasmAvailable: true,
   staticVectorsDirty: true,
   frameRasterCache: new Map(),
   displayPrefs: {
@@ -99,7 +103,7 @@ const state = {
     enableEvap: true,
     enableDrain: true,
     tideMode: 'live', // live | spring-high | off
-    compute: 'server', // server | auto
+    compute: 'auto', // auto | server
   },
 };
 
@@ -1460,15 +1464,11 @@ async function buildRequestPayload() {
   };
 }
 
-async function loadRun(runId) {
-  const [gridResp, binResp] = await Promise.all([
-    fetch(`/api/v1/runs/${runId}/grid`),
-    fetch(`/api/v1/runs/${runId}/frames.bin`),
-  ]);
-  if (!gridResp.ok || !binResp.ok) throw new Error('Failed to load simulation frames');
-  state.grid = await gridResp.json();
-  state.frames = decodeFramesBin(await binResp.arrayBuffer());
+function applyLoadedSimulation(grid, frames, runId, engineLabel) {
+  state.grid = grid;
+  state.frames = frames;
   state.runId = runId;
+  state.activeEngine = engineLabel || 'Server · F64';
   state.frameIdx = state.playing
     ? Math.min(Math.floor(state.frames.length * 0.72), state.frames.length - 1)
     : 0;
@@ -1484,6 +1484,76 @@ async function loadRun(runId) {
   updateHonestyPill();
   updateTimeReadout();
   renderFloodCanvas(true);
+}
+
+async function loadRun(runId) {
+  const [gridResp, binResp] = await Promise.all([
+    fetch(`/api/v1/runs/${runId}/grid`),
+    fetch(`/api/v1/runs/${runId}/frames.bin`),
+  ]);
+  if (!gridResp.ok || !binResp.ok) throw new Error('Failed to load simulation frames');
+  const grid = await gridResp.json();
+  const frames = decodeFramesBin(await binResp.arrayBuffer());
+  applyLoadedSimulation(grid, frames, runId, 'Server · F64');
+}
+
+function runBrowserSimulation(payload, abortSignal) {
+  return new Promise((resolve, reject) => {
+    if (abortSignal && abortSignal.aborted) {
+      const err = new Error('Aborted');
+      err.name = 'AbortError';
+      reject(err);
+      return;
+    }
+    if (!state.simWorker) {
+      state.simWorker = new Worker('/assets/sim-worker.js', { type: 'module' });
+    }
+    const worker = state.simWorker;
+    const id = ++state.simWorkerSeq;
+    const cleanup = () => {
+      worker.removeEventListener('message', onMsg);
+      worker.removeEventListener('error', onErr);
+      if (abortSignal) abortSignal.removeEventListener('abort', onAbort);
+    };
+    const onAbort = () => {
+      cleanup();
+      try { worker.terminate(); } catch (_) {}
+      state.simWorker = null;
+      const err = new Error('Aborted');
+      err.name = 'AbortError';
+      reject(err);
+    };
+    const onErr = (e) => {
+      cleanup();
+      try { worker.terminate(); } catch (_) {}
+      state.simWorker = null;
+      reject(new Error((e && e.message) || 'Browser WASM worker error'));
+    };
+    const onMsg = (e) => {
+      const msg = e.data;
+      if (!msg || msg.id !== id) return;
+      cleanup();
+      if (!msg.ok) {
+        reject(new Error(msg.error || 'Browser WASM solver error'));
+        return;
+      }
+      try {
+        const grid = JSON.parse(msg.gridJson);
+        const frames = decodeFramesBin(msg.framesBuffer);
+        resolve({ engine: msg.engine || 'WASM · F32', grid, frames });
+      } catch (parseErr) {
+        reject(parseErr);
+      }
+    };
+    worker.addEventListener('message', onMsg);
+    worker.addEventListener('error', onErr);
+    if (abortSignal) abortSignal.addEventListener('abort', onAbort, { once: true });
+    worker.postMessage({
+      id,
+      payloadJson: JSON.stringify(payload),
+      preferWebGpu: true,
+    });
+  });
 }
 
 function showToast(message, canRetry = false) {
@@ -1554,25 +1624,58 @@ async function runSimulation(compareMode) {
       `;
     } else {
       state.diffData = null;
-      const resp = await fetch('/api/v1/simulations', {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify(payload),
-        signal: abort.signal,
-      });
-      if (!resp.ok) throw new Error(await parseErrorText(resp));
-      const summary = await resp.json();
-      state.frameRasterCache.clear();
-      setSimProgress('Loading frames…');
-      await loadRun(summary.run_id);
-      if (!state.fixedView) {
-        const [minLon, minLat, maxLon, maxLat] = summary.wgs84_bounds;
-        map.flyTo({
-          center: [(minLon + maxLon) * 0.5, (minLat + maxLat) * 0.5],
-          zoom: 14.4,
-          pitch: state.is3D ? 48 : 0,
-          duration: 800,
+      const canUseBrowser =
+        !state.fixedView &&
+        !payload.ascii_dem &&
+        state.simConfig.compute === 'auto' &&
+        state.wasmAvailable &&
+        typeof Worker !== 'undefined';
+
+      let browserRes = null;
+      if (canUseBrowser) {
+        try {
+          setSimProgress('Solving in browser (WebGPU / WASM)…');
+          browserRes = await runBrowserSimulation(payload, abort.signal);
+        } catch (browserErr) {
+          if (browserErr && browserErr.name === 'AbortError') throw browserErr;
+          state.wasmAvailable = false;
+          setSimProgress('Falling back to Server F64…');
+        }
+      }
+
+      if (browserRes) {
+        state.frameRasterCache.clear();
+        applyLoadedSimulation(browserRes.grid, browserRes.frames, browserRes.grid.run_id, browserRes.engine);
+        if (!state.fixedView) {
+          const [minLon, minLat, maxLon, maxLat] = browserRes.grid.metadata.wgs84_bounds;
+          map.flyTo({
+            center: [(minLon + maxLon) * 0.5, (minLat + maxLat) * 0.5],
+            zoom: 14.4,
+            pitch: state.is3D ? 48 : 0,
+            duration: 800,
+          });
+        }
+      } else {
+        const resp = await fetch('/api/v1/simulations', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify(payload),
+          signal: abort.signal,
         });
+        if (!resp.ok) throw new Error(await parseErrorText(resp));
+        const summary = await resp.json();
+        state.frameRasterCache.clear();
+        setSimProgress('Loading frames…');
+        await loadRun(summary.run_id);
+        if (!state.fixedView) {
+          const [minLon, minLat, maxLon, maxLat] = summary.wgs84_bounds;
+          map.flyTo({
+            center: [(minLon + maxLon) * 0.5, (minLat + maxLat) * 0.5],
+            zoom: 14.4,
+            pitch: state.is3D ? 48 : 0,
+            duration: 800,
+          });
+        }
       }
     }
   } catch (err) {
@@ -1646,8 +1749,8 @@ function updateHonestyPill() {
       ? 'Uploaded .ASC'
       : 'Synthetic DEM';
   pill.classList.toggle('fail', !ok);
-  pill.title = `Mass residual: ${res.toExponential(1)} m³ (screening only)`;
-  txt.textContent = `${demTag} · Mass ${ok ? 'OK' : 'FAIL'}`;
+  pill.title = `Engine: ${state.activeEngine} · Mass residual: ${res.toExponential(1)} m³ (screening only)`;
+  txt.textContent = `${state.activeEngine} · ${demTag} · Mass ${ok ? 'OK' : 'FAIL'}`;
   updateFrameTelemetry();
 }
 

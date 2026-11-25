@@ -14,13 +14,13 @@ use arus_ingest::{AccessClass, Catalog, DataClass};
 use arus_storage::{PublishedPointer, RunIndex, RunRecord, RunStore};
 use arus_web::{
     FONT_INTER_400, FONT_INTER_500, FONT_INTER_600, FONT_JBMONO_400, FONT_JBMONO_500, Locale,
-    MAPLIBRE_CSS, MAPLIBRE_JS, STUDIO_CSS, STUDIO_JS, render_index_page_html, render_run_page_html,
-    render_sources_page_html, render_studio_page_html,
+    MAPLIBRE_CSS, MAPLIBRE_JS, SIM_WORKER_JS, STUDIO_CSS, STUDIO_JS, render_index_page_html,
+    render_run_page_html, render_sources_page_html, render_studio_page_html,
 };
 use axum::body::{Body, Bytes};
 use axum::extract::{DefaultBodyLimit, Path, Query, State};
 use axum::http::{StatusCode, header};
-use axum::response::{Html, Response};
+use axum::response::{Html, IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
 use serde::{Deserialize, Serialize};
@@ -104,6 +104,8 @@ pub fn router(state: ApiState) -> Router {
         .route("/assets/maplibre-gl.js", get(serve_maplibre_js))
         .route("/assets/maplibre-gl.css", get(serve_maplibre_css))
         .route("/assets/studio.js", get(serve_studio_js))
+        .route("/assets/sim-worker.js", get(serve_sim_worker_js))
+        .route("/assets/wasm/{file}", get(serve_wasm_asset))
         .route("/assets/studio.css", get(serve_studio_css))
         .route("/assets/fonts/inter-400.woff2", get(serve_font_inter_400))
         .route("/assets/fonts/inter-500.woff2", get(serve_font_inter_500))
@@ -157,6 +159,31 @@ async fn serve_maplibre_css() -> Response {
 
 async fn serve_studio_js() -> Response {
     static_asset("application/javascript; charset=utf-8", STUDIO_JS)
+}
+
+async fn serve_sim_worker_js() -> Response {
+    static_asset("application/javascript; charset=utf-8", SIM_WORKER_JS)
+}
+
+async fn serve_wasm_asset(Path(file): Path<String>) -> Response {
+    let content_type = match file.as_str() {
+        "arus_wasm_solver.js" => "application/javascript; charset=utf-8",
+        "arus_wasm_solver_bg.wasm" => "application/wasm",
+        _ => return StatusCode::NOT_FOUND.into_response(),
+    };
+    let base_dir = std::env::var_os("ARUS_WASM_DIR")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from("apps/web/assets/wasm"));
+    let path = base_dir.join(&file);
+    match tokio::fs::read(&path).await {
+        Ok(bytes) => Response::builder()
+            .status(StatusCode::OK)
+            .header(header::CONTENT_TYPE, content_type)
+            .header(header::CACHE_CONTROL, "public, max-age=3600")
+            .body(Body::from(bytes))
+            .unwrap_or_else(|_| Response::new(Body::empty())),
+        Err(_) => StatusCode::NOT_FOUND.into_response(),
+    }
 }
 
 async fn serve_studio_css() -> Response {

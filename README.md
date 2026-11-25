@@ -6,7 +6,7 @@ ARUS is a Rust 3D flood simulation and forecasting platform for hydrologists, dr
 
 ## Capabilities
 
-- **2D Shallow-Water Solver (`hydr 0.2.0`)**: Runs `F64` and `F32` MUSCL solvers with Priority-Flood DEM conditioning. Preserves depressions deeper than `0.6 m` and carves D8 sub-grid river channels.
+- **2D Shallow-Water Solver (`hydr 0.3.0`)**: Runs `F64` and `F32` MUSCL solvers with Priority-Flood DEM conditioning. Preserves depressions deeper than `0.6 m` and carves D8 sub-grid river channels.
 - **Spatial NWP Forcing**: Interpolates `nx × ny` rain grids, hourly FAO-56 Penman-Monteith `et0_mm` (suppressed above `0.2 mm/hr` rain), and initial `soil_moisture_init`. Applies per-cell Manning roughness (`0.032` channels, `0.060` floodplain, `0.110` upland) and `hourly_tide_m` backwater.
 - **Pre-State Assimilation**: Seeds valley channels from `antecedent_rain_mm` and assimilates live river-gauge depths via `observed_gauges`.
 - **4-Stage Forecast Pipeline (`arus-worker pipeline`)**: Computes soil and gauge headroom, 72–120h 1D hydrology ensembles, and coastal tide-lock checks. Triggers windowed 2D onset, peak, and recession runs.
@@ -46,6 +46,14 @@ cargo run --release -p arus-api -- --archive data/runs --config config/arus.host
 ```
 
 Open `http://127.0.0.1:8080/` in a browser. Studio persists per-user display preferences in browser `localStorage` (`arus.studio.prefs.v1`) while URL query parameters override both browser and server defaults.
+
+To enable client-side Browser WebGPU / WASM CPU offload (`hydr 0.3.0` + `numr 0.17.0` in a Web Worker, with automatic fallback to `Server · F64` when absent):
+
+```sh
+rustup target add wasm32-unknown-unknown
+cargo build --manifest-path crates/wasm-solver/Cargo.toml --target wasm32-unknown-unknown --release
+wasm-bindgen --target web --no-typescript --out-dir apps/web/assets/wasm crates/wasm-solver/target/wasm32-unknown-unknown/release/arus_wasm_solver.wasm
+```
 
 ## Data Sources & Inputs
 

@@ -10,6 +10,8 @@ pub const MAPLIBRE_JS: &str = include_str!("../assets/maplibre-gl.js");
 pub const MAPLIBRE_CSS: &str = include_str!("../assets/maplibre-gl.css");
 /// ARUS Studio client controller served at `/assets/studio.js`.
 pub const STUDIO_JS: &str = include_str!("../assets/studio.js");
+/// ARUS Browser WebGPU / WASM CPU simulation Web Worker served at `/assets/sim-worker.js`.
+pub const SIM_WORKER_JS: &str = include_str!("../assets/sim-worker.js");
 /// ARUS Studio stylesheet served at `/assets/studio.css`.
 pub const STUDIO_CSS: &str = include_str!("../assets/studio.css");
 
@@ -510,8 +512,8 @@ fn StudioShell() -> Element {
                             div { class: "field",
                                 span { class: "field-label", "Compute Target" }
                                 select { id: "sim-compute", class: "ctl-select",
-                                    option { value: "server", selected: true, "Server F64 Reference (Active)" }
-                                    option { value: "auto", disabled: true, "Browser WASM / WebGPU (Coming soon)" }
+                                    option { value: "auto", selected: true, "Auto (Browser WebGPU / WASM → Server F64)" }
+                                    option { value: "server", "Server F64 Reference" }
                                 }
                             }
                         }
