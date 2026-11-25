@@ -237,18 +237,16 @@ pub(crate) fn build_channel_prestate(
     } else {
         valid_z[(valid_z.len() * 35) / 100]
     };
-    let channel_accum_min = ((n as f64).sqrt() * 0.22).round().max(4.0) as u32;
+    let channel_accum_min = ((n as f64).sqrt() * 0.45).round().max(8.0) as u32;
 
     if antecedent_rain_mm > 0.0 {
-        let scale = (antecedent_rain_mm / 180.0).clamp(0.0, 1.5);
+        let scale = (antecedent_rain_mm / 100.0).clamp(0.15, 1.5);
         for (idx, z_opt) in elevations.iter().enumerate() {
             let Some(z) = *z_opt else { continue };
             let a = accum[idx];
-            if a >= channel_accum_min {
-                let d = (0.12 + 0.14 * ((a as f64) / (channel_accum_min as f64)).ln_1p()) * scale;
-                depths[idx] = depths[idx].max(d.min(0.65));
-            } else if z <= low_z_cutoff && a >= 3 {
-                depths[idx] = depths[idx].max(0.04 * scale);
+            if a >= channel_accum_min && z <= low_z_cutoff + 12.0 {
+                let channel_factor = ((a as f64) / (channel_accum_min as f64)).ln_1p().min(2.2);
+                depths[idx] = depths[idx].max((0.08 * scale * channel_factor).min(0.28));
             }
         }
     }

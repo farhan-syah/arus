@@ -276,16 +276,16 @@ pub(super) fn build_channel_prestate(
     } else {
         valid_z[(valid_z.len() * 35) / 100]
     };
-    let channel_accum_min = ((n as f64).sqrt() * 0.22).round().max(4.0) as u32;
+    let channel_accum_min = ((n as f64).sqrt() * 0.45).round().max(8.0) as u32;
 
     if antecedent_rain_mm > 0.0 {
-        let scale = (antecedent_rain_mm / 60.0).clamp(0.25, 2.5);
+        let scale = (antecedent_rain_mm / 100.0).clamp(0.15, 1.5);
         for idx in 0..n {
             let Some(z) = elevations[idx] else { continue };
             let a = accum[idx];
-            if a >= channel_accum_min && z <= low_z_cutoff + 18.0 {
-                let channel_factor = ((a as f64) / (channel_accum_min as f64)).ln_1p().min(2.6);
-                depths[idx] = (0.14 * scale * channel_factor).min(0.45);
+            if a >= channel_accum_min && z <= low_z_cutoff + 12.0 {
+                let channel_factor = ((a as f64) / (channel_accum_min as f64)).ln_1p().min(2.2);
+                depths[idx] = (0.08 * scale * channel_factor).min(0.28);
             }
         }
     }
