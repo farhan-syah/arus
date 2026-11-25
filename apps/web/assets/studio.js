@@ -311,16 +311,114 @@ function ensureMapLayers() {
     },
   });
 
+function registerTideMarkerIcons(targetMap) {
+  const states = [
+    ['normal', '#0f766e'],
+    ['high', '#d97706'],
+  ];
+  const trends = ['steady', 'up', 'down'];
+  for (const [level, bg] of states) {
+    for (const trend of trends) {
+      const id = `arus-tide-${trend}-${level}`;
+      if (targetMap.hasImage(id)) continue;
+      const size = 48;
+      const c = document.createElement('canvas');
+      c.width = size;
+      c.height = size;
+      const ctx = c.getContext('2d');
+
+      // Rounded ocean badge
+      const rx = 6;
+      const ry = 10;
+      const rw = 34;
+      const rh = 28;
+      const rad = 8;
+      ctx.beginPath();
+      ctx.moveTo(rx + rad, ry);
+      ctx.lineTo(rx + rw - rad, ry);
+      ctx.quadraticCurveTo(rx + rw, ry, rx + rw, ry + rad);
+      ctx.lineTo(rx + rw, ry + rh - rad);
+      ctx.quadraticCurveTo(rx + rw, ry + rh, rx + rw - rad, ry + rh);
+      ctx.lineTo(rx + rad, ry + rh);
+      ctx.quadraticCurveTo(rx, ry + rh, rx, ry + rh - rad);
+      ctx.lineTo(rx, ry + rad);
+      ctx.quadraticCurveTo(rx, ry, rx + rad, ry);
+      ctx.closePath();
+      ctx.fillStyle = bg;
+      ctx.fill();
+      ctx.lineWidth = 3;
+      ctx.strokeStyle = '#ffffff';
+      ctx.stroke();
+
+      // Two crisp white wave lines inside badge
+      ctx.strokeStyle = '#ffffff';
+      ctx.lineWidth = 2.6;
+      ctx.lineCap = 'round';
+      for (const wy of [21, 29]) {
+        ctx.beginPath();
+        ctx.moveTo(13, wy);
+        ctx.bezierCurveTo(17, wy - 4, 21, wy + 4, 25, wy);
+        ctx.bezierCurveTo(28, wy - 3, 31, wy + 2, 33, wy);
+        ctx.stroke();
+      }
+
+      // Superscript trend pill (top-right corner: chevron up, chevron down, or dash)
+      ctx.beginPath();
+      ctx.arc(38, 12, 8.5, 0, Math.PI * 2);
+      ctx.fillStyle = '#0f172a';
+      ctx.fill();
+      ctx.lineWidth = 2;
+      ctx.strokeStyle = '#ffffff';
+      ctx.stroke();
+
+      ctx.strokeStyle = '#ffffff';
+      ctx.lineWidth = 2.4;
+      ctx.lineCap = 'round';
+      ctx.lineJoin = 'round';
+      ctx.beginPath();
+      if (trend === 'up') {
+        ctx.moveTo(34.5, 13.8);
+        ctx.lineTo(38, 9.8);
+        ctx.lineTo(41.5, 13.8);
+      } else if (trend === 'down') {
+        ctx.moveTo(34.5, 10.2);
+        ctx.lineTo(38, 14.2);
+        ctx.lineTo(41.5, 10.2);
+      } else {
+        ctx.moveTo(34.5, 12);
+        ctx.lineTo(41.5, 12);
+      }
+      ctx.stroke();
+
+      const img = ctx.getImageData(0, 0, size, size);
+      targetMap.addImage(id, img, { pixelRatio: 2 });
+    }
+  }
+}
+
   map.addSource('arus-hotspots', { type: 'geojson', data: empty });
+  registerTideMarkerIcons(map);
   map.addLayer({
     id: 'arus-hotspots-circle',
     type: 'circle',
     source: 'arus-hotspots',
+    filter: ['!=', ['get', 'kind'], 'tide'],
     paint: {
       'circle-radius': 6,
       'circle-color': ['get', 'color'],
       'circle-stroke-color': '#ffffff',
       'circle-stroke-width': 2,
+    },
+  });
+  map.addLayer({
+    id: 'arus-hotspots-tide',
+    type: 'symbol',
+    source: 'arus-hotspots',
+    filter: ['==', ['get', 'kind'], 'tide'],
+    layout: {
+      'icon-image': ['get', 'icon'],
+      'icon-allow-overlap': true,
+      'icon-ignore-placement': true,
     },
   });
 
@@ -1462,12 +1560,19 @@ function updateLiveHotspots(frameIdx) {
     if (Number.isFinite(s.lat) && Number.isFinite(s.lon)) {
       const h0 = sampleLocalPeakDepth(f0, s.lat, s.lon);
       const hCur = sampleLocalPeakDepth(fCur, s.lat, s.lon);
+      let tideIcon = 'arus-tide-steady-normal';
       if (s.kind === 'tide' && state.hourlyTideM && state.hourlyTideM.length > 0) {
         const tIdx = Math.min(state.hourlyTideM.length - 1, Math.floor(frac * state.hourlyTideM.length));
+        const prevIdx = Math.max(0, tIdx - 2);
         const tideM = state.hourlyTideM[tIdx];
+        const delta = tideM - state.hourlyTideM[prevIdx];
+        const trend = delta > 0.04 ? 'up' : delta < -0.04 ? 'down' : 'steady';
+        const level = tideM >= 1.85 ? 'high' : 'normal';
+        tideIcon = `arus-tide-${trend}-${level}`;
         const sign = tideM >= 0 ? '+' : '';
-        const tag = tideM >= 1.85 ? 'HIGH TIDE' : tideM >= 1.2 ? 'Rising' : 'Low';
-        tone = tideM >= 1.85 ? 'danger' : tideM >= 1.2 ? 'warn' : '';
+        const arrow = trend === 'up' ? '▲' : trend === 'down' ? '▼' : '–';
+        const tag = tideM >= 1.85 ? `High ${arrow}` : trend === 'up' ? `Rising ${arrow}` : trend === 'down' ? `Falling ${arrow}` : `Steady ${arrow}`;
+        tone = tideM >= 1.85 ? 'warn' : '';
         statusText = `${sign}${tideM.toFixed(2)} m · ${tag}`;
       } else if (Number.isFinite(s.base_stage_m)) {
         const liveStage = s.base_stage_m + (hCur - h0);
@@ -1497,6 +1602,8 @@ function updateLiveHotspots(frameIdx) {
         geometry: { type: 'Point', coordinates: [s.lon, s.lat] },
         properties: {
           name: s.name || '',
+          kind: s.kind || 'gauge',
+          icon: tideIcon,
           color: tone === 'danger' ? '#e11d48' : tone === 'warn' ? '#d97706' : '#0284c7',
         },
       });
@@ -2089,6 +2196,8 @@ window.arusDirector = {
           geometry: { type: 'Point', coordinates: [s.lon, s.lat] },
           properties: {
             name: s.name || '',
+            kind: s.kind || 'gauge',
+            icon: 'arus-tide-steady-normal',
             color: s.tone === 'danger' ? '#e11d48' : s.tone === 'warn' ? '#d97706' : '#0284c7',
           },
         }));
