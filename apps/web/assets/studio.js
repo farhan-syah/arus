@@ -13,6 +13,9 @@ const PRESETS = [
 const state = {
   basemap: 'topo', // topo | sat | dark
   center: { lon: 101.535, lat: 3.031 },
+  initZoom: 14.3,
+  initPitch: 48,
+  initBearing: -16,
   tool: 'inspect', // inspect | pick | bund | pond | xsection
   layer: 'depth',  // depth | velocity | hazard | diff
   envelopeMode: false,
@@ -100,9 +103,9 @@ function initMap() {
     container: 'map',
     style: getBasemapStyle(state.basemap),
     center: [state.center.lon, state.center.lat],
-    zoom: 14.3,
-    pitch: 48,
-    bearing: -16,
+    zoom: state.initZoom,
+    pitch: state.initPitch,
+    bearing: state.initBearing,
     antialias: true,
     preserveDrawingBuffer: true,
   });
@@ -1132,6 +1135,19 @@ async function openSourcesModal() {
   }
 }
 
+function setCustomPresetLabel(label) {
+  const sel = $('preset-select');
+  if (!sel) return;
+  let opt = sel.querySelector('option[value="__custom"]');
+  if (!opt) {
+    opt = document.createElement('option');
+    opt.value = '__custom';
+    sel.insertBefore(opt, sel.firstChild);
+  }
+  opt.textContent = label;
+  sel.value = '__custom';
+}
+
 function wireUi() {
   const sel = $('preset-select');
   sel.innerHTML = PRESETS.map((p) => `<option value="${p.id}">${p.name}</option>`).join('');
@@ -1155,6 +1171,7 @@ function wireUi() {
     if (parts.length === 2 && Number.isFinite(parts[0]) && Number.isFinite(parts[1])) {
       state.center = { lat: parts[0], lon: parts[1] };
       state.cachedDem = null;
+      setCustomPresetLabel(`Custom · ${parts[0].toFixed(4)}, ${parts[1].toFixed(4)}`);
       map.flyTo({ center: [parts[1], parts[0]], zoom: 14.2, duration: 800 });
       runSimulation(false);
       return;
@@ -1167,6 +1184,7 @@ function wireUi() {
         const lon = parseFloat(hits[0].lon);
         state.center = { lat, lon };
         state.cachedDem = null;
+        setCustomPresetLabel(raw);
         map.flyTo({ center: [lon, lat], zoom: 14.2, duration: 900 });
         runSimulation(false);
       }
@@ -1336,6 +1354,7 @@ window.arusDirector = {
   flyTo: (lat, lon, zoom = 14.3, pitch = 48, bearing = -16, duration = 900) => {
     state.center = { lat, lon };
     state.cachedDem = null;
+    setCustomPresetLabel(`Custom · ${lat.toFixed(4)}, ${lon.toFixed(4)}`);
     map.flyTo({ center: [lon, lat], zoom, pitch, bearing, duration });
   },
   setBasemap: (mode) => setBasemap(mode),
@@ -1437,11 +1456,76 @@ window.arusDirector = {
   setPresentationMode: (enabled) => {
     document.documentElement.dataset.presentation = enabled ? 'true' : 'false';
   },
+  setPublicOutlook: (cfg) => {
+    const card = $('public-outlook');
+    if (!cfg) {
+      card.classList.add('hidden');
+      return;
+    }
+    $('po-title').textContent = cfg.title || 'Flood Outlook';
+    const risk = $('po-risk');
+    const lvl = (cfg.risk_level || 'moderate').toLowerCase();
+    risk.className = `po-risk ${lvl}`;
+    risk.textContent = cfg.risk_text || lvl.toUpperCase();
+    $('po-summary').textContent = cfg.summary || '';
+    const spots = Array.isArray(cfg.hotspots) ? cfg.hotspots : [];
+    $('po-hotspots').innerHTML = spots.map((s) => {
+      const cls = s.tone ? ` ${s.tone}` : '';
+      return `<div class="po-spot"><span class="po-spot-name">${s.name}</span><span class="po-spot-val${cls}">${s.status}</span></div>`;
+    }).join('');
+    if (cfg.footnote) $('po-foot').textContent = cfg.footnote;
+    card.classList.remove('hidden');
+  },
 };
 
+function applyStartupParams() {
+  const qs = new URLSearchParams(window.location.search);
+  const lat = parseFloat(qs.get('lat'));
+  const lon = parseFloat(qs.get('lon'));
+  if (Number.isFinite(lat) && Number.isFinite(lon)) {
+    state.center = { lat, lon };
+    setCustomPresetLabel(`Custom · ${lat.toFixed(4)}, ${lon.toFixed(4)}`);
+  }
+  const zoom = parseFloat(qs.get('zoom'));
+  if (Number.isFinite(zoom)) state.initZoom = zoom;
+  const pitch = parseFloat(qs.get('pitch'));
+  if (Number.isFinite(pitch)) state.initPitch = pitch;
+  const bearing = parseFloat(qs.get('bearing'));
+  if (Number.isFinite(bearing)) state.initBearing = bearing;
+  const basemap = qs.get('basemap');
+  if (basemap === 'topo' || basemap === 'sat' || basemap === 'dark') {
+    state.basemap = basemap;
+    document.documentElement.dataset.theme = basemap === 'topo' ? 'light' : 'dark';
+    document.querySelectorAll('[data-basemap]').forEach((el) => {
+      el.classList.toggle('active', el.dataset.basemap === basemap);
+    });
+  }
+  if (qs.get('presentation') === '1' || qs.get('presentation') === 'true') {
+    document.documentElement.dataset.presentation = 'true';
+  }
+  if (qs.get('autoplay') === '0' || qs.get('autoplay') === 'false') {
+    state.playing = false;
+    $('btn-play').textContent = '▶';
+  }
+  const scen = {};
+  const rain = parseFloat(qs.get('rain'));
+  if (Number.isFinite(rain)) scen.rainfall_mm_per_hr = rain;
+  const dur = parseFloat(qs.get('dur'));
+  if (Number.isFinite(dur)) scen.duration_s = dur;
+  const wind = parseFloat(qs.get('wind'));
+  if (Number.isFinite(wind)) scen.wind_x_m_per_s = wind;
+  if (qs.get('soil')) scen.soil = qs.get('soil');
+  if (qs.get('hyetograph')) scen.hyetograph = qs.get('hyetograph');
+  if (qs.get('boundary')) scen.boundary = qs.get('boundary');
+  if (qs.get('start_iso')) scen.start_iso = qs.get('start_iso');
+  if (qs.get('tz')) scen.tz_label = qs.get('tz');
+  if (Object.keys(scen).length > 0) window.arusDirector.setScenario(scen);
+}
+
 window.addEventListener('DOMContentLoaded', () => {
-  initMap();
   wireUi();
+  applyStartupParams();
+  initMap();
   setLayer('depth');
   requestAnimationFrame(animationLoop);
 });

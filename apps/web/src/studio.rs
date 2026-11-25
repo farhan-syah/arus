@@ -57,6 +57,15 @@ fn StudioShell() -> Element {
             }
         }
         div { id: "director-caption", class: "hud director-caption hidden" }
+        section { id: "public-outlook", class: "hud public-outlook hidden",
+            div { class: "po-head",
+                span { id: "po-title", class: "po-title", "Flood Outlook" }
+                span { id: "po-risk", class: "po-risk moderate", "MODERATE" }
+            }
+            div { id: "po-summary", class: "po-summary" }
+            div { id: "po-hotspots", class: "po-hotspots" }
+            div { id: "po-foot", class: "po-foot", "Screening forecast · Check official local warnings" }
+        }
 
         // Left Scenario & Tools Drawer
         aside { id: "drawer", class: "hud drawer",

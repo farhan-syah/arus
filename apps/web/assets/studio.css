@@ -692,6 +692,67 @@ input[type="range"] {
   max-width: 520px;
   text-align: center;
 }
+.public-outlook {
+  top: 14px;
+  left: 14px;
+  width: 318px;
+  padding: 12px 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  pointer-events: none;
+}
+.po-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px;
+}
+.po-title {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--ink-1);
+}
+.po-risk {
+  font-size: 11px;
+  font-weight: 600;
+  padding: 2px 8px;
+  border-radius: 999px;
+  letter-spacing: 0.03em;
+  white-space: nowrap;
+}
+.po-risk.low { background: rgba(22, 163, 74, 0.16); color: var(--ok); }
+.po-risk.moderate { background: rgba(217, 119, 6, 0.18); color: var(--warn); }
+.po-risk.high { background: rgba(225, 29, 72, 0.18); color: var(--danger); }
+.po-summary {
+  font-size: 12px;
+  line-height: 1.4;
+  color: var(--ink-2);
+}
+.po-hotspots {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  padding-top: 4px;
+  border-top: 1px solid var(--hud-border);
+}
+.po-spot {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 8px;
+  font-size: 11.5px;
+}
+.po-spot-name { color: var(--ink-1); font-weight: 500; }
+.po-spot-val { color: var(--ink-2); font-family: var(--mono); font-size: 11px; white-space: nowrap; }
+.po-spot-val.warn { color: var(--warn); font-weight: 500; }
+.po-spot-val.danger { color: var(--danger); font-weight: 500; }
+.po-foot {
+  font-size: 10.5px;
+  color: var(--ink-3);
+  padding-top: 4px;
+  border-top: 1px solid var(--hud-border);
+}
 /* Clean broadcast / recording presentation mode (hides editor chrome, keeps key viewer info) */
 [data-presentation="true"] .topbar,
 [data-presentation="true"] .drawer,

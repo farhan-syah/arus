@@ -19,6 +19,7 @@ import sys
 import tempfile
 import time
 from pathlib import Path
+from urllib.parse import urlencode
 from playwright.sync_api import sync_playwright
 
 
@@ -81,6 +82,36 @@ def run_storyboard(
         )
         url = f"http://127.0.0.1:{port}/"
         time.sleep(1.5)
+
+    init_cfg = spec.get("init")
+    if isinstance(init_cfg, dict) and init_cfg:
+        qs_params = {}
+        for key in (
+            "lat",
+            "lon",
+            "zoom",
+            "pitch",
+            "bearing",
+            "basemap",
+            "presentation",
+            "rain",
+            "dur",
+            "wind",
+            "soil",
+            "hyetograph",
+            "boundary",
+            "start_iso",
+            "tz",
+            "autoplay",
+        ):
+            if key in init_cfg and init_cfg[key] is not None:
+                val = init_cfg[key]
+                if isinstance(val, bool):
+                    val = "1" if val else "0"
+                qs_params[key] = str(val)
+        if qs_params:
+            sep = "&" if "?" in url else "?"
+            url = f"{url}{sep}{urlencode(qs_params)}"
 
     saved_shots: list[str] = []
     step_log: list[dict] = []
@@ -194,6 +225,22 @@ def run_storyboard(
                     page.evaluate("(t) => window.arusDirector.setCaption(t)", step.get("text", ""))
                     if "wait_s" in step:
                         time.sleep(float(step["wait_s"]))
+                elif action == "set_outlook":
+                    cfg = {k: v for k, v in step.items() if k != "action"}
+                    page.evaluate("(c) => window.arusDirector.setPublicOutlook(c)", cfg if cfg else None)
+                elif action == "jump_to":
+                    # Instant camera cut (zero animation) so video starts ALREADY framed on target
+                    page.evaluate(
+                        "([lat, lon, zoom, pitch, bearing]) => window.arusDirector.flyTo(lat, lon, zoom, pitch, bearing, 0)",
+                        [
+                            float(step["lat"]),
+                            float(step["lon"]),
+                            float(step.get("zoom", 14.3)),
+                            float(step.get("pitch", 48)),
+                            float(step.get("bearing", -16)),
+                        ],
+                    )
+                    time.sleep(float(step.get("wait_s", 1.2)))
                 elif action == "screenshot":
                     fname = str(step.get("file", f"shot-{idx:02d}.png"))
                     dest = out_dir / fname
