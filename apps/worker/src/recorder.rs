@@ -382,7 +382,9 @@ fn apply_instant_action(cdp: &mut CdpClient, step: &Value) -> Result<(), String>
         "load_boundary" => {
             let query = step.get("query").and_then(Value::as_str).unwrap_or("");
             let js_arg = serde_json::to_string(query).map_err(|e| e.to_string())?;
-            cdp.eval(&format!("window.arusDirector.loadBoundaryByQuery({js_arg})"))?;
+            cdp.eval(&format!(
+                "window.arusDirector.loadBoundaryByQuery({js_arg})"
+            ))?;
         }
         other => return Err(format!("unsupported storyboard action `{other}`")),
     }
@@ -433,6 +435,7 @@ fn encode_init_query(init: &Map<String, Value>) -> String {
         "start_iso",
         "tz",
         "span_hours",
+        "antecedent_mm",
         "autoplay",
         "fixed",
     ] {
@@ -624,8 +627,8 @@ fn open_cdp_page_target(port: u16) -> Result<String, String> {
     stream
         .read_exact(&mut body)
         .map_err(|e| format!("read CDP /json/new body failed: {e}"))?;
-    let parsed: Value =
-        serde_json::from_slice(&body).map_err(|e| format!("parse CDP /json/new JSON failed: {e}"))?;
+    let parsed: Value = serde_json::from_slice(&body)
+        .map_err(|e| format!("parse CDP /json/new JSON failed: {e}"))?;
     let ws_url = parsed
         .get("webSocketDebuggerUrl")
         .and_then(Value::as_str)
@@ -671,7 +674,7 @@ impl CdpClient {
     fn connect(host: &str, port: u16, path: &str) -> Result<Self, String> {
         let mut stream =
             TcpStream::connect((host, port)).map_err(|e| format!("CDP ws connect failed: {e}"))?;
-        let _ = stream.set_read_timeout(Some(Duration::from_secs(30)));
+        let _ = stream.set_read_timeout(Some(Duration::from_secs(90)));
         let handshake = format!(
             "GET {path} HTTP/1.1\r\n\
              Host: {host}:{port}\r\n\

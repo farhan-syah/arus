@@ -39,6 +39,7 @@ const state = {
   startEpochMs: Date.now(),
   tzLabel: 'UTC',
   spanHours: 0,
+  antecedentMm: 0,
   boundaryGeoJson: null,
   boundaryGrid: null,
   boundaryCellMask: null,
@@ -1028,6 +1029,7 @@ async function buildRequestPayload() {
     ascii_dem: state.uploadedDem,
     terrain_elevations_m: sampled,
     terrain_provenance: sampled ? 'BrowserTerrariumScreening' : null,
+    antecedent_rain_mm: state.antecedentMm || 0,
     wind_x_m_per_s: parseFloat($('ctl-wind').value) || 0,
     wind_y_m_per_s: 0,
   };
@@ -1762,6 +1764,9 @@ window.arusDirector = {
       state.spanHours = Math.max(0, opts.span_hours);
       renderForecastSegments();
     }
+    if (typeof opts.antecedent_rain_mm === 'number' && Number.isFinite(opts.antecedent_rain_mm)) {
+      state.antecedentMm = Math.max(0, Math.min(500, opts.antecedent_rain_mm));
+    }
     updateTimeReadout();
   },
   runSimulation: () => runSimulation(false),
@@ -1908,6 +1913,8 @@ function applyStartupParams() {
   if (qs.get('tz')) scen.tz_label = qs.get('tz');
   const spanHours = parseFloat(qs.get('span_hours'));
   if (Number.isFinite(spanHours) && spanHours > 0) scen.span_hours = spanHours;
+  const antMm = parseFloat(qs.get('antecedent_mm'));
+  if (Number.isFinite(antMm) && antMm > 0) scen.antecedent_rain_mm = antMm;
   if (Object.keys(scen).length > 0) window.arusDirector.setScenario(scen);
 }
 

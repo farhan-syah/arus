@@ -136,6 +136,10 @@ pub struct CreateSimulationRequest {
     #[serde(default)]
     pub terrain_provenance: Option<String>,
     /// Optional uniform 10 m coastal wind forcing x-component (`m/s`, `hydr 0.2.0`).
+    /// Optional antecedent rainfall total (mm) spun up BEFORE Frame 0 so the simulation starts
+    /// from an already-wet / actively flooding current basin state instead of a bone-dry bed.
+    #[serde(default)]
+    pub antecedent_rain_mm: f64,
     #[serde(default)]
     pub wind_x_m_per_s: f64,
     /// Optional uniform 10 m coastal wind forcing y-component (`m/s`, `hydr 0.2.0`).
@@ -361,6 +365,12 @@ fn validate_request(req: &CreateSimulationRequest) -> Result<(), (u16, String)> 
             "rainfall_mm_per_hr must be finite in [0, 1000]".to_owned(),
         ));
     }
+    if !req.antecedent_rain_mm.is_finite() || !(0.0..=500.0).contains(&req.antecedent_rain_mm) {
+        return Err((
+            422,
+            "antecedent_rain_mm must be finite in [0, 500]".to_owned(),
+        ));
+    }
     if !req.duration_s.is_finite() || !(10.0..=3600.0).contains(&req.duration_s) {
         return Err((422, "duration_s must be finite in [10, 3600]".to_owned()));
     }
@@ -536,36 +546,58 @@ fn execute_blocking(
             .collect(),
     };
 
-    let forcing = match req.hyetograph {
-        HyetographPreset::Uniform => vec![RainIntervalSpec {
+    let warmup_s = if req.antecedent_rain_mm > 0.0 {
+        600.0
+    } else {
+        0.0
+    };
+    let mut forcing = Vec::new();
+    if warmup_s > 0.0 {
+        // Pre-state / Nowcast warm-up: rain for 70% of warmup_s, then 30% hydraulic settling
+        // so valleys, rivers, and floodplains reflect current wet/flooding state at t = 0.
+        let rain_dur = warmup_s * 0.70;
+        let ant_rate = (req.antecedent_rain_mm / 1000.0) / rain_dur;
+        forcing.push(RainIntervalSpec {
             start_s: 0.0,
-            end_s: req.duration_s,
+            end_s: rain_dur,
+            uniform_rain_m_per_s: ant_rate,
+            boundaries: boundary_forcings.clone(),
+        });
+        forcing.push(RainIntervalSpec {
+            start_s: rain_dur,
+            end_s: warmup_s,
+            uniform_rain_m_per_s: 0.0,
+            boundaries: boundary_forcings.clone(),
+        });
+    }
+    match req.hyetograph {
+        HyetographPreset::Uniform => forcing.push(RainIntervalSpec {
+            start_s: warmup_s,
+            end_s: warmup_s + req.duration_s,
             uniform_rain_m_per_s: rain_m_per_s,
             boundaries: boundary_forcings,
-        }],
+        }),
         HyetographPreset::PeakStorm => {
-            let t1 = req.duration_s * 0.25;
-            let t2 = req.duration_s * 0.55;
-            vec![
-                RainIntervalSpec {
-                    start_s: 0.0,
-                    end_s: t1,
-                    uniform_rain_m_per_s: rain_m_per_s * 0.65,
-                    boundaries: boundary_forcings.clone(),
-                },
-                RainIntervalSpec {
-                    start_s: t1,
-                    end_s: t2,
-                    uniform_rain_m_per_s: rain_m_per_s * 1.6,
-                    boundaries: boundary_forcings.clone(),
-                },
-                RainIntervalSpec {
-                    start_s: t2,
-                    end_s: req.duration_s,
-                    uniform_rain_m_per_s: 0.0,
-                    boundaries: boundary_forcings,
-                },
-            ]
+            let t1 = warmup_s + req.duration_s * 0.25;
+            let t2 = warmup_s + req.duration_s * 0.55;
+            forcing.push(RainIntervalSpec {
+                start_s: warmup_s,
+                end_s: t1,
+                uniform_rain_m_per_s: rain_m_per_s * 0.65,
+                boundaries: boundary_forcings.clone(),
+            });
+            forcing.push(RainIntervalSpec {
+                start_s: t1,
+                end_s: t2,
+                uniform_rain_m_per_s: rain_m_per_s * 1.6,
+                boundaries: boundary_forcings.clone(),
+            });
+            forcing.push(RainIntervalSpec {
+                start_s: t2,
+                end_s: warmup_s + req.duration_s,
+                uniform_rain_m_per_s: 0.0,
+                boundaries: boundary_forcings,
+            });
         }
     };
 
@@ -596,7 +628,7 @@ fn execute_blocking(
         initial_depth_m,
         open_faces,
         forcing,
-        target_time_s: req.duration_s,
+        target_time_s: warmup_s + req.duration_s,
         max_steps: MAX_INTERACTIVE_STEPS,
         probes: vec![ProbeSpec {
             id: "basin-center".to_owned(),
@@ -618,11 +650,16 @@ fn execute_blocking(
     };
 
     let mut engine = spec.build_engine().map_err(|e| (422, e.to_string()))?;
+    if warmup_s > 0.0 {
+        engine
+            .advance_to(warmup_s, StepBudget::new(MAX_INTERACTIVE_STEPS))
+            .map_err(|e| (422, e.to_string()))?;
+    }
     let target_frames = 48_usize.min(MAX_INTERACTIVE_FRAMES);
     let frame_interval_s = (req.duration_s / (target_frames.saturating_sub(1) as f64)).max(1.0);
-    let (advance, series) = engine
+    let (advance, mut series) = engine
         .advance_with_frames(
-            req.duration_s,
+            warmup_s + req.duration_s,
             StepBudget::new(MAX_INTERACTIVE_STEPS),
             token,
             FrameCaptureConfig {
@@ -634,6 +671,12 @@ fn execute_blocking(
             },
         )
         .map_err(|e| (422, e.to_string()))?;
+    if warmup_s > 0.0 {
+        let warmup_f32 = warmup_s as f32;
+        for frame in &mut series.frames {
+            frame.time_s = (frame.time_s - warmup_f32).max(0.0);
+        }
+    }
 
     let frames_bin = series
         .encode_frames_bin()
