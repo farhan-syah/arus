@@ -758,17 +758,17 @@ function seedParticles() {
   }
 }
 
-// Hydrological blue depth ramp: dry/shallow (< depthCutoffM) is 100% transparent
+// Multi-hue cool-water depth ramp (no red): pale aqua -> cyan -> royal blue -> violet -> deep purple
 function colorForDepth(h) {
   const cut = state.displayPrefs.depthCutoffM || 0.06;
   if (h < cut) return null;
   const fade = Math.min(1, (h - cut) / 0.04);
   const stops = [
-    [cut,   56, 189, 248, 175], // #38bdf8 crisp sky (shallow flood)
-    [Math.max(cut + 0.06, 0.14), 2, 132, 199, 212], // #0284c7 river blue
-    [0.32,   29,  78, 216, 232], // #1d4ed8 cobalt
-    [0.65,   30,  58, 138, 242], // #1e3a8a deep blue
-    [1.10,   30,  27,  75, 248], // #1e1b4b deep indigo
+    [cut,   165, 243, 252, 145], // #a5f3fc pale aqua (0.06 m shallow)
+    [0.25,   34, 211, 238, 190], // #22d3ee vivid cyan (0.25 m ankle)
+    [0.50,   37,  99, 235, 224], // #2563eb royal blue (0.50 m knee)
+    [0.85,  124,  58, 237, 238], // #7c3aed vivid violet (0.85 m waist)
+    [1.20,   76,  29, 149, 248], // #4c1d95 deep purple (1.20 m+ deep)
   ];
   if (h >= stops[stops.length - 1][0]) {
     const last = stops[stops.length - 1];
@@ -2335,8 +2335,12 @@ function setLayer(layer) {
   const note = $('legend-note');
   const cut = state.displayPrefs.depthCutoffM || 0.06;
   if (layer === 'depth') {
-    bar.style.background = 'linear-gradient(90deg, #38bdf8, #0284c7, #1d4ed8, #1e1b4b)';
-    ticks.innerHTML = `<span>${fmtDepth(cut, 2)}</span><span>${fmtDepth(0.30, 2)}</span><span>${fmtDepth(1.10, 1)}+</span>`;
+    const span = Math.max(0.1, 1.20 - cut);
+    const p25 = (((0.25 - cut) / span) * 100).toFixed(1);
+    const p50 = (((0.50 - cut) / span) * 100).toFixed(1);
+    const p85 = (((0.85 - cut) / span) * 100).toFixed(1);
+    bar.style.background = `linear-gradient(90deg, #a5f3fc 0%, #22d3ee ${p25}%, #2563eb ${p50}%, #7c3aed ${p85}%, #4c1d95 100%)`;
+    ticks.innerHTML = `<span>${fmtDepth(cut, 2)}</span><span>${fmtDepth(0.3, 1)}</span><span>${fmtDepth(0.6, 1)}</span><span>${fmtDepth(1.2, 1)}+</span>`;
     note.textContent = `Flood depth h (sheet runoff < ${Math.round(cut * 100)} cm hidden).`;
   } else if (layer === 'velocity') {
     bar.style.background = 'linear-gradient(90deg, #2dd4bf, #0284c7, #4f46e5)';
