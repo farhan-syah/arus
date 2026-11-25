@@ -106,9 +106,11 @@ const state = {
     startDry: false,
     enableEvap: true,
     enableDrain: true,
+    stormDrainScore: 0.5,
     tideMode: 'live', // live | spring-high | off
     compute: 'auto', // auto | server
   },
+  stormDrainGrid: null,
 };
 
 function fmtDepth(m, decimals = 2) {
@@ -1664,6 +1666,8 @@ async function buildRequestPayload() {
     spatial_rain_grid: spatialGrid,
     hourly_tide_m: sc.tideMode === 'off' ? [] : (state.hourlyTideM || []),
     drainage_mm_per_hr: drainHr,
+    storm_drain_score: Number.isFinite(sc.stormDrainScore) ? Math.min(1, Math.max(0, sc.stormDrainScore)) : 0.5,
+    storm_drain_grid: Array.isArray(state.stormDrainGrid) && state.stormDrainGrid.length === cols * rows ? state.stormDrainGrid : null,
     evaporation_mm_per_day: evapDay,
     observed_gauges: sc.startDry ? [] : (state.observedGauges || []),
     wind_x_m_per_s: sc.windX || 0,
@@ -2640,6 +2644,35 @@ function wireUi() {
   $('btn-sim-close').addEventListener('click', () => $('sim-modal').classList.add('hidden'));
   $('btn-sim-cancel').addEventListener('click', () => $('sim-modal').classList.add('hidden'));
   $('btn-sim-apply').addEventListener('click', applySimModalDraftAndRun);
+  if ($('sim-storm-drain')) {
+    $('sim-storm-drain').addEventListener('input', (e) => {
+      updateStormDrainLabel(parseInt(e.target.value, 10) || 0);
+    });
+  }
+  if ($('sim-storm-drain-file')) {
+    $('sim-storm-drain-file').addEventListener('change', async (e) => {
+      const file = e.target.files?.[0];
+      if (!file) return;
+      try {
+        const parsed = JSON.parse(await file.text());
+        const arr = Array.isArray(parsed) ? parsed : (Array.isArray(parsed?.values) ? parsed.values : null);
+        if (!arr || arr.length < 16) {
+          throw new Error('Expected JSON array of 0..1 drain capacity scores');
+        }
+        state.stormDrainGrid = arr.map((v) => Math.min(1, Math.max(0, Number(v) || 0)));
+        updateStormDrainGridStatus();
+      } catch (err) {
+        setStatus(`Drain grid error: ${err.message}`);
+      }
+      e.target.value = '';
+    });
+  }
+  if ($('sim-storm-drain-clear')) {
+    $('sim-storm-drain-clear').addEventListener('click', () => {
+      state.stormDrainGrid = null;
+      updateStormDrainGridStatus();
+    });
+  }
   $('btn-sim-reset').addEventListener('click', () => {
     state.simConfig = {
       mode: 'forecast', horizon: '5d', rainMult: 1.0, stressMmDay: 150, stressDays: 3, stressPadM: 0,
@@ -3019,6 +3052,14 @@ window.arusDirector = {
     if (typeof opts.drainage_mm_per_hr === 'number' && Number.isFinite(opts.drainage_mm_per_hr)) {
       state.drainageMmHr = Math.max(0, opts.drainage_mm_per_hr);
     }
+    if (typeof opts.storm_drain_score === 'number' && Number.isFinite(opts.storm_drain_score)) {
+      state.simConfig.stormDrainScore = Math.min(1, Math.max(0, opts.storm_drain_score));
+    }
+    if (Array.isArray(opts.storm_drain_grid)) {
+      state.stormDrainGrid = opts.storm_drain_grid.map(v => Math.min(1, Math.max(0, Number(v) || 0)));
+    } else if (opts.storm_drain_grid === null) {
+      state.stormDrainGrid = null;
+    }
     if (typeof opts.evaporation_mm_per_day === 'number' && Number.isFinite(opts.evaporation_mm_per_day)) {
       state.evapMmDay = Math.max(0, opts.evaporation_mm_per_day);
     }
@@ -3338,6 +3379,26 @@ function switchSimTab(tab) {
   });
 }
 
+function updateStormDrainLabel(pct) {
+  const el = $('sim-storm-drain-val');
+  if (!el) return;
+  const tag = pct <= 10 ? 'Clogged / None' : pct <= 35 ? 'Poor' : pct <= 65 ? 'Average' : pct <= 85 ? 'Good' : 'Modern Trunk';
+  el.textContent = `${pct}% · ${tag}`;
+}
+
+function updateStormDrainGridStatus() {
+  const st = $('sim-storm-drain-status');
+  const clr = $('sim-storm-drain-clear');
+  if (!st) return;
+  if (Array.isArray(state.stormDrainGrid) && state.stormDrainGrid.length > 0) {
+    st.textContent = `Custom grid (${state.stormDrainGrid.length} cells)`;
+    if (clr) clr.classList.remove('hidden');
+  } else {
+    st.textContent = 'Baseline default';
+    if (clr) clr.classList.add('hidden');
+  }
+}
+
 function populateSimModal() {
   const sc = state.simConfig;
   switchSimTab(sc.mode || 'forecast');
@@ -3352,6 +3413,12 @@ function populateSimModal() {
   $('sim-start-dry').checked = sc.startDry;
   $('sim-enable-evap').checked = sc.enableEvap;
   $('sim-enable-drain').checked = sc.enableDrain;
+  const sdPct = Math.round((Number.isFinite(sc.stormDrainScore) ? sc.stormDrainScore : 0.5) * 100);
+  if ($('sim-storm-drain')) {
+    $('sim-storm-drain').value = String(sdPct);
+    updateStormDrainLabel(sdPct);
+  }
+  updateStormDrainGridStatus();
   $('sim-tide-mode').value = sc.tideMode;
   $('sim-compute').value = sc.compute;
   $('sim-rain').value = String(sc.rainfallMmHr);
@@ -3379,6 +3446,9 @@ function applySimModalDraftAndRun() {
   sc.startDry = $('sim-start-dry').checked;
   sc.enableEvap = $('sim-enable-evap').checked;
   sc.enableDrain = $('sim-enable-drain').checked;
+  if ($('sim-storm-drain')) {
+    sc.stormDrainScore = Math.min(1, Math.max(0, (parseFloat($('sim-storm-drain').value) || 0) / 100));
+  }
   sc.tideMode = $('sim-tide-mode').value;
   sc.compute = $('sim-compute').value;
   sc.rainfallMmHr = parseFloat($('sim-rain').value) || 280;

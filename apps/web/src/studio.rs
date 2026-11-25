@@ -523,6 +523,19 @@ fn StudioShell() -> Element {
                                 span { "Subsurface & storm drainage (3.0 mm/hr)" }
                             }
                             div { class: "field",
+                                div { class: "row-2",
+                                    span { class: "field-label", "Storm Drain Score" }
+                                    span { id: "sim-storm-drain-val", class: "field-label", style: "text-align:right;font-weight:600;", "50% · Average" }
+                                }
+                                input { id: "sim-storm-drain", class: "ctl-range", r#type: "range", min: "0", max: "100", step: "5", value: "50" }
+                                div { style: "display:flex;align-items:center;gap:6px;margin-top:4px;",
+                                    label { class: "btn-ghost", r#for: "sim-storm-drain-file", style: "font-size:11px;padding:3px 7px;cursor:pointer;", "Upload Drain Grid (.json)" }
+                                    input { id: "sim-storm-drain-file", r#type: "file", accept: ".json,application/json", style: "display:none;" }
+                                    button { id: "sim-storm-drain-clear", class: "btn-ghost hidden", r#type: "button", style: "font-size:11px;padding:3px 7px;", "Clear" }
+                                    span { id: "sim-storm-drain-status", class: "field-label", style: "font-size:11px;", "Baseline default" }
+                                }
+                            }
+                            div { class: "field",
                                 span { class: "field-label", "Coastal Tide-Lock" }
                                 select { id: "sim-tide-mode", class: "ctl-select",
                                     option { value: "live", selected: true, "Live Hourly Tide" }
