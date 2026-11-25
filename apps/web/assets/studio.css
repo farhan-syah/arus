@@ -849,7 +849,7 @@ input[type="range"] {
 
 /* Live Per-Frame Area Flood Gauge (below Public Outlook card on left) */
 .live-metrics {
-  top: 298px;
+  top: 318px;
   left: 12px;
   width: 300px;
   padding: 11px 14px;

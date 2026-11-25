@@ -49,6 +49,7 @@ const state = {
   boundaryGeoJson: null,
   boundaryGrid: null,
   boundaryCellMask: null,
+  outlookHotspots: [],
   particles: [],
 };
 
@@ -237,8 +238,8 @@ function ensureMapLayers() {
         'source-layer': 'waterway',
         filter: ['in', ['get', 'class'], ['literal', ['river', 'canal']]],
         paint: {
-          'line-color': isDark ? 'rgba(15, 23, 42, 0.85)' : 'rgba(255, 255, 255, 0.88)',
-          'line-width': ['interpolate', ['linear'], ['zoom'], 8, 2.2, 12, 3.6, 15, 5.2],
+          'line-color': isDark ? 'rgba(15, 23, 42, 0.55)' : 'rgba(255, 255, 255, 0.58)',
+          'line-width': ['interpolate', ['linear'], ['zoom'], 8, 1.5, 12, 2.3, 15, 3.3],
         },
         layout: { 'line-cap': 'round', 'line-join': 'round' },
       },
@@ -252,9 +253,9 @@ function ensureMapLayers() {
         'source-layer': 'waterway',
         filter: ['in', ['get', 'class'], ['literal', ['river', 'canal']]],
         paint: {
-          'line-color': '#059669',
-          'line-width': ['interpolate', ['linear'], ['zoom'], 8, 1.3, 12, 2.1, 15, 3.0],
-          'line-opacity': 0.95,
+          'line-color': '#10b981',
+          'line-width': ['interpolate', ['linear'], ['zoom'], 8, 0.9, 12, 1.4, 15, 2.0],
+          'line-opacity': 0.72,
         },
         layout: { 'line-cap': 'round', 'line-join': 'round' },
       },
@@ -1425,6 +1426,90 @@ function updateLiveMetrics() {
   $('lm-pct').textContent = `${floodedPct.toFixed(0)}%`;
   const stagEl = $('lm-stagnant');
   if (stagEl) stagEl.textContent = `${stagnantKm2.toFixed(1)} km²`;
+  updateLiveHotspots(idx);
+}
+
+function sampleLocalPeakDepth(frame, lat, lon) {
+  if (!state.grid || !frame) return 0;
+  const hit = lngLatToCell(lon, lat);
+  if (!hit) return 0;
+  const { cols, rows, active_mask } = state.grid.metadata;
+  let best = 0;
+  for (let dr = -1; dr <= 1; dr++) {
+    for (let dc = -1; dc <= 1; dc++) {
+      const r = hit.row + dr;
+      const c = hit.col + dc;
+      if (r < 0 || c < 0 || r >= rows || c >= cols) continue;
+      const i = r * cols + c;
+      if (active_mask[i] && frame.depth[i] > best) best = frame.depth[i];
+    }
+  }
+  return best;
+}
+
+function updateLiveHotspots(frameIdx) {
+  const spots = state.outlookHotspots;
+  if (!Array.isArray(spots) || spots.length === 0 || !state.frames.length) return;
+  const f0 = state.frames[0];
+  const fCur = state.frames[Math.min(frameIdx, state.frames.length - 1)];
+  const frac = state.frames.length > 1 ? frameIdx / (state.frames.length - 1) : 0;
+
+  const pinFeatures = [];
+  const rowsHtml = spots.map((s) => {
+    let statusText = s.status || '';
+    let tone = s.tone || '';
+
+    if (Number.isFinite(s.lat) && Number.isFinite(s.lon)) {
+      const h0 = sampleLocalPeakDepth(f0, s.lat, s.lon);
+      const hCur = sampleLocalPeakDepth(fCur, s.lat, s.lon);
+      if (s.kind === 'tide' && state.hourlyTideM && state.hourlyTideM.length > 0) {
+        const tIdx = Math.min(state.hourlyTideM.length - 1, Math.floor(frac * state.hourlyTideM.length));
+        const tideM = state.hourlyTideM[tIdx];
+        const sign = tideM >= 0 ? '+' : '';
+        const tag = tideM >= 1.85 ? 'HIGH TIDE' : tideM >= 1.2 ? 'Rising' : 'Low';
+        tone = tideM >= 1.85 ? 'danger' : tideM >= 1.2 ? 'warn' : '';
+        statusText = `${sign}${tideM.toFixed(2)} m · ${tag}`;
+      } else if (Number.isFinite(s.base_stage_m)) {
+        const liveStage = s.base_stage_m + (hCur - h0);
+        if (Number.isFinite(s.alert_m)) {
+          const diff = liveStage - s.alert_m;
+          if (diff >= 0) {
+            tone = 'danger';
+            statusText = `${liveStage.toFixed(2)} m · ABOVE ALERT`;
+          } else if (diff >= -0.4) {
+            tone = 'warn';
+            statusText = `${liveStage.toFixed(2)} m · ${diff.toFixed(2)} m Alert`;
+          } else {
+            tone = hCur >= 0.12 ? 'warn' : '';
+            statusText = `${liveStage.toFixed(2)} m · ${hCur.toFixed(2)} m depth`;
+          }
+        } else {
+          tone = hCur >= 0.35 ? 'danger' : hCur >= 0.12 ? 'warn' : '';
+          statusText = `${liveStage.toFixed(2)} m · ${hCur.toFixed(2)} m`;
+        }
+      } else {
+        tone = hCur >= 0.35 ? 'danger' : hCur >= 0.08 ? 'warn' : '';
+        statusText = hCur >= 0.06 ? `${hCur.toFixed(2)} m depth` : 'Dry (<6 cm)';
+      }
+
+      pinFeatures.push({
+        type: 'Feature',
+        geometry: { type: 'Point', coordinates: [s.lon, s.lat] },
+        properties: {
+          name: s.name || '',
+          color: tone === 'danger' ? '#e11d48' : tone === 'warn' ? '#d97706' : '#0284c7',
+        },
+      });
+    }
+
+    const cls = tone ? ` ${tone}` : '';
+    return `<div class="po-spot"><span class="po-spot-name">${s.name}</span><span class="po-spot-val${cls}">${statusText}</span></div>`;
+  }).join('');
+
+  $('po-hotspots').innerHTML = rowsHtml;
+  if (map && map.getSource('arus-hotspots') && pinFeatures.length > 0) {
+    map.getSource('arus-hotspots').setData({ type: 'FeatureCollection', features: pinFeatures });
+  }
 }
 
 function updateTimeReadout() {
@@ -1991,6 +2076,7 @@ window.arusDirector = {
     risk.textContent = cfg.risk_text || lvl.toUpperCase();
     $('po-summary').textContent = cfg.summary || '';
     const spots = Array.isArray(cfg.hotspots) ? cfg.hotspots : [];
+    state.outlookHotspots = spots;
     $('po-hotspots').innerHTML = spots.map((s) => {
       const cls = s.tone ? ` ${s.tone}` : '';
       return `<div class="po-spot"><span class="po-spot-name">${s.name}</span><span class="po-spot-val${cls}">${s.status}</span></div>`;
@@ -2010,6 +2096,7 @@ window.arusDirector = {
     }
     if (cfg.footnote) $('po-foot').textContent = cfg.footnote;
     card.classList.remove('hidden');
+    if (state.frames.length > 0) updateLiveHotspots(state.frameIdx);
   },
 };
 
