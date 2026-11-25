@@ -1,5 +1,6 @@
 //! Native numerical worker for ARUS hydraulic executions.
 
+mod calibrate;
 mod recorder;
 mod video;
 
@@ -214,6 +215,12 @@ enum Command {
         #[arg(long, default_value_t = 15)]
         fps: u32,
     },
+    /// Calibrate 2D Manning `n` and optional soil conductivity against observed hydrographs (KGE/NSE/CSI).
+    Calibrate {
+        /// Path to the JSON `CalibrationSpec` manifest file.
+        #[arg(long)]
+        spec: PathBuf,
+    },
     /// Execute a pure-Rust Preissmann-slot pressurized storm-drain network manifest (`hydr 0.2.0`).
     Pipes {
         /// Path to the JSON `NativePipeRunSpec` manifest file.
@@ -425,6 +432,12 @@ fn execute(command: Command) -> Result<(), String> {
             resolution,
             fps,
         }),
+        Command::Calibrate { spec } => {
+            let report = calibrate::run_calibration_file(&spec)?;
+            let json = serde_json::to_string_pretty(&report).map_err(|e| e.to_string())?;
+            println!("{json}");
+            Ok(())
+        }
         Command::Pipes { spec } => run_native_pipes_spec(spec),
         Command::DrainageCheck { spec } => run_drainage_check(spec),
         Command::Resume { archive, from_run } => run_resume_check(archive, from_run),

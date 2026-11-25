@@ -29,6 +29,10 @@ cargo run --release -p arus-api -- --archive data/runs --bind 127.0.0.1:8080
 | `GET` | `/api/v1/runs/{run_id}/export/outlooks.csv` | CSV flood envelope and location outlook summary |
 | `POST` | `/api/v1/simulations` | Executes a bounded interactive 2D `hydr 0.2.0` simulation (`<= 16,384` cells, `20s` timeout) |
 | `POST` | `/api/v1/compare` | Runs paired Baseline vs Intervention (`bund` / `pond`) simulations and returns `Δh` plus cut/fill volumes |
+| `POST` | `/api/v1/jobs` | Enqueues an async high-resolution basin job (`<= 262,144` cells, `<= 12h` duration, `300s` timeout) |
+| `GET` | `/api/v1/jobs` | Lists tracked async basin jobs with live status and progress |
+| `GET` | `/api/v1/jobs/{job_id}` | Returns live progress (`progress_pct`, `steps_taken`, `accepted_time_s`) and completed `run_id` |
+| `POST` | `/api/v1/jobs/{job_id}/cancel` | Requests cooperative cancellation at the next accepted solver step |
 | `POST` | `/api/v1/export/mp4` | Transcodes an uploaded `.webm` capture (`<= 64 MiB`) to H.264 faststart `.mp4` via `vidr 0.1.1` |
 
 ## Interactive Simulation Inputs (`POST /api/v1/simulations`)

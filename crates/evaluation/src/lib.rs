@@ -8,6 +8,7 @@ pub mod scoring;
 
 pub use scoring::{
     BudgetAssessment, CensoredTime, DepthSeriesMetrics, EvaluationError, EvaluationMode,
-    EvaluationPartition, Result, TimingScore, assess_water_budget, score_crossing_time,
-    score_depth_series,
+    EvaluationPartition, FloodExtentSkillMetrics, HydrographSkillMetrics, Result, TimingScore,
+    assess_water_budget, score_crossing_time, score_depth_series, score_flood_extent,
+    score_hydrograph,
 };

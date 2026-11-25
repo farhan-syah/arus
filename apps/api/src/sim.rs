@@ -4,7 +4,7 @@ use std::cmp::Ordering as CmpOrdering;
 use std::collections::{BTreeMap, BinaryHeap, VecDeque};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, RwLock};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use arus_domain::{GridSpec, RunClassification, SpatialReference};
 use arus_evaluation::{BudgetAssessment, assess_water_budget};
@@ -35,6 +35,327 @@ pub const MAX_CONCURRENT_SIMS: usize = 2;
 pub const SIM_TIMEOUT_SECS: u64 = 20;
 /// Maximum interactive runs kept in the bounded in-memory LRU cache.
 pub const MAX_CACHED_RUNS: usize = 16;
+/// Maximum 2D grid cells permitted in an async high-resolution basin job (`512x512`).
+pub const MAX_JOB_CELLS: usize = 262_144;
+/// Maximum solver steps permitted in an async high-resolution basin job.
+pub const MAX_JOB_STEPS: usize = 200_000;
+/// Maximum simulated duration (`s`) permitted in an async high-resolution basin job (12 h).
+pub const MAX_JOB_DURATION_S: f64 = 43_200.0;
+/// Maximum wall-clock duration (`s`) per async high-resolution basin job.
+pub const JOB_TIMEOUT_SECS: u64 = 300;
+/// Maximum async job records retained in memory.
+pub const MAX_TRACKED_JOBS: usize = 64;
+
+/// Execution bounds separating fast synchronous Studio runs from async high-resolution basin jobs.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ExecutionLimits {
+    pub max_cells: usize,
+    pub max_steps: usize,
+    pub max_duration_s: f64,
+    pub timeout_secs: u64,
+}
+
+impl ExecutionLimits {
+    pub const fn interactive() -> Self {
+        Self {
+            max_cells: MAX_INTERACTIVE_CELLS,
+            max_steps: MAX_INTERACTIVE_STEPS,
+            max_duration_s: 3600.0,
+            timeout_secs: SIM_TIMEOUT_SECS,
+        }
+    }
+
+    pub const fn async_job() -> Self {
+        Self {
+            max_cells: MAX_JOB_CELLS,
+            max_steps: MAX_JOB_STEPS,
+            max_duration_s: MAX_JOB_DURATION_S,
+            timeout_secs: JOB_TIMEOUT_SECS,
+        }
+    }
+}
+
+/// Lifecycle state of an asynchronous high-resolution basin simulation job.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum JobStatus {
+    Queued,
+    Running,
+    Completed,
+    Cancelled,
+    Failed,
+}
+
+/// Public progress and outcome snapshot for an async high-resolution simulation job.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SimulationJobRecord {
+    pub job_id: String,
+    pub run_id: String,
+    pub status: JobStatus,
+    pub progress_pct: f32,
+    pub accepted_time_s: f64,
+    pub target_duration_s: f64,
+    pub steps_taken: usize,
+    pub cells: usize,
+    pub elapsed_s: f64,
+    pub error: Option<String>,
+    pub summary: Option<SimulationSummaryResponse>,
+}
+
+struct ActiveJobEntry {
+    record: SimulationJobRecord,
+    created_at: Instant,
+    token: CancellationToken,
+}
+
+/// Bounded in-memory queue and progress tracker for asynchronous high-resolution basin jobs.
+pub struct JobStore {
+    next_id: AtomicU64,
+    semaphore: Arc<Semaphore>,
+    jobs: RwLock<BTreeMap<String, ActiveJobEntry>>,
+    order: RwLock<VecDeque<String>>,
+}
+
+impl Default for JobStore {
+    fn default() -> Self {
+        Self {
+            next_id: AtomicU64::new(1),
+            semaphore: Arc::new(Semaphore::new(MAX_CONCURRENT_SIMS)),
+            jobs: RwLock::new(BTreeMap::new()),
+            order: RwLock::new(VecDeque::new()),
+        }
+    }
+}
+
+impl std::fmt::Debug for JobStore {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("JobStore")
+            .field("next_id", &self.next_id.load(Ordering::Relaxed))
+            .finish()
+    }
+}
+
+impl JobStore {
+    /// Validates and enqueues a high-resolution async basin simulation job.
+    pub fn submit(
+        self: &Arc<Self>,
+        interactive: Arc<InteractiveStore>,
+        request: CreateSimulationRequest,
+    ) -> Result<SimulationJobRecord, (u16, String)> {
+        let limits = ExecutionLimits::async_job();
+        validate_request(&request, limits)?;
+
+        let seq = self.next_id.fetch_add(1, Ordering::Relaxed);
+        let job_id = format!("job-{seq:04}");
+        let run_id = format!("hires-{seq:04}");
+        let cells = request.cols.saturating_mul(request.rows);
+        let token = CancellationToken::new();
+        let initial = SimulationJobRecord {
+            job_id: job_id.clone(),
+            run_id: run_id.clone(),
+            status: JobStatus::Queued,
+            progress_pct: 0.0,
+            accepted_time_s: 0.0,
+            target_duration_s: request.duration_s,
+            steps_taken: 0,
+            cells,
+            elapsed_s: 0.0,
+            error: None,
+            summary: None,
+        };
+
+        if let (Ok(mut map), Ok(mut order)) = (self.jobs.write(), self.order.write()) {
+            if order.len() >= MAX_TRACKED_JOBS
+                && let Some(oldest) = order.pop_front()
+            {
+                map.remove(&oldest);
+            }
+            order.push_back(job_id.clone());
+            map.insert(
+                job_id.clone(),
+                ActiveJobEntry {
+                    record: initial.clone(),
+                    created_at: Instant::now(),
+                    token: token.clone(),
+                },
+            );
+        }
+
+        let store = Arc::clone(self);
+        let job_id_bg = job_id.clone();
+        let run_id_bg = run_id.clone();
+        tokio::spawn(async move {
+            let permit = match store.semaphore.clone().acquire_owned().await {
+                Ok(p) => p,
+                Err(_) => {
+                    store.mark_failed(&job_id_bg, "job worker pool unavailable".to_owned());
+                    return;
+                }
+            };
+            if token.is_cancelled() {
+                store.mark_cancelled(&job_id_bg);
+                return;
+            }
+            store.mark_running(&job_id_bg);
+
+            let store_progress = Arc::clone(&store);
+            let job_id_progress = job_id_bg.clone();
+            let token_bg = token.clone();
+            let target_dur = request.duration_s;
+
+            let join = tokio::task::spawn_blocking(move || {
+                let _permit = permit;
+                execute_blocking(
+                    run_id_bg,
+                    &request,
+                    &token_bg,
+                    limits,
+                    move |steps, accepted_s| {
+                        store_progress.update_progress(
+                            &job_id_progress,
+                            steps,
+                            accepted_s,
+                            target_dur,
+                        );
+                    },
+                )
+            });
+
+            let result = tokio::time::timeout(Duration::from_secs(limits.timeout_secs), join).await;
+            match result {
+                Ok(Ok(Ok(sim))) => {
+                    if token.is_cancelled() {
+                        store.mark_cancelled(&job_id_bg);
+                    } else {
+                        let summary = sim.summary.clone();
+                        let rid = sim.summary.run_id.clone();
+                        interactive.insert(rid, sim);
+                        store.mark_completed(&job_id_bg, summary);
+                    }
+                }
+                Ok(Ok(Err((_, msg)))) => {
+                    if token.is_cancelled() {
+                        store.mark_cancelled(&job_id_bg);
+                    } else {
+                        store.mark_failed(&job_id_bg, msg);
+                    }
+                }
+                Ok(Err(join_err)) => {
+                    store.mark_failed(&job_id_bg, format!("worker join error: {join_err}"));
+                }
+                Err(_) => {
+                    token.cancel();
+                    store.mark_failed(
+                        &job_id_bg,
+                        format!("job exceeded {}s wall-clock limit", limits.timeout_secs),
+                    );
+                }
+            }
+        });
+
+        Ok(initial)
+    }
+
+    /// Lists tracked jobs in submission order.
+    pub fn list(&self) -> Vec<SimulationJobRecord> {
+        let Ok(map) = self.jobs.read() else {
+            return Vec::new();
+        };
+        let Ok(order) = self.order.read() else {
+            return Vec::new();
+        };
+        order
+            .iter()
+            .filter_map(|id| map.get(id).map(snapshot_entry))
+            .collect()
+    }
+
+    /// Retrieves one job's live status snapshot.
+    pub fn get(&self, job_id: &str) -> Option<SimulationJobRecord> {
+        self.jobs
+            .read()
+            .ok()
+            .and_then(|map| map.get(job_id).map(snapshot_entry))
+    }
+
+    /// Requests cooperative cancellation of a queued or running job.
+    pub fn cancel(&self, job_id: &str) -> Option<SimulationJobRecord> {
+        let mut map = self.jobs.write().ok()?;
+        let entry = map.get_mut(job_id)?;
+        entry.token.cancel();
+        if matches!(entry.record.status, JobStatus::Queued | JobStatus::Running) {
+            entry.record.status = JobStatus::Cancelled;
+            entry.record.elapsed_s = entry.created_at.elapsed().as_secs_f64();
+        }
+        Some(entry.record.clone())
+    }
+
+    fn mark_running(&self, job_id: &str) {
+        if let Ok(mut map) = self.jobs.write()
+            && let Some(entry) = map.get_mut(job_id)
+            && entry.record.status == JobStatus::Queued
+        {
+            entry.record.status = JobStatus::Running;
+            entry.record.elapsed_s = entry.created_at.elapsed().as_secs_f64();
+        }
+    }
+
+    fn update_progress(&self, job_id: &str, steps: usize, accepted_s: f64, target_dur: f64) {
+        if let Ok(mut map) = self.jobs.write()
+            && let Some(entry) = map.get_mut(job_id)
+        {
+            entry.record.steps_taken = steps;
+            entry.record.accepted_time_s = accepted_s;
+            let pct = if target_dur > 0.0 {
+                ((accepted_s / target_dur) * 100.0).clamp(0.0, 99.9) as f32
+            } else {
+                0.0
+            };
+            entry.record.progress_pct = pct;
+            entry.record.elapsed_s = entry.created_at.elapsed().as_secs_f64();
+        }
+    }
+
+    fn mark_completed(&self, job_id: &str, summary: SimulationSummaryResponse) {
+        if let Ok(mut map) = self.jobs.write()
+            && let Some(entry) = map.get_mut(job_id)
+        {
+            entry.record.status = JobStatus::Completed;
+            entry.record.progress_pct = 100.0;
+            entry.record.accepted_time_s = summary.accepted_time_s;
+            entry.record.steps_taken = summary.steps_taken;
+            entry.record.elapsed_s = entry.created_at.elapsed().as_secs_f64();
+            entry.record.summary = Some(summary);
+        }
+    }
+
+    fn mark_cancelled(&self, job_id: &str) {
+        if let Ok(mut map) = self.jobs.write()
+            && let Some(entry) = map.get_mut(job_id)
+        {
+            entry.record.status = JobStatus::Cancelled;
+            entry.record.elapsed_s = entry.created_at.elapsed().as_secs_f64();
+        }
+    }
+
+    fn mark_failed(&self, job_id: &str, error: String) {
+        if let Ok(mut map) = self.jobs.write()
+            && let Some(entry) = map.get_mut(job_id)
+        {
+            entry.record.status = JobStatus::Failed;
+            entry.record.error = Some(error);
+            entry.record.elapsed_s = entry.created_at.elapsed().as_secs_f64();
+        }
+    }
+}
+
+fn snapshot_entry(entry: &ActiveJobEntry) -> SimulationJobRecord {
+    let mut rec = entry.record.clone();
+    if matches!(rec.status, JobStatus::Queued | JobStatus::Running) {
+        rec.elapsed_s = entry.created_at.elapsed().as_secs_f64();
+    }
+    rec
+}
 
 /// Rainfall hyetograph shape for interactive simulations.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
@@ -346,7 +667,8 @@ impl InteractiveStore {
         request: CreateSimulationRequest,
         fixed_id: Option<String>,
     ) -> Result<Arc<CachedSimulation>, (u16, String)> {
-        validate_request(&request)?;
+        let limits = ExecutionLimits::interactive();
+        validate_request(&request, limits)?;
         let permit = self
             .semaphore
             .clone()
@@ -361,10 +683,10 @@ impl InteractiveStore {
 
         let join = tokio::task::spawn_blocking(move || {
             let _permit = permit;
-            execute_blocking(run_id_clone, &request, &token)
+            execute_blocking(run_id_clone, &request, &token, limits, |_, _| {})
         });
 
-        let result = tokio::time::timeout(Duration::from_secs(SIM_TIMEOUT_SECS), join).await;
+        let result = tokio::time::timeout(Duration::from_secs(limits.timeout_secs), join).await;
         let sim = match result {
             Ok(Ok(Ok(sim))) => sim,
             Ok(Ok(Err(err))) => return Err(err),
@@ -384,7 +706,10 @@ impl InteractiveStore {
     }
 }
 
-fn validate_request(req: &CreateSimulationRequest) -> Result<(), (u16, String)> {
+fn validate_request(
+    req: &CreateSimulationRequest,
+    limits: ExecutionLimits,
+) -> Result<(), (u16, String)> {
     if req.precision == PrecisionChoice::F32
         && (req.land != LandChoice::Impervious || !matches!(req.boundary, BoundaryChoice::Closed))
     {
@@ -422,8 +747,14 @@ fn validate_request(req: &CreateSimulationRequest) -> Result<(), (u16, String)> 
             "antecedent_rain_mm must be finite in [0, 500]".to_owned(),
         ));
     }
-    if !req.duration_s.is_finite() || !(10.0..=3600.0).contains(&req.duration_s) {
-        return Err((422, "duration_s must be finite in [10, 3600]".to_owned()));
+    if !req.duration_s.is_finite() || !(10.0..=limits.max_duration_s).contains(&req.duration_s) {
+        return Err((
+            422,
+            format!(
+                "duration_s must be finite in [10, {}]",
+                limits.max_duration_s
+            ),
+        ));
     }
     if !req.manning_n.is_finite() || !(0.005..=0.5).contains(&req.manning_n) {
         return Err((422, "manning_n must be finite in [0.005, 0.5]".to_owned()));
@@ -433,10 +764,13 @@ fn validate_request(req: &CreateSimulationRequest) -> Result<(), (u16, String)> 
     }
     if req.ascii_dem.is_none() {
         let cells = req.cols.saturating_mul(req.rows);
-        if req.cols < 4 || req.rows < 4 || cells > MAX_INTERACTIVE_CELLS {
+        if req.cols < 4 || req.rows < 4 || cells > limits.max_cells {
             return Err((
                 422,
-                format!("grid must be at least 4x4 and <= {MAX_INTERACTIVE_CELLS} cells"),
+                format!(
+                    "grid must be at least 4x4 and <= {} cells",
+                    limits.max_cells
+                ),
             ));
         }
         if !req.dx_m.is_finite() || !(1.0..=2500.0).contains(&req.dx_m) {
@@ -446,11 +780,16 @@ fn validate_request(req: &CreateSimulationRequest) -> Result<(), (u16, String)> 
     Ok(())
 }
 
-fn execute_blocking(
+fn execute_blocking<F>(
     run_id: String,
     req: &CreateSimulationRequest,
     token: &CancellationToken,
-) -> Result<CachedSimulation, (u16, String)> {
+    limits: ExecutionLimits,
+    mut on_progress: F,
+) -> Result<CachedSimulation, (u16, String)>
+where
+    F: FnMut(usize, f64),
+{
     let (base_terrain, wgs84_bounds, terrain_provenance) = match &req.ascii_dem {
         Some(upload) => {
             if upload.projected_crs.to_ascii_uppercase().contains("4326") {
@@ -464,7 +803,7 @@ fn execute_blocking(
                 &upload.projected_crs,
                 &upload.vertical_datum,
                 "UploadedAsciiDem",
-                MAX_INTERACTIVE_CELLS,
+                limits.max_cells,
             )
             .map_err(|e| (422, e.to_string()))?;
             if grid.grid().dx_m < 0.1 {
@@ -1023,15 +1362,15 @@ fn execute_blocking(
         .map_err(|e| (422, e.to_string()))?;
     if warmup_s > 0.0 {
         engine
-            .advance_to(warmup_s, StepBudget::new(MAX_INTERACTIVE_STEPS))
+            .advance_to(warmup_s, StepBudget::new(limits.max_steps))
             .map_err(|e| (422, e.to_string()))?;
     }
     let target_frames = 48_usize.min(MAX_INTERACTIVE_FRAMES);
     let frame_interval_s = (req.duration_s / (target_frames.saturating_sub(1) as f64)).max(1.0);
     let (advance, mut series) = engine
-        .advance_with_frames(
+        .advance_with_frames_and_progress(
             warmup_s + req.duration_s,
-            StepBudget::new(MAX_INTERACTIVE_STEPS),
+            StepBudget::new(limits.max_steps),
             token,
             FrameCaptureConfig {
                 frame_interval_s,
@@ -1039,6 +1378,9 @@ fn execute_blocking(
                 threshold_m: req.threshold_m,
                 wgs84_bounds,
                 terrain_provenance: terrain_provenance.clone(),
+            },
+            |steps, end_s| {
+                on_progress(steps, (end_s - warmup_s).max(0.0));
             },
         )
         .map_err(|e| (422, e.to_string()))?;

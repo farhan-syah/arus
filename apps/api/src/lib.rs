@@ -24,8 +24,9 @@ use axum::{Json, Router};
 use serde::{Deserialize, Serialize};
 
 use crate::sim::{
-    CompareSimulationsResponse, CreateSimulationRequest, InteractiveStore, MAX_BODY_BYTES,
-    RunGridResponse, SimulationSummaryResponse, export_envelope_csv, export_max_depth_ascii,
+    CompareSimulationsResponse, CreateSimulationRequest, InteractiveStore, JobStore,
+    MAX_BODY_BYTES, RunGridResponse, SimulationJobRecord, SimulationSummaryResponse,
+    export_envelope_csv, export_max_depth_ascii,
 };
 
 /// Shared state backing the ARUS API router.
@@ -34,6 +35,7 @@ pub struct ApiState {
     archive: Arc<Archive>,
     catalog_path: Option<PathBuf>,
     interactive: Arc<InteractiveStore>,
+    jobs: Arc<JobStore>,
 }
 
 impl ApiState {
@@ -43,6 +45,7 @@ impl ApiState {
             archive: Arc::new(Archive::open(archive_root)?),
             catalog_path: None,
             interactive: Arc::new(InteractiveStore::default()),
+            jobs: Arc::new(JobStore::default()),
         })
     }
 
@@ -103,6 +106,9 @@ pub fn router(state: ApiState) -> Router {
         )
         .route("/api/v1/simulations", post(post_simulation))
         .route("/api/v1/compare", post(post_compare))
+        .route("/api/v1/jobs", get(list_jobs).post(post_job))
+        .route("/api/v1/jobs/{job_id}", get(get_job))
+        .route("/api/v1/jobs/{job_id}/cancel", post(cancel_job))
         .route(
             "/api/v1/export/mp4",
             post(post_export_mp4).layer(DefaultBodyLimit::max(64 * 1024 * 1024)),
@@ -510,6 +516,48 @@ async fn render_run_html(
     Ok(Html(render_run_page_html(&run_id, &outlooks, locale)))
 }
 
+async fn post_job(
+    State(state): State<ApiState>,
+    Json(request): Json<CreateSimulationRequest>,
+) -> Result<(StatusCode, Json<SimulationJobRecord>), (StatusCode, Json<ErrorResponse>)> {
+    let record = state
+        .jobs
+        .submit(Arc::clone(&state.interactive), request)
+        .map_err(|(code, error)| {
+            (
+                StatusCode::from_u16(code).unwrap_or(StatusCode::BAD_REQUEST),
+                Json(ErrorResponse { error }),
+            )
+        })?;
+    Ok((StatusCode::ACCEPTED, Json(record)))
+}
+
+async fn list_jobs(State(state): State<ApiState>) -> Json<Vec<SimulationJobRecord>> {
+    Json(state.jobs.list())
+}
+
+async fn get_job(
+    State(state): State<ApiState>,
+    Path(job_id): Path<String>,
+) -> Result<Json<SimulationJobRecord>, (StatusCode, Json<ErrorResponse>)> {
+    state
+        .jobs
+        .get(&job_id)
+        .map(Json)
+        .ok_or_else(|| not_found(format!("job {job_id} not found")))
+}
+
+async fn cancel_job(
+    State(state): State<ApiState>,
+    Path(job_id): Path<String>,
+) -> Result<Json<SimulationJobRecord>, (StatusCode, Json<ErrorResponse>)> {
+    state
+        .jobs
+        .cancel(&job_id)
+        .map(Json)
+        .ok_or_else(|| not_found(format!("job {job_id} not found")))
+}
+
 fn not_found(message: String) -> (StatusCode, Json<ErrorResponse>) {
     (
         StatusCode::NOT_FOUND,
@@ -539,4 +587,51 @@ pub struct ApiArgs {
     /// Socket address to bind.
     #[arg(long, default_value = "127.0.0.1:8080")]
     pub bind: String,
+}
+
+#[cfg(test)]
+mod job_queue_tests {
+    use super::*;
+    use crate::sim::JobStatus;
+
+    #[tokio::test]
+    async fn async_job_completes_and_populates_run_cache() -> Result<(), String> {
+        let dir = tempfile::tempdir().map_err(|e| e.to_string())?;
+        let state = ApiState::open(dir.path()).map_err(|e| e.to_string())?;
+
+        let req: CreateSimulationRequest = serde_json::from_str(
+            r#"{"cols":8,"rows":8,"dx_m":50.0,"rainfall_mm_per_hr":80.0,"duration_s":30.0}"#,
+        )
+        .map_err(|e| e.to_string())?;
+
+        let submitted = state
+            .jobs
+            .submit(Arc::clone(&state.interactive), req)
+            .map_err(|(_, m)| m)?;
+        assert_eq!(submitted.status, JobStatus::Queued);
+
+        let mut final_rec = submitted.clone();
+        for _ in 0..100 {
+            if let Some(rec) = state.jobs.get(&submitted.job_id) {
+                final_rec = rec;
+                if matches!(
+                    final_rec.status,
+                    JobStatus::Completed | JobStatus::Failed | JobStatus::Cancelled
+                ) {
+                    break;
+                }
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
+
+        assert_eq!(final_rec.status, JobStatus::Completed);
+        assert!((final_rec.progress_pct - 100.0).abs() < 1e-3);
+        let summary = final_rec
+            .summary
+            .as_ref()
+            .ok_or_else(|| "missing summary on completed job".to_owned())?;
+        assert!(summary.budget_assessment.passed);
+        assert!(state.interactive.get(&final_rec.run_id).is_some());
+        Ok(())
+    }
 }

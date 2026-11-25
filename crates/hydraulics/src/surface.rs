@@ -261,6 +261,14 @@ impl SurfaceEngine {
         self.solver.domain()
     }
 
+    /// Returns the current water depth (`m`) for every grid cell in row-major order.
+    pub fn current_depths_m(&self) -> Result<Vec<f64>> {
+        self.solver
+            .state()
+            .map(|flow| flow.cells().iter().map(|cell| cell.h).collect())
+            .map_err(|error| ModelError::Engine(error.to_string()))
+    }
+
     pub(crate) fn current_cells(&self) -> Result<Vec<hydr::model::CellState>> {
         self.solver
             .state()

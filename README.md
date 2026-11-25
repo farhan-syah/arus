@@ -13,6 +13,8 @@ ARUS is a Rust 3D flood simulation and forecasting platform for hydrologists, dr
 - **3D Web Studio (`arus-api`)**: Renders Terrarium 30m DEMs, `Topo | Satellite | Dark` basemaps, emerald river channels, and OSM polygon-masked boundaries. Includes a `6 cm` runoff cutoff, DEFRA FD2320 hazard (`HR = h × (v + 0.5)`), `A → B` profiles, and Baseline vs Intervention `Δh` diffs.
 - **Broadcast Overlays**: Displays an aligned `288px` left stack with live per-frame hotspot water levels and hourly tide status. Shows an `Area Flood Index` (`Avg Depth`, `Peak Depth`, `Flooded Area`, `Stagnant km²`).
 - **Pure-Rust Video Export (`vidr 0.1.1`)**: Records JSON storyboards to H.264 faststart `.mp4` via `arus-worker record` over Chromium CDP (zero Python). Transcodes browser captures via `POST /api/v1/export/mp4`.
+- **High-Resolution Async Jobs (`/api/v1/jobs`)**: Queues background basin runs up to `262,144` cells (`512×512`) and `12h` duration with live step progress and cooperative cancellation.
+- **Automated Hindcast Calibration (`arus-worker calibrate`)**: Tunes Manning `n` and Green-Ampt conductivity against observed gauge hydrographs (`KGE`, `NSE`, `RMSE`, peak timing) and flood masks (`CSI`, `F1`), rejecting `LockedTest` leakage.
 - **Scientific Provenance**: Displays terrain source (`Terrarium 30m`, uploaded `.asc`, or synthetic) and live mass-conservation residual (`PASS / FAIL`). Reports model-agreement spread and explicit `nodata` bounds.
 
 ## Screenshots

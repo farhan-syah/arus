@@ -8,9 +8,9 @@ ARUS separates browser contracts, forecast orchestration, numerical execution, a
 - **Contracts (`arus-domain`, `arus-api-types`, `arus-model-api`, `arus-jobs`)**: Defines backend-agnostic provenance, transport, capability, water-budget, cancellation, and checkpoint contracts.
 - **Hydraulics (`arus-hydraulics`)**: Wraps `hydr 0.2.0` `F64` and `F32` MUSCL surface solvers, Modified Green-Ampt soil, coupled 1D–2D channels, and coastal forcing. Supports Preissmann-slot pipes, detention pools, HDS-5 culverts, 25-component capabilities, and exact binary checkpoints.
 - **Hydrology (`arus-hydrology`)**: Wraps `hydr::runoff::SubcatchmentBatch` and translates hourly NWP series into antecedent soil states and peak runoff windows.
-- **Forecasting & Evaluation (`arus-forecasting`, `arus-evaluation`, `arus-geo`)**: Runs episode tracking, censored scoring, and Priority-Flood DEM conditioning.
+- **Forecasting & Evaluation (`arus-forecasting`, `arus-evaluation`, `arus-geo`)**: Runs episode tracking, censored scoring, NSE/KGE hydrograph skill, spatial CSI/F1 extent scoring, and DEM conditioning.
 - **Scenarios & Storage (`arus-scenarios`, `arus-optimisation`, `arus-ml`, `arus-storage`)**: Runs paired diffs, Pareto screening, ML baseline gating, and `nodedb-lite` archive persistence.
-- **Worker & Studio (`arus-worker`, `arus-api`, `arus-web`)**: Connects the 4-stage forecast pipeline and interactive 3D Studio. Exports pure-Rust `vidr 0.1.1` H.264 `.mp4` via `arus-worker record` and `POST /api/v1/export/mp4`.
+- **Worker & Studio (`arus-worker`, `arus-api`, `arus-web`)**: Connects the 4-stage pipeline, `arus-worker calibrate`, async `262,144`-cell basin jobs (`/api/v1/jobs`), and interactive 3D Studio. Exports pure-Rust `vidr 0.1.1` H.264 `.mp4` via `arus-worker record` and `POST /api/v1/export/mp4`.
 - **Operational Status**: No calibrated operational forecasts exist yet. Scientific qualification requires surveyed bare-earth LiDAR, drainage geometry, and locked-event evaluation.
 
 ## Boundaries

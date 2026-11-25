@@ -127,6 +127,22 @@ impl SurfaceEngine {
         token: &CancellationToken,
         config: FrameCaptureConfig,
     ) -> Result<(AdvanceSummary, FrameSeries)> {
+        self.advance_with_frames_and_progress(target_s, budget, token, config, |_, _| {})
+    }
+
+    /// Advances `target_s` while recording exact peak envelopes, sampled frames, and invoking
+    /// `on_progress(steps_taken, accepted_time_s)` at each accepted solver step.
+    pub fn advance_with_frames_and_progress<F>(
+        &mut self,
+        target_s: f64,
+        budget: StepBudget,
+        token: &CancellationToken,
+        config: FrameCaptureConfig,
+        mut on_progress: F,
+    ) -> Result<(AdvanceSummary, FrameSeries)>
+    where
+        F: FnMut(usize, f64),
+    {
         if !config.frame_interval_s.is_finite() || config.frame_interval_s <= 0.0 {
             return Err(ModelError::InvalidInput(format!(
                 "frame_interval_s={} must be finite positive",
@@ -183,8 +199,11 @@ impl SurfaceEngine {
 
         let mut next_capture_s = initial_time + config.frame_interval_s;
         let mut last_cells: Option<(f64, Vec<CellState>)> = None;
+        let mut step_count = 0_usize;
 
         let summary = self.advance_raw_steps(target_s, budget, token, |end_s, cells| {
+            step_count += 1;
+            on_progress(step_count, end_s);
             update_envelope(
                 cells,
                 &active_mask,

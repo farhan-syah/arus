@@ -4,18 +4,35 @@ on:
   push:
   pull_request:
 
+concurrency:
+  group: check-${{ github.ref }}
+  cancel-in-progress: true
+
 permissions:
   contents: read
 
 jobs:
-  scaffold:
+  check:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 25
     env:
       CARGO_TERM_COLOR: always
     steps:
       - uses: actions/checkout@v4
-      - name: Load the pinned toolchain
+      - name: Load pinned Rust toolchain
         run: rustup show
-      - name: Check the scaffold
-        run: sh scripts/check.sh --online
+      - uses: Swatinem/rust-cache@v2
+      - name: Install cargo-nextest
+        uses: taiki-e/install-action@v2
+        with:
+          tool: nextest
+      - name: Check repository boundaries
+        run: python3 scripts/check_repository.py
+      - name: Check formatting
+        run: cargo fmt --all -- --check
+      - name: Run Clippy
+        run: cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
+      - name: Run unit and integration tests
+        run: cargo nextest run --workspace --all-features --locked
+      - name: Run doctests
+        run: cargo test --doc --workspace --all-features --locked
