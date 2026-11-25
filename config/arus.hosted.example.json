@@ -1,6 +1,8 @@
 {
   "schema_version": 1,
   "mode": "hosted",
+  "default_ui_profile": "public",
+  "execution_mode": "hybrid",
   "instance_title": "ARUS Public Flood Outlook",
   "default_view": {
     "lat": 5.4853,

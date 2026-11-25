@@ -15,6 +15,23 @@ pub enum RuntimeMode {
     Hosted,
 }
 
+/// Default Studio UI profile exposed to visitors before browser-local overrides.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum UiProfile {
+    Public,
+    Researcher,
+}
+
+/// Interactive simulation compute mode (`hybrid` allows browser WASM offload with server fallback).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "kebab-case")]
+pub enum ExecutionMode {
+    #[default]
+    Hybrid,
+    ServerOnly,
+}
+
 /// Feature toggles enforced server-side by `arus-api` and mirrored in Studio UI.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -142,6 +159,10 @@ pub struct ServerConfig {
     pub schema_version: u32,
     #[serde(default)]
     pub mode: RuntimeMode,
+    #[serde(default)]
+    pub default_ui_profile: Option<UiProfile>,
+    #[serde(default)]
+    pub execution_mode: ExecutionMode,
     #[serde(default = "default_instance_title")]
     pub instance_title: String,
     #[serde(default)]
@@ -166,6 +187,8 @@ impl Default for ServerConfig {
         Self {
             schema_version: 1,
             mode: RuntimeMode::Local,
+            default_ui_profile: None,
+            execution_mode: ExecutionMode::Hybrid,
             instance_title: default_instance_title(),
             default_view: DefaultViewConfig::default(),
             features: FeatureFlags::default(),
@@ -176,6 +199,18 @@ impl Default for ServerConfig {
 }
 
 impl ServerConfig {
+    /// Resolves the effective UI profile (`Hosted -> Public`, `Local -> Researcher`) when omitted.
+    #[must_use]
+    pub const fn effective_ui_profile(&self) -> UiProfile {
+        match self.default_ui_profile {
+            Some(profile) => profile,
+            None => match self.mode {
+                RuntimeMode::Hosted => UiProfile::Public,
+                RuntimeMode::Local => UiProfile::Researcher,
+            },
+        }
+    }
+
     /// Preset for public-facing hosted deployments with expensive endpoints gated.
     pub fn hosted_default() -> Self {
         Self {

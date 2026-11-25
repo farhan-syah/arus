@@ -14,6 +14,7 @@ members = [
     "crates/hydrology",
     "crates/ingest",
     "crates/jobs",
+    "crates/media",
     "crates/ml",
     "crates/model-api",
     "crates/optimisation",
@@ -39,6 +40,7 @@ arus-hydraulics = { path = "crates/hydraulics" }
 arus-hydrology = { path = "crates/hydrology" }
 arus-ingest = { path = "crates/ingest" }
 arus-jobs = { path = "crates/jobs" }
+arus-media = { path = "crates/media" }
 arus-ml = { path = "crates/ml" }
 arus-model-api = { path = "crates/model-api" }
 arus-optimisation = { path = "crates/optimisation" }

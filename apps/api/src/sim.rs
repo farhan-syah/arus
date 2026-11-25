@@ -19,6 +19,7 @@ use arus_hydraulics::{
 use arus_jobs::{CancellationToken, StepBudget};
 use arus_model_api::WaterBudget;
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use tokio::sync::Semaphore;
 
 /// Maximum request payload size accepted by interactive simulation endpoints (4 MiB).
@@ -400,6 +401,20 @@ pub enum PrecisionChoice {
     F32,
 }
 
+/// Coastal tide-lock forcing mode for interactive and stress-test simulations.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "kebab-case")]
+pub enum TideMode {
+    #[default]
+    Live,
+    SpringHigh,
+    Off,
+}
+
+const fn default_true() -> bool {
+    true
+}
+
 /// Relative elevation edit applied to one grid cell (positive = raised bund, negative = detention pond).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct InterventionCellDelta {
@@ -517,6 +532,18 @@ pub struct CreateSimulationRequest {
     /// Optional uniform 10 m coastal wind forcing y-component (`m/s`, `hydr 0.2.0`).
     #[serde(default)]
     pub wind_y_m_per_s: f64,
+    /// When `true`, forces a completely dry initial basin (`0.0 m`) ignoring antecedent rain and gauges.
+    #[serde(default)]
+    pub start_dry: bool,
+    /// Enables FAO-56 Penman-Monteith / diurnal evaporation losses (`false` = worst-case no evaporation).
+    #[serde(default = "default_true")]
+    pub enable_evaporation: bool,
+    /// Enables subsurface / storm-drainage loss rate (`false` = blocked/surcharged drainage).
+    #[serde(default = "default_true")]
+    pub enable_drainage: bool,
+    /// Coastal tide-lock mode (`live` uses `hourly_tide_m`, `spring-high` applies `+2.2 m`, `off` disables).
+    #[serde(default)]
+    pub tide_mode: TideMode,
 }
 
 const fn default_lon() -> f64 {
@@ -612,6 +639,8 @@ pub struct InteractiveStore {
 struct LruRuns {
     order: VecDeque<String>,
     entries: BTreeMap<String, Arc<CachedSimulation>>,
+    hash_to_run_id: BTreeMap<[u8; 32], String>,
+    run_id_to_hash: BTreeMap<String, [u8; 32]>,
 }
 
 impl Default for InteractiveStore {
@@ -643,17 +672,42 @@ impl InteractiveStore {
 
     /// Inserts a run into the bounded LRU cache, evicting the oldest entry if full.
     pub fn insert(&self, run_id: String, sim: CachedSimulation) {
+        self.insert_with_hash(run_id, sim, None);
+    }
+
+    fn insert_with_hash(
+        &self,
+        run_id: String,
+        sim: CachedSimulation,
+        content_hash: Option<[u8; 32]>,
+    ) {
         if let Ok(mut guard) = self.cache.write() {
             if guard.entries.contains_key(&run_id) {
                 guard.order.retain(|id| id != &run_id);
+                if let Some(old_hash) = guard.run_id_to_hash.remove(&run_id) {
+                    guard.hash_to_run_id.remove(&old_hash);
+                }
             } else if guard.order.len() >= MAX_CACHED_RUNS
                 && let Some(oldest) = guard.order.pop_front()
             {
                 guard.entries.remove(&oldest);
+                if let Some(old_hash) = guard.run_id_to_hash.remove(&oldest) {
+                    guard.hash_to_run_id.remove(&old_hash);
+                }
             }
             guard.order.push_back(run_id.clone());
-            guard.entries.insert(run_id, Arc::new(sim));
+            guard.entries.insert(run_id.clone(), Arc::new(sim));
+            if let Some(hash) = content_hash {
+                guard.hash_to_run_id.insert(hash, run_id.clone());
+                guard.run_id_to_hash.insert(run_id, hash);
+            }
         }
+    }
+
+    fn get_by_hash(&self, hash: &[u8; 32]) -> Option<Arc<CachedSimulation>> {
+        let guard = self.cache.read().ok()?;
+        let run_id = guard.hash_to_run_id.get(hash)?;
+        guard.entries.get(run_id).cloned()
     }
 
     fn allocate_run_id(&self) -> String {
@@ -669,6 +723,15 @@ impl InteractiveStore {
     ) -> Result<Arc<CachedSimulation>, (u16, String)> {
         let limits = ExecutionLimits::interactive();
         validate_request(&request, limits)?;
+        let content_hash = if fixed_id.is_none() && request.ascii_dem.is_none() {
+            let h = compute_request_hash(&request);
+            if let Some(cached) = self.get_by_hash(&h) {
+                return Ok(cached);
+            }
+            Some(h)
+        } else {
+            None
+        };
         let permit = self
             .semaphore
             .clone()
@@ -700,7 +763,7 @@ impl InteractiveStore {
             }
         };
 
-        self.insert(run_id.clone(), sim);
+        self.insert_with_hash(run_id.clone(), sim, content_hash);
         self.get(&run_id)
             .ok_or_else(|| (500, "failed to read newly cached simulation".to_owned()))
     }
@@ -777,7 +840,259 @@ fn validate_request(
             return Err((422, "dx_m must be finite in [1, 2500] metres".to_owned()));
         }
     }
+    if !req.drainage_mm_per_hr.is_finite() || req.drainage_mm_per_hr < 0.0 {
+        return Err((
+            422,
+            "drainage_mm_per_hr must be finite nonnegative".to_owned(),
+        ));
+    }
+    if !req.evaporation_mm_per_day.is_finite() || req.evaporation_mm_per_day < 0.0 {
+        return Err((
+            422,
+            "evaporation_mm_per_day must be finite nonnegative".to_owned(),
+        ));
+    }
+    if !req.wind_x_m_per_s.is_finite() || !req.wind_y_m_per_s.is_finite() {
+        return Err((422, "wind components must be finite".to_owned()));
+    }
+    if let LandChoice::ModifiedGreenAmpt {
+        suction_m,
+        conductivity_m_per_s,
+        maximum_deficit,
+    } = req.land
+        && (!suction_m.is_finite()
+            || suction_m <= 0.0
+            || !conductivity_m_per_s.is_finite()
+            || conductivity_m_per_s <= 0.0
+            || !maximum_deficit.is_finite()
+            || maximum_deficit <= 0.0)
+    {
+        return Err((
+            422,
+            "ModifiedGreenAmpt parameters must be finite positive".to_owned(),
+        ));
+    }
+    if let BoundaryChoice::OpenStage { elevation_m } = req.boundary
+        && !elevation_m.is_finite()
+    {
+        return Err((422, "OpenStage elevation_m must be finite".to_owned()));
+    }
+    if req.interventions.iter().any(|iv| !iv.delta_m.is_finite()) {
+        return Err((422, "interventions[*].delta_m must be finite".to_owned()));
+    }
+    if let Some(elevs) = &req.terrain_elevations_m
+        && elevs.iter().flatten().any(|z| !z.is_finite())
+    {
+        return Err((
+            422,
+            "terrain_elevations_m entries must be finite".to_owned(),
+        ));
+    }
+    if req
+        .hourly_rain_mm
+        .iter()
+        .any(|v| !v.is_finite() || *v < 0.0)
+    {
+        return Err((
+            422,
+            "hourly_rain_mm values must be finite nonnegative".to_owned(),
+        ));
+    }
+    if req.hourly_tide_m.iter().any(|v| !v.is_finite()) {
+        return Err((422, "hourly_tide_m values must be finite".to_owned()));
+    }
+    if req.observed_gauges.iter().any(|g| {
+        !g.lat.is_finite() || !g.lon.is_finite() || !g.depth_m.is_finite() || g.depth_m < 0.0
+    }) {
+        return Err((
+            422,
+            "observed_gauges fields must be finite with nonnegative depth".to_owned(),
+        ));
+    }
+    if let Some(sg) = &req.spatial_rain_grid
+        && (sg
+            .hourly_mm
+            .iter()
+            .flatten()
+            .any(|v| !v.is_finite() || *v < 0.0)
+            || sg
+                .et0_mm
+                .iter()
+                .flatten()
+                .any(|v| !v.is_finite() || *v < 0.0)
+            || sg
+                .soil_moisture_init
+                .iter()
+                .any(|v| !v.is_finite() || *v < 0.0))
+    {
+        return Err((
+            422,
+            "spatial_rain_grid values must be finite nonnegative".to_owned(),
+        ));
+    }
+    let n_hours = req
+        .spatial_rain_grid
+        .as_ref()
+        .filter(|g| {
+            g.nx >= 2 && g.ny >= 2 && g.hourly_mm.len() == g.nx * g.ny && !g.hourly_mm[0].is_empty()
+        })
+        .map_or(req.hourly_rain_mm.len(), |g| g.hourly_mm[0].len());
+    if n_hours > 0 {
+        let compression = (n_hours as f64) * 3600.0 / req.duration_s;
+        if compression > 240.0 + 1e-6 {
+            return Err((
+                422,
+                format!(
+                    "time compression {compression:.1}x exceeds 240x limit for {n_hours}h over {}s; increase duration_s or reduce hours",
+                    req.duration_s
+                ),
+            ));
+        }
+    }
     Ok(())
+}
+
+fn hash_f64(h: &mut Sha256, v: f64) {
+    let norm = if v == 0.0 { 0.0_f64 } else { v };
+    h.update(norm.to_le_bytes());
+}
+
+fn hash_usize(h: &mut Sha256, v: usize) {
+    h.update((v as u64).to_le_bytes());
+}
+
+fn hash_str(h: &mut Sha256, s: &str) {
+    hash_usize(h, s.len());
+    h.update(s.as_bytes());
+}
+
+fn compute_request_hash(req: &CreateSimulationRequest) -> [u8; 32] {
+    let mut h = Sha256::new();
+    h.update(b"arus-sim-req-v2");
+    hash_f64(&mut h, req.center_lon);
+    hash_f64(&mut h, req.center_lat);
+    hash_usize(&mut h, req.cols);
+    hash_usize(&mut h, req.rows);
+    hash_f64(&mut h, req.dx_m);
+    hash_f64(&mut h, req.rainfall_mm_per_hr);
+    h.update([match req.hyetograph {
+        HyetographPreset::Uniform => 0u8,
+        HyetographPreset::PeakStorm => 1u8,
+    }]);
+    hash_f64(&mut h, req.duration_s);
+    hash_f64(&mut h, req.manning_n);
+    match req.land {
+        LandChoice::Impervious => h.update([0u8]),
+        LandChoice::ModifiedGreenAmpt {
+            suction_m,
+            conductivity_m_per_s,
+            maximum_deficit,
+        } => {
+            h.update([1u8]);
+            hash_f64(&mut h, suction_m);
+            hash_f64(&mut h, conductivity_m_per_s);
+            hash_f64(&mut h, maximum_deficit);
+        }
+    }
+    match req.boundary {
+        BoundaryChoice::Closed => h.update([0u8]),
+        BoundaryChoice::Transmissive => h.update([1u8]),
+        BoundaryChoice::OpenStage { elevation_m } => {
+            h.update([2u8]);
+            hash_f64(&mut h, elevation_m);
+        }
+    }
+    hash_f64(&mut h, req.threshold_m);
+    h.update([match req.precision {
+        PrecisionChoice::F64 => 0u8,
+        PrecisionChoice::F32 => 1u8,
+    }]);
+    hash_usize(&mut h, req.interventions.len());
+    for iv in &req.interventions {
+        hash_usize(&mut h, iv.col);
+        hash_usize(&mut h, iv.row);
+        hash_f64(&mut h, iv.delta_m);
+    }
+    match &req.terrain_elevations_m {
+        None => h.update([0u8]),
+        Some(elevs) => {
+            h.update([1u8]);
+            hash_usize(&mut h, elevs.len());
+            for z in elevs {
+                match z {
+                    None => h.update([0u8]),
+                    Some(v) => {
+                        h.update([1u8]);
+                        hash_f64(&mut h, *v);
+                    }
+                }
+            }
+        }
+    }
+    match &req.terrain_provenance {
+        None => h.update([0u8]),
+        Some(p) => {
+            h.update([1u8]);
+            hash_str(&mut h, p);
+        }
+    }
+    hash_f64(&mut h, req.antecedent_rain_mm);
+    hash_usize(&mut h, req.hourly_rain_mm.len());
+    for &v in &req.hourly_rain_mm {
+        hash_f64(&mut h, v);
+    }
+    match &req.spatial_rain_grid {
+        None => h.update([0u8]),
+        Some(sg) => {
+            h.update([1u8]);
+            hash_usize(&mut h, sg.nx);
+            hash_usize(&mut h, sg.ny);
+            hash_usize(&mut h, sg.hourly_mm.len());
+            for row in &sg.hourly_mm {
+                hash_usize(&mut h, row.len());
+                for &v in row {
+                    hash_f64(&mut h, v);
+                }
+            }
+            hash_usize(&mut h, sg.et0_mm.len());
+            for row in &sg.et0_mm {
+                hash_usize(&mut h, row.len());
+                for &v in row {
+                    hash_f64(&mut h, v);
+                }
+            }
+            hash_usize(&mut h, sg.soil_moisture_init.len());
+            for &v in &sg.soil_moisture_init {
+                hash_f64(&mut h, v);
+            }
+        }
+    }
+    hash_usize(&mut h, req.hourly_tide_m.len());
+    for &v in &req.hourly_tide_m {
+        hash_f64(&mut h, v);
+    }
+    hash_f64(&mut h, req.drainage_mm_per_hr);
+    hash_f64(&mut h, req.evaporation_mm_per_day);
+    hash_usize(&mut h, req.observed_gauges.len());
+    for g in &req.observed_gauges {
+        hash_f64(&mut h, g.lat);
+        hash_f64(&mut h, g.lon);
+        hash_f64(&mut h, g.depth_m);
+        hash_usize(&mut h, g.radius_cells);
+    }
+    hash_f64(&mut h, req.wind_x_m_per_s);
+    hash_f64(&mut h, req.wind_y_m_per_s);
+    h.update([
+        u8::from(req.start_dry),
+        u8::from(req.enable_evaporation),
+        u8::from(req.enable_drainage),
+        match req.tide_mode {
+            TideMode::Live => 0u8,
+            TideMode::SpringHigh => 1u8,
+            TideMode::Off => 2u8,
+        },
+    ]);
+    h.finalize().into()
 }
 
 fn execute_blocking<F>(
@@ -987,7 +1302,8 @@ where
     };
 
     // Stage 1: Channel-only initial water depth (hills = 0.0 m; rivers/valleys + observed gauges wet)
-    let has_prestate = req.antecedent_rain_mm > 0.0 || !req.observed_gauges.is_empty();
+    let has_prestate =
+        !req.start_dry && (req.antecedent_rain_mm > 0.0 || !req.observed_gauges.is_empty());
     let per_cell_initial: Option<Vec<f64>> = if has_prestate {
         Some(build_channel_prestate(
             terrain.cells(),
@@ -1002,8 +1318,16 @@ where
     };
 
     let warmup_s = 0.0;
-    let base_drain_m_per_s = req.drainage_mm_per_hr.max(0.0) / 3_600_000.0;
-    let base_evap_mean_m_per_s = req.evaporation_mm_per_day.max(0.0) / 86_400_000.0;
+    let base_drain_m_per_s = if req.enable_drainage {
+        req.drainage_mm_per_hr.max(0.0) / 3_600_000.0
+    } else {
+        0.0
+    };
+    let base_evap_mean_m_per_s = if req.enable_evaporation {
+        req.evaporation_mm_per_day.max(0.0) / 86_400_000.0
+    } else {
+        0.0
+    };
 
     let mut forcing = Vec::new();
     let mut interval_losses: Vec<(f64, f64)> = Vec::new();
@@ -1015,10 +1339,10 @@ where
     let has_spatial = req.spatial_rain_grid.as_ref().is_some_and(|g| {
         g.nx >= 2 && g.ny >= 2 && g.hourly_mm.len() == g.nx * g.ny && !g.hourly_mm[0].is_empty()
     });
-    let has_spatial_et0 = req
-        .spatial_rain_grid
-        .as_ref()
-        .is_some_and(|g| has_spatial && g.et0_mm.len() == g.nx * g.ny && !g.et0_mm[0].is_empty());
+    let has_spatial_et0 = req.enable_evaporation
+        && req.spatial_rain_grid.as_ref().is_some_and(|g| {
+            has_spatial && g.et0_mm.len() == g.nx * g.ny && !g.et0_mm[0].is_empty()
+        });
     let has_spatial_sm = req
         .spatial_rain_grid
         .as_ref()
@@ -1158,15 +1482,22 @@ where
                 bin_pt_means.iter().sum::<f64>() / (bin_pt_means.len().max(1) as f64)
             };
 
-            let bin_tide_m = if !req.hourly_tide_m.is_empty() {
-                let t_end = h1.min(req.hourly_tide_m.len());
-                let t_start = h0.min(t_end);
-                req.hourly_tide_m[t_start..t_end]
-                    .iter()
-                    .copied()
-                    .fold(f64::NEG_INFINITY, f64::max)
-            } else {
-                0.0
+            let bin_tide_m = match req.tide_mode {
+                TideMode::Off => 0.0,
+                TideMode::SpringHigh => 2.2,
+                TideMode::Live => {
+                    if !req.hourly_tide_m.is_empty() {
+                        let t_end = h1.min(req.hourly_tide_m.len());
+                        let t_start = h0.min(t_end);
+                        req.hourly_tide_m[t_start..t_end]
+                            .iter()
+                            .copied()
+                            .fold(f64::NEG_INFINITY, f64::max)
+                            .max(0.0)
+                    } else {
+                        0.0
+                    }
+                }
             };
             let tide_lock = if bin_tide_m > 1.2 {
                 ((bin_tide_m - 1.2) / 1.0).clamp(0.0, 1.0)
@@ -1257,6 +1588,12 @@ where
             interval_loss_grids.push(loss_grid);
         }
     } else {
+        let spring_tide_drain_scale = if req.tide_mode == TideMode::SpringHigh {
+            0.25
+        } else {
+            1.0
+        };
+        let eff_drain = base_drain_m_per_s * spring_tide_drain_scale;
         match req.hyetograph {
             HyetographPreset::Uniform => {
                 forcing.push(RainIntervalSpec {
@@ -1265,7 +1602,7 @@ where
                     uniform_rain_m_per_s: rain_m_per_s,
                     boundaries: boundary_forcings,
                 });
-                interval_losses.push((base_evap_mean_m_per_s, base_drain_m_per_s));
+                interval_losses.push((base_evap_mean_m_per_s, eff_drain));
             }
             HyetographPreset::PeakStorm => {
                 let t1 = warmup_s + req.duration_s * 0.25;
@@ -1276,21 +1613,21 @@ where
                     uniform_rain_m_per_s: rain_m_per_s * 0.65,
                     boundaries: boundary_forcings.clone(),
                 });
-                interval_losses.push((base_evap_mean_m_per_s, base_drain_m_per_s));
+                interval_losses.push((base_evap_mean_m_per_s, eff_drain));
                 forcing.push(RainIntervalSpec {
                     start_s: t1,
                     end_s: t2,
                     uniform_rain_m_per_s: rain_m_per_s * 1.6,
                     boundaries: boundary_forcings.clone(),
                 });
-                interval_losses.push((base_evap_mean_m_per_s * 0.5, base_drain_m_per_s));
+                interval_losses.push((base_evap_mean_m_per_s * 0.5, eff_drain));
                 forcing.push(RainIntervalSpec {
                     start_s: t2,
                     end_s: warmup_s + req.duration_s,
                     uniform_rain_m_per_s: 0.0,
                     boundaries: boundary_forcings,
                 });
-                interval_losses.push((base_evap_mean_m_per_s * 1.8, base_drain_m_per_s));
+                interval_losses.push((base_evap_mean_m_per_s * 1.8, eff_drain));
             }
         }
     }
@@ -1308,7 +1645,7 @@ where
         },
     };
 
-    let initial_depth_m = if terrain_provenance == "BrowserTerrariumScreening" {
+    let initial_depth_m = if req.start_dry || terrain_provenance == "BrowserTerrariumScreening" {
         0.0
     } else {
         0.14
@@ -1323,7 +1660,7 @@ where
         open_faces,
         forcing,
         target_time_s: warmup_s + req.duration_s,
-        max_steps: MAX_INTERACTIVE_STEPS,
+        max_steps: limits.max_steps,
         probes: vec![ProbeSpec {
             id: "basin-center".to_owned(),
             x_m: (cols as f64) * req.dx_m * 0.5,

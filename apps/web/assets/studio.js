@@ -51,7 +51,97 @@ const state = {
   boundaryCellMask: null,
   outlookHotspots: [],
   particles: [],
+  profile: 'researcher', // public | researcher
+  serverConfig: null,
+  serverContext: null,
+  pickingStressSite: false,
+  stressSite: null,
+  displayPrefs: {
+    showFlood: true,
+    showRivers: true,
+    showBoundary: true,
+    showMarkers: true,
+    showParticles: true,
+    is3D: true,
+    showLabels: true,
+    basemap: 'topo',
+    layer: 'depth',
+    depthCutoffM: 0.06,
+    floodOpacity: 0.95,
+    riverOpacity: 0.72,
+    units: 'metric', // metric | imperial
+    clock: '12h',    // 12h | 24h
+    showMetrics: true,
+    showLegend: true,
+  },
+  simConfig: {
+    mode: 'forecast', // forecast | stress | physics
+    horizon: '5d',    // 5d | 15d | mjo
+    rainMult: 1.0,
+    stressMmDay: 150,
+    stressDays: 3,
+    stressPadM: 0,
+    rainfallMmHr: 280,
+    durationS: 360,
+    hyetograph: 'peak-storm',
+    soil: 'impervious',
+    boundary: 'transmissive',
+    manningN: 0.035,
+    windX: 0,
+    startDry: false,
+    enableEvap: true,
+    enableDrain: true,
+    tideMode: 'live', // live | spring-high | off
+    compute: 'auto',  // auto | server
+  },
 };
+
+function fmtDepth(m, decimals = 2) {
+  if (!Number.isFinite(m)) return '—';
+  if (state.displayPrefs.units === 'imperial') {
+    return `${(m * 3.28084).toFixed(decimals)} ft`;
+  }
+  return `${m.toFixed(decimals)} m`;
+}
+
+function fmtArea(km2, decimals = 1) {
+  if (!Number.isFinite(km2)) return '—';
+  if (state.displayPrefs.units === 'imperial') {
+    return `${(km2 * 0.386102).toFixed(decimals)} mi²`;
+  }
+  return `${km2.toFixed(decimals)} km²`;
+}
+
+function fmtSpeed(ms, decimals = 2) {
+  if (!Number.isFinite(ms)) return '—';
+  if (state.displayPrefs.units === 'imperial') {
+    return `${(ms * 3.28084).toFixed(decimals)} ft/s`;
+  }
+  return `${ms.toFixed(decimals)} m/s`;
+}
+
+function fmtRain(mmHr, decimals = 1) {
+  if (!Number.isFinite(mmHr)) return '—';
+  if (state.displayPrefs.units === 'imperial') {
+    return `${(mmHr / 25.4).toFixed(decimals)} in/hr`;
+  }
+  return `${mmHr.toFixed(decimals)} mm/hr`;
+}
+
+function fmtClockTime(epochMs, tzLabel) {
+  const d = new Date(epochMs);
+  const days = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+  const day = days[d.getUTCDay()];
+  const dd = d.getUTCDate();
+  const h24 = d.getUTCHours();
+  const mm = String(d.getUTCMinutes()).padStart(2, '0');
+  if (state.displayPrefs.clock === '24h') {
+    return `${day} ${dd} · ${String(h24).padStart(2, '0')}:${mm} ${tzLabel}`;
+  }
+  const ap = h24 >= 12 ? 'PM' : 'AM';
+  const h12 = h24 % 12 === 0 ? 12 : h24 % 12;
+  return `${day} ${dd} · ${h12}:${mm} ${ap} ${tzLabel}`;
+}
 
 // High-resolution offscreen water raster canvas pushed via MapLibre ImageSource
 const rasterCanvas = document.createElement('canvas');
@@ -569,13 +659,14 @@ function seedParticles() {
   }
 }
 
-// Hydrological blue depth ramp: dry/shallow (< 0.025m) is 100% transparent
+// Hydrological blue depth ramp: dry/shallow (< depthCutoffM) is 100% transparent
 function colorForDepth(h) {
-  if (h < 0.06) return null;
-  const fade = Math.min(1, (h - 0.06) / 0.04);
+  const cut = state.displayPrefs.depthCutoffM || 0.06;
+  if (h < cut) return null;
+  const fade = Math.min(1, (h - cut) / 0.04);
   const stops = [
-    [0.06,   56, 189, 248, 175], // #38bdf8 crisp sky (shallow flood)
-    [0.14,    2, 132, 199, 212], // #0284c7 river blue
+    [cut,   56, 189, 248, 175], // #38bdf8 crisp sky (shallow flood)
+    [Math.max(cut + 0.06, 0.14), 2, 132, 199, 212], // #0284c7 river blue
     [0.32,   29,  78, 216, 232], // #1d4ed8 cobalt
     [0.65,   30,  58, 138, 242], // #1e3a8a deep blue
     [1.10,   30,  27,  75, 248], // #1e1b4b deep indigo
@@ -765,14 +856,14 @@ function renderFloodCanvas(forceRaster) {
   const dLat = (maxLat - minLat) / rows;
   const frame = state.frames[Math.min(state.frameIdx, state.frames.length - 1)];
 
-  const rasterKey = `${state.runId}:${state.frameIdx}:${state.layer}:${state.envelopeMode}`;
+  const rasterKey = `${state.runId}:${state.frameIdx}:${state.layer}:${state.envelopeMode}:${state.displayPrefs.depthCutoffM}`;
   if (forceRaster || rasterKey !== lastRasterKey) {
     lastRasterKey = rasterKey;
     updateSmoothWaterImage(meta, env, frame);
   }
 
   const particleFeatures = [];
-  if (state.particlesOn && state.layer !== 'diff') {
+  if (state.particlesOn && state.displayPrefs.showParticles && state.displayPrefs.showFlood && state.layer !== 'diff') {
     for (const p of state.particles) {
       const c = Math.min(cols - 1, Math.max(0, Math.floor(p.x * cols)));
       const r = Math.min(rows - 1, Math.max(0, Math.floor(p.y * rows)));
@@ -874,10 +965,19 @@ function handleHover(lon, lat) {
   const z = meta.bed_m[hit.idx];
   const h = frame.depth[hit.idx];
   const sp = Math.hypot(frame.vx[hit.idx], frame.vy[hit.idx]);
-  el.textContent = `z ${z.toFixed(1)}m · h ${h.toFixed(2)}m · |v| ${sp.toFixed(2)}m/s`;
+  el.textContent = `z ${fmtDepth(z, 1)} · h ${fmtDepth(h, 2)} · |v| ${fmtSpeed(sp, 2)}`;
 }
 
 function handleMapClick(lon, lat) {
+  if (state.pickingStressSite) {
+    state.pickingStressSite = false;
+    state.stressSite = { lat, lon };
+    if ($('sim-stress-coord')) {
+      $('sim-stress-coord').textContent = `${lat.toFixed(4)}°, ${lon.toFixed(4)}°`;
+    }
+    if ($('sim-modal')) $('sim-modal').classList.remove('hidden');
+    return;
+  }
   if (state.tool === 'pick') {
     state.center = { lon, lat };
     state.uploadedDem = null;
@@ -1144,10 +1244,11 @@ async function fetchTerrariumElevations(centerLon, centerLat, cols, rows, dxM) {
 }
 
 async function buildRequestPayload() {
-  const landChoice = $('ctl-soil').value === 'green-ampt'
+  const sc = state.simConfig;
+  const landChoice = sc.soil === 'green-ampt'
     ? { kind: 'modified-green-ampt', suction_m: 0.11, conductivity_m_per_s: 0.000015, maximum_deficit: 0.35 }
     : { kind: 'impervious' };
-  const boundary = $('ctl-boundary').value === 'closed'
+  const boundary = sc.boundary === 'closed'
     ? { kind: 'closed' }
     : { kind: 'transmissive' };
   const cols = state.boundaryGrid ? state.boundaryGrid.cols : 32;
@@ -1156,16 +1257,40 @@ async function buildRequestPayload() {
   const sampled = state.uploadedDem
     ? null
     : await fetchTerrariumElevations(state.center.lon, state.center.lat, cols, rows, dxM);
+
+  const mult = Number.isFinite(sc.rainMult) && sc.rainMult > 0 ? sc.rainMult : 1.0;
+  let hourlyRain = (state.hourlyRainMm || []).map((v) => v * mult);
+  let spatialGrid = state.spatialRainGrid ? {
+    ...state.spatialRainGrid,
+    hourly_mm: (state.spatialRainGrid.hourly_mm || []).map((row) => row.map((v) => v * mult)),
+  } : null;
+  let durationS = sc.durationS;
+
+  if (sc.mode === 'stress') {
+    const days = Math.max(1, Math.min(5, Math.round(sc.stressDays || 3)));
+    const nHours = days * 24;
+    const mmHr = Math.max(0.5, (sc.stressMmDay || 150) / 24.0);
+    hourlyRain = Array.from({ length: nHours }, (_, h) => {
+      const phase = Math.sin((h / Math.max(1, nHours - 1)) * Math.PI);
+      return Number((mmHr * (0.4 + 1.2 * phase)).toFixed(2));
+    });
+    spatialGrid = null;
+    durationS = Math.min(3600, Math.max(360, Math.round((nHours * 3600) / 200)));
+  }
+
+  const evapDay = sc.enableEvap ? (state.evapMmDay > 0 ? state.evapMmDay : 4.5) : 0;
+  const drainHr = sc.enableDrain ? (state.drainageMmHr > 0 ? state.drainageMmHr : 3.0) : 0;
+
   return {
     center_lon: state.center.lon,
     center_lat: state.center.lat,
     cols,
     rows,
     dx_m: dxM,
-    rainfall_mm_per_hr: parseFloat($('ctl-rain').value),
-    hyetograph: $('ctl-hyeto').value,
-    duration_s: parseFloat($('ctl-dur').value),
-    manning_n: parseFloat($('ctl-manning').value),
+    rainfall_mm_per_hr: Math.min(1000, Math.max(0, sc.rainfallMmHr * mult)),
+    hyetograph: sc.hyetograph,
+    duration_s: durationS,
+    manning_n: sc.manningN,
     land: landChoice,
     boundary,
     threshold_m: 0.12,
@@ -1174,15 +1299,19 @@ async function buildRequestPayload() {
     ascii_dem: state.uploadedDem,
     terrain_elevations_m: sampled,
     terrain_provenance: sampled ? 'BrowserTerrariumScreening' : null,
-    antecedent_rain_mm: state.antecedentMm || 0,
-    hourly_rain_mm: state.hourlyRainMm || [],
-    spatial_rain_grid: state.spatialRainGrid || null,
-    hourly_tide_m: state.hourlyTideM || [],
-    drainage_mm_per_hr: state.drainageMmHr || 0,
-    evaporation_mm_per_day: state.evapMmDay || 0,
-    observed_gauges: state.observedGauges || [],
-    wind_x_m_per_s: parseFloat($('ctl-wind').value) || 0,
+    antecedent_rain_mm: sc.startDry ? 0 : (state.antecedentMm || 0),
+    hourly_rain_mm: hourlyRain,
+    spatial_rain_grid: spatialGrid,
+    hourly_tide_m: sc.tideMode === 'off' ? [] : (state.hourlyTideM || []),
+    drainage_mm_per_hr: drainHr,
+    evaporation_mm_per_day: evapDay,
+    observed_gauges: sc.startDry ? [] : (state.observedGauges || []),
+    wind_x_m_per_s: sc.windX || 0,
     wind_y_m_per_s: 0,
+    start_dry: Boolean(sc.startDry),
+    enable_evaporation: Boolean(sc.enableEvap),
+    enable_drainage: Boolean(sc.enableDrain),
+    tide_mode: sc.tideMode || 'live',
   };
 }
 
@@ -1349,6 +1478,9 @@ function fmtCalloutTime(epochMs, tzLabel) {
   const day = d.getUTCDate();
   const h24 = d.getUTCHours();
   const mi = d.getUTCMinutes();
+  if (state.displayPrefs.clock === '24h') {
+    return `${dow} ${day} · ${String(h24).padStart(2, '0')}:${String(mi).padStart(2, '0')} ${tzLabel}`;
+  }
   const ampm = h24 >= 12 ? 'PM' : 'AM';
   const h12 = h24 % 12 || 12;
   const minPart = mi === 0 ? '' : `:${String(mi).padStart(2, '0')}`;
@@ -1439,7 +1571,9 @@ function updateLiveMetrics() {
   const card = $('live-metrics');
   if (!card || !state.grid || !state.frames.length) return;
   const isPres = document.documentElement.dataset.presentation === 'true';
-  const show = isPres || !$('public-outlook').classList.contains('hidden');
+  const show = isPres
+    ? true
+    : (state.displayPrefs.showMetrics && (state.profile === 'public' || !$('public-outlook').classList.contains('hidden')));
   card.classList.toggle('hidden', !show);
   if (!show) return;
 
@@ -1448,6 +1582,7 @@ function updateLiveMetrics() {
   }
   const meta = state.grid.metadata;
   const mask = state.boundaryCellMask;
+  const cut = state.displayPrefs.depthCutoffM || 0.06;
   const idx = Math.min(state.frameIdx, state.frames.length - 1);
   const frame = state.frames[idx];
   const depth = frame.depth;
@@ -1463,7 +1598,7 @@ function updateLiveMetrics() {
     totalCells++;
     const h = depth[i];
     if (h > 0) sumDepth += h;
-    if (h >= 0.06) {
+    if (h >= cut) {
       floodedCells++;
       if (Math.hypot(vx[i], vy[i]) < 0.03) stagnantCells++;
     }
@@ -1500,7 +1635,7 @@ function updateLiveMetrics() {
       for (let i = 0; i < prevDepth.length; i++) {
         if (!mask[i]) continue;
         if (prevDepth[i] > 0) prevSum += prevDepth[i];
-        if (prevDepth[i] >= 0.06) prevFlooded++;
+        if (prevDepth[i] >= cut) prevFlooded++;
       }
       const prevAvg = totalCells > 0 ? prevSum / totalCells : 0;
       const prevPct = totalCells > 0 ? (prevFlooded / totalCells) * 100 : 0;
@@ -1519,11 +1654,11 @@ function updateLiveMetrics() {
     }
   }
   $('lm-marker').style.left = `${(score * 100).toFixed(1)}%`;
-  $('lm-avg').textContent = `${avgDepth.toFixed(2)} m`;
-  $('lm-peak').textContent = `${peakDepth.toFixed(2)} m`;
+  $('lm-avg').textContent = fmtDepth(avgDepth, 2);
+  $('lm-peak').textContent = fmtDepth(peakDepth, 2);
   $('lm-pct').textContent = `${floodedPct.toFixed(0)}%`;
   const stagEl = $('lm-stagnant');
-  if (stagEl) stagEl.textContent = `${stagnantKm2.toFixed(1)} km²`;
+  if (stagEl) stagEl.textContent = fmtArea(stagnantKm2, 1);
   updateLiveHotspots(idx);
 }
 
@@ -1679,13 +1814,14 @@ function setLayer(layer) {
   const bar = $('legend-bar');
   const ticks = $('legend-ticks');
   const note = $('legend-note');
+  const cut = state.displayPrefs.depthCutoffM || 0.06;
   if (layer === 'depth') {
     bar.style.background = 'linear-gradient(90deg, #38bdf8, #0284c7, #1d4ed8, #1e1b4b)';
-    ticks.innerHTML = '<span>0.06m</span><span>0.30m</span><span>1.1m+</span>';
-    note.textContent = 'Flood depth h (sheet runoff < 6 cm hidden).';
+    ticks.innerHTML = `<span>${fmtDepth(cut, 2)}</span><span>${fmtDepth(0.30, 2)}</span><span>${fmtDepth(1.10, 1)}+</span>`;
+    note.textContent = `Flood depth h (sheet runoff < ${Math.round(cut * 100)} cm hidden).`;
   } else if (layer === 'velocity') {
     bar.style.background = 'linear-gradient(90deg, #2dd4bf, #0284c7, #4f46e5)';
-    ticks.innerHTML = '<span>0.0 m/s</span><span>0.7 m/s</span><span>1.4+ m/s</span>';
+    ticks.innerHTML = `<span>${fmtSpeed(0.0, 1)}</span><span>${fmtSpeed(0.7, 1)}</span><span>${fmtSpeed(1.4, 1)}+</span>`;
     note.textContent = 'Depth-averaged velocity |v| with streamlines.';
   } else if (layer === 'hazard') {
     bar.style.background = 'linear-gradient(90deg, #38bdf8 0% 25%, #facc15 25% 50%, #f97316 50% 75%, #e11d48 75% 100%)';
@@ -1693,7 +1829,7 @@ function setLayer(layer) {
     note.textContent = 'DEFRA FD2320 hazard rating: h × (v + 0.5).';
   } else {
     bar.style.background = 'linear-gradient(90deg, #0d9488, #cbd5e1 50%, #e11d48)';
-    ticks.innerHTML = '<span>−0.14m Safer</span><span>0</span><span>+0.14m Worse</span>';
+    ticks.innerHTML = `<span>−${fmtDepth(0.14, 2)} Safer</span><span>0</span><span>+${fmtDepth(0.14, 2)} Worse</span>`;
     note.textContent = 'Max depth change: Intervention minus Baseline.';
   }
   renderFloodCanvas(true);
@@ -1851,21 +1987,62 @@ function wireUi() {
     } catch (_) { /* offline geocoding unavailable */ }
   });
 
-  document.querySelectorAll('[data-basemap]').forEach((el) => {
-    el.addEventListener('click', () => setBasemap(el.dataset.basemap));
+  document.querySelectorAll('[data-profile]').forEach((el) => {
+    el.addEventListener('click', () => setUiProfile(el.dataset.profile, true));
   });
   document.querySelectorAll('[data-tool]').forEach((el) => {
     el.addEventListener('click', () => setTool(el.dataset.tool));
   });
   document.querySelectorAll('[data-layer]').forEach((el) => {
-    el.addEventListener('click', () => setLayer(el.dataset.layer));
+    el.addEventListener('click', () => {
+      state.displayPrefs.layer = el.dataset.layer;
+      setLayer(el.dataset.layer);
+      saveUserPrefs({ displayPrefs: state.displayPrefs });
+    });
   });
 
-  $('btn-2d3d').addEventListener('click', () => {
-    state.is3D = !state.is3D;
-    $('btn-2d3d').textContent = state.is3D ? '3D' : '2D';
-    $('btn-2d3d').classList.toggle('active', state.is3D);
-    map.easeTo({ pitch: state.is3D ? 48 : 0, bearing: state.is3D ? -16 : 0, duration: 500 });
+  $('btn-open-layers').addEventListener('click', openLayersModal);
+  $('btn-layers-close').addEventListener('click', () => $('layers-modal').classList.add('hidden'));
+  $('btn-layers-cancel').addEventListener('click', () => $('layers-modal').classList.add('hidden'));
+  $('btn-layers-apply').addEventListener('click', applyLayersModalDraft);
+  $('btn-layers-reset').addEventListener('click', () => {
+    resetUserPrefs();
+    state.displayPrefs = {
+      showFlood: true, showRivers: true, showBoundary: true, showMarkers: true,
+      showParticles: true, is3D: true, showLabels: true, basemap: 'topo', layer: 'depth',
+      depthCutoffM: 0.06, floodOpacity: 0.95, riverOpacity: 0.72,
+      units: 'metric', clock: '12h', showMetrics: true, showLegend: true,
+    };
+    populateLayersModal();
+    applyDisplayPrefsToMap();
+    $('layers-modal').classList.add('hidden');
+  });
+  $('opt-flood-opacity').addEventListener('input', (e) => { $('val-flood-opacity').textContent = `${e.target.value}%`; });
+  $('opt-river-opacity').addEventListener('input', (e) => { $('val-river-opacity').textContent = `${e.target.value}%`; });
+
+  $('btn-open-sim').addEventListener('click', openSimModal);
+  $('btn-sim-close').addEventListener('click', () => $('sim-modal').classList.add('hidden'));
+  $('btn-sim-cancel').addEventListener('click', () => $('sim-modal').classList.add('hidden'));
+  $('btn-sim-apply').addEventListener('click', applySimModalDraftAndRun);
+  $('btn-sim-reset').addEventListener('click', () => {
+    state.simConfig = {
+      mode: 'forecast', horizon: '5d', rainMult: 1.0, stressMmDay: 150, stressDays: 3, stressPadM: 0,
+      rainfallMmHr: 280, durationS: 360, hyetograph: 'peak-storm', soil: 'impervious',
+      boundary: 'transmissive', manningN: 0.035, windX: 0, startDry: false,
+      enableEvap: true, enableDrain: true, tideMode: 'live', compute: 'auto',
+    };
+    populateSimModal();
+  });
+  document.querySelectorAll('[data-sim-tab]').forEach((el) => {
+    el.addEventListener('click', () => switchSimTab(el.dataset.simTab));
+  });
+  $('sim-stress-preset').addEventListener('change', (e) => {
+    if (e.target.value !== 'custom') $('sim-stress-mm-day').value = e.target.value;
+  });
+  $('btn-stress-pick').addEventListener('click', () => {
+    state.pickingStressSite = true;
+    $('sim-modal').classList.add('hidden');
+    $('telemetry').textContent = 'Click anywhere on the map to select your site…';
   });
 
   $('btn-env').addEventListener('click', () => {
@@ -1877,7 +2054,9 @@ function wireUi() {
 
   $('btn-particles').addEventListener('click', () => {
     state.particlesOn = !state.particlesOn;
+    state.displayPrefs.showParticles = state.particlesOn;
     $('btn-particles').classList.toggle('active', state.particlesOn);
+    saveUserPrefs({ displayPrefs: state.displayPrefs });
   });
 
   $('btn-play').addEventListener('click', () => {
@@ -1900,11 +2079,6 @@ function wireUi() {
     renderFloodCanvas(true);
   });
 
-  $('ctl-rain').addEventListener('input', (e) => { $('val-rain').textContent = `${e.target.value} mm/hr`; });
-  $('ctl-dur').addEventListener('input', (e) => { $('val-dur').textContent = `${e.target.value} s`; });
-  $('ctl-manning').addEventListener('input', (e) => { $('val-manning').textContent = Number(e.target.value).toFixed(3); });
-  $('ctl-wind').addEventListener('input', (e) => { $('val-wind').textContent = `${e.target.value} m/s`; });
-
   $('btn-iv-undo').addEventListener('click', () => { state.interventions.splice(-4, 4); updateInterventionBar(); renderFloodCanvas(false); });
   $('btn-iv-clear').addEventListener('click', () => { state.interventions = []; updateInterventionBar(); renderFloodCanvas(false); });
   $('btn-run').addEventListener('click', () => runSimulation(false));
@@ -1913,8 +2087,7 @@ function wireUi() {
   $('btn-nwp-apply').addEventListener('click', () => {
     if (state.nwpPeakMmHr !== null) {
       const clamped = Math.min(400, Math.max(40, Math.round(state.nwpPeakMmHr / 10) * 10));
-      $('ctl-rain').value = String(clamped);
-      $('val-rain').textContent = `${clamped} mm/hr`;
+      state.simConfig.rainfallMmHr = clamped;
       runSimulation(false);
     }
   });
@@ -2056,25 +2229,17 @@ window.arusDirector = {
     renderFloodCanvas(true);
   },
   setScenario: (opts = {}) => {
-    if (typeof opts.rainfall_mm_per_hr === 'number') {
-      $('ctl-rain').value = String(opts.rainfall_mm_per_hr);
-      $('val-rain').textContent = `${opts.rainfall_mm_per_hr} mm/hr`;
-    }
-    if (typeof opts.duration_s === 'number') {
-      $('ctl-dur').value = String(opts.duration_s);
-      $('val-dur').textContent = `${opts.duration_s} s`;
-    }
-    if (typeof opts.wind_x_m_per_s === 'number') {
-      $('ctl-wind').value = String(opts.wind_x_m_per_s);
-      $('val-wind').textContent = `${opts.wind_x_m_per_s} m/s`;
-    }
-    if (typeof opts.manning_n === 'number') {
-      $('ctl-manning').value = String(opts.manning_n);
-      $('val-manning').textContent = Number(opts.manning_n).toFixed(3);
-    }
-    if (opts.hyetograph) $('ctl-hyeto').value = opts.hyetograph;
-    if (opts.soil) $('ctl-soil').value = opts.soil;
-    if (opts.boundary) $('ctl-boundary').value = opts.boundary;
+    if (typeof opts.rainfall_mm_per_hr === 'number') state.simConfig.rainfallMmHr = opts.rainfall_mm_per_hr;
+    if (typeof opts.duration_s === 'number') state.simConfig.durationS = opts.duration_s;
+    if (typeof opts.wind_x_m_per_s === 'number') state.simConfig.windX = opts.wind_x_m_per_s;
+    if (typeof opts.manning_n === 'number') state.simConfig.manningN = opts.manning_n;
+    if (opts.hyetograph) state.simConfig.hyetograph = opts.hyetograph;
+    if (opts.soil) state.simConfig.soil = opts.soil;
+    if (opts.boundary) state.simConfig.boundary = opts.boundary;
+    if (typeof opts.start_dry === 'boolean') state.simConfig.startDry = opts.start_dry;
+    if (typeof opts.enable_evaporation === 'boolean') state.simConfig.enableEvap = opts.enable_evaporation;
+    if (typeof opts.enable_drainage === 'boolean') state.simConfig.enableDrain = opts.enable_drainage;
+    if (opts.tide_mode) state.simConfig.tideMode = opts.tide_mode;
     if (opts.start_iso) {
       const parsed = Date.parse(opts.start_iso.endsWith('Z') ? opts.start_iso : `${opts.start_iso}Z`);
       if (Number.isFinite(parsed)) state.startEpochMs = parsed;
@@ -2239,58 +2404,255 @@ function resetUserPrefs() {
   } catch (_) { /* ignore */ }
 }
 
+function setUiProfile(profile, persist = false) {
+  state.profile = profile === 'public' ? 'public' : 'researcher';
+  document.documentElement.dataset.profile = state.profile;
+  document.querySelectorAll('[data-profile]').forEach((el) => {
+    el.classList.toggle('active', el.dataset.profile === state.profile);
+  });
+  updateLiveMetrics();
+  if (persist) saveUserPrefs({ profile: state.profile });
+}
+
+function populateLayersModal() {
+  const p = state.displayPrefs;
+  $('opt-show-flood').checked = p.showFlood;
+  $('opt-show-rivers').checked = p.showRivers;
+  $('opt-show-boundary').checked = p.showBoundary;
+  $('opt-show-markers').checked = p.showMarkers;
+  $('opt-show-particles').checked = p.showParticles;
+  $('opt-is-3d').checked = p.is3D;
+  $('opt-show-labels').checked = p.showLabels;
+  $('opt-basemap').value = p.basemap;
+  $('opt-layer').value = p.layer;
+  $('opt-cutoff').value = String(p.depthCutoffM);
+  const fPct = Math.round((p.floodOpacity || 0.95) * 100);
+  $('opt-flood-opacity').value = String(fPct);
+  $('val-flood-opacity').textContent = `${fPct}%`;
+  const rPct = Math.round((p.riverOpacity || 0.72) * 100);
+  $('opt-river-opacity').value = String(rPct);
+  $('val-river-opacity').textContent = `${rPct}%`;
+  $('opt-units').value = p.units;
+  $('opt-clock').value = p.clock;
+  $('opt-show-metrics').checked = p.showMetrics;
+  $('opt-show-legend').checked = p.showLegend;
+}
+
+function openLayersModal() {
+  populateLayersModal();
+  $('layers-modal').classList.remove('hidden');
+}
+
+function applyDisplayPrefsToMap() {
+  const p = state.displayPrefs;
+  state.particlesOn = p.showParticles;
+  if ($('btn-particles')) $('btn-particles').classList.toggle('active', p.showParticles);
+  if (p.basemap !== state.basemap) setBasemap(p.basemap);
+  if (p.is3D !== state.is3D) {
+    state.is3D = p.is3D;
+    if (map) map.easeTo({ pitch: state.is3D ? 48 : 0, bearing: state.is3D ? -16 : 0, duration: 400 });
+  }
+  const layerPanel = document.querySelector('.layer-panel');
+  if (layerPanel && document.documentElement.dataset.presentation !== 'true') {
+    layerPanel.classList.toggle('hidden', !p.showLegend);
+  }
+  if (map && layersReady) {
+    const setVis = (id, on) => { if (map.getLayer(id)) map.setLayoutProperty(id, 'visibility', on ? 'visible' : 'none'); };
+    setVis('arus-water-layer', p.showFlood);
+    setVis('arus-particles-layer', p.showFlood && p.showParticles);
+    setVis('arus-rivers-line', p.showRivers);
+    setVis('arus-region-boundary-line', p.showBoundary);
+    setVis('arus-region-mask-fill', p.showBoundary);
+    setVis('arus-hotspots-circle', p.showMarkers);
+    setVis('arus-hotspots-tide', p.showMarkers);
+    if (map.getLayer('arus-water-layer')) map.setPaintProperty('arus-water-layer', 'raster-opacity', p.floodOpacity);
+    if (map.getLayer('arus-rivers-line')) map.setPaintProperty('arus-rivers-line', 'line-opacity', p.riverOpacity);
+    const style = map.getStyle();
+    if (style && Array.isArray(style.layers)) {
+      for (const lyr of style.layers) {
+        if (lyr.type === 'symbol' && !lyr.id.startsWith('arus-')) {
+          map.setLayoutProperty(lyr.id, 'visibility', p.showLabels ? 'visible' : 'none');
+        }
+      }
+    }
+  }
+  setLayer(p.layer);
+  updateLiveMetrics();
+  updateTimeReadout();
+}
+
+function applyLayersModalDraft() {
+  state.displayPrefs = {
+    showFlood: $('opt-show-flood').checked,
+    showRivers: $('opt-show-rivers').checked,
+    showBoundary: $('opt-show-boundary').checked,
+    showMarkers: $('opt-show-markers').checked,
+    showParticles: $('opt-show-particles').checked,
+    is3D: $('opt-is-3d').checked,
+    showLabels: $('opt-show-labels').checked,
+    basemap: $('opt-basemap').value,
+    layer: $('opt-layer').value,
+    depthCutoffM: parseFloat($('opt-cutoff').value) || 0.06,
+    floodOpacity: (parseInt($('opt-flood-opacity').value, 10) || 95) / 100,
+    riverOpacity: (parseInt($('opt-river-opacity').value, 10) || 72) / 100,
+    units: $('opt-units').value,
+    clock: $('opt-clock').value,
+    showMetrics: $('opt-show-metrics').checked,
+    showLegend: $('opt-show-legend').checked,
+  };
+  saveUserPrefs({ displayPrefs: state.displayPrefs });
+  applyDisplayPrefsToMap();
+  $('layers-modal').classList.add('hidden');
+}
+
+function switchSimTab(tab) {
+  state.simConfig.mode = tab;
+  document.querySelectorAll('[data-sim-tab]').forEach((el) => {
+    el.classList.toggle('active', el.dataset.simTab === tab);
+  });
+  ['forecast', 'stress', 'physics'].forEach((t) => {
+    const pane = $(`sim-tab-${t}`);
+    if (pane) pane.classList.toggle('hidden', t !== tab);
+  });
+}
+
+function populateSimModal() {
+  const sc = state.simConfig;
+  switchSimTab(sc.mode || 'forecast');
+  $('sim-horizon').value = sc.horizon;
+  $('sim-rain-mult').value = String(sc.rainMult);
+  $('sim-stress-mm-day').value = String(sc.stressMmDay);
+  $('sim-stress-days').value = String(sc.stressDays);
+  $('sim-stress-pad').value = String(sc.stressPadM);
+  const site = state.stressSite || state.center;
+  $('sim-stress-coord').textContent = `${site.lat.toFixed(4)}°, ${site.lon.toFixed(4)}°`;
+  $('sim-start-dry').checked = sc.startDry;
+  $('sim-enable-evap').checked = sc.enableEvap;
+  $('sim-enable-drain').checked = sc.enableDrain;
+  $('sim-tide-mode').value = sc.tideMode;
+  $('sim-compute').value = sc.compute;
+  $('sim-rain').value = String(sc.rainfallMmHr);
+  $('sim-dur').value = String(sc.durationS);
+  $('sim-hyeto').value = sc.hyetograph;
+  $('sim-soil').value = sc.soil;
+  $('sim-boundary').value = sc.boundary;
+  $('sim-manning').value = String(sc.manningN);
+  $('sim-wind').value = String(sc.windX);
+  renderServerContextBox();
+}
+
+function openSimModal() {
+  populateSimModal();
+  $('sim-modal').classList.remove('hidden');
+}
+
+function applySimModalDraftAndRun() {
+  const sc = state.simConfig;
+  sc.horizon = $('sim-horizon').value;
+  sc.rainMult = parseFloat($('sim-rain-mult').value) || 1.0;
+  sc.stressMmDay = parseFloat($('sim-stress-mm-day').value) || 150;
+  sc.stressDays = parseInt($('sim-stress-days').value, 10) || 3;
+  sc.stressPadM = parseFloat($('sim-stress-pad').value) || 0;
+  sc.startDry = $('sim-start-dry').checked;
+  sc.enableEvap = $('sim-enable-evap').checked;
+  sc.enableDrain = $('sim-enable-drain').checked;
+  sc.tideMode = $('sim-tide-mode').value;
+  sc.compute = $('sim-compute').value;
+  sc.rainfallMmHr = parseFloat($('sim-rain').value) || 280;
+  sc.durationS = parseFloat($('sim-dur').value) || 360;
+  sc.hyetograph = $('sim-hyeto').value;
+  sc.soil = $('sim-soil').value;
+  sc.boundary = $('sim-boundary').value;
+  sc.manningN = parseFloat($('sim-manning').value) || 0.035;
+  sc.windX = parseFloat($('sim-wind').value) || 0;
+  saveUserPrefs({ simConfig: sc });
+  $('sim-modal').classList.add('hidden');
+
+  let runCompare = false;
+  if (sc.mode === 'stress' && sc.stressPadM > 0 && state.grid) {
+    const pt = state.stressSite || state.center;
+    const hit = lngLatToCell(pt.lon, pt.lat);
+    if (hit) {
+      state.interventions = [];
+      for (let dr = 0; dr <= 1; dr++) {
+        for (let dc = 0; dc <= 1; dc++) {
+          const c = hit.col + dc;
+          const r = hit.row + dr;
+          if (c < state.grid.metadata.cols && r < state.grid.metadata.rows) {
+            state.interventions.push({ col: c, row: r, delta_m: sc.stressPadM, reason: 'raised site pad' });
+          }
+        }
+      }
+      updateInterventionBar();
+      runCompare = true;
+    }
+  }
+  runSimulation(runCompare);
+}
+
+function renderServerContextBox() {
+  const el = $('sim-context-info');
+  if (!el) return;
+  const resp = state.serverContext;
+  if (!resp || !resp.context) {
+    el.textContent = 'No regional server context configured. Running with studio scenario parameters.';
+    return;
+  }
+  const c = resp.context;
+  const parts = [];
+  parts.push(`<div><strong>Basin:</strong> ${c.basin_id} · <strong>Cycle:</strong> ${c.cycle_iso}</div>`);
+  if (resp.is_stale) {
+    parts.push(`<div class="stale-warn">Context is stale (${Math.round(resp.age_seconds / 3600)}h old).</div>`);
+  }
+  if (c.mjo) {
+    parts.push(`<div><span class="mjo-pill">MJO Phase ${c.mjo.phase} · Amp ${c.mjo.amplitude.toFixed(1)}</span> ${c.mjo.label}</div>`);
+  }
+  if (c.ensemble_15d && Array.isArray(c.ensemble_15d.days) && c.ensemble_15d.days.length > 0) {
+    const peakP90 = Math.max(...c.ensemble_15d.days.map((d) => d.p90_mm || 0));
+    parts.push(`<div><strong>15-Day Ensemble (${c.ensemble_15d.model}):</strong> ${c.ensemble_15d.members} members, peak P90 ${peakP90.toFixed(0)} mm/day.</div>`);
+  }
+  el.innerHTML = parts.join('');
+}
+
+async function fetchRegionalContext(qs) {
+  if (qs.get('presentation') === '1' || qs.get('presentation') === 'true') return;
+  if (qs.get('fixed') === '1' || qs.get('fixed') === 'true') return;
+  try {
+    const resp = await fetch('/api/v1/context');
+    if (!resp.ok) return;
+    const data = await resp.json();
+    state.serverContext = data;
+    const ctx = data.context;
+    if (ctx && Array.isArray(ctx.wgs84_bounds) && ctx.wgs84_bounds.length === 4) {
+      const [minLon, minLat, maxLon, maxLat] = ctx.wgs84_bounds;
+      const inBounds = state.center.lon >= minLon && state.center.lon <= maxLon
+        && state.center.lat >= minLat && state.center.lat <= maxLat;
+      if (inBounds) {
+        if (ctx.spatial_rain_grid) state.spatialRainGrid = ctx.spatial_rain_grid;
+        if (Array.isArray(ctx.hourly_tide_m) && ctx.hourly_tide_m.length > 0) state.hourlyTideM = ctx.hourly_tide_m;
+      }
+    }
+    renderServerContextBox();
+  } catch (_) { /* optional server context */ }
+}
+
 function applyUserPrefs(qs) {
   if (qs.get('presentation') === '1' || qs.get('presentation') === 'true') return;
   if (qs.get('fixed') === '1' || qs.get('fixed') === 'true') return;
   const prefs = loadUserPrefs();
-  if (!qs.has('basemap') && (prefs.basemap === 'topo' || prefs.basemap === 'sat' || prefs.basemap === 'dark')) {
-    state.basemap = prefs.basemap;
-    document.documentElement.dataset.theme = prefs.basemap === 'topo' ? 'light' : 'dark';
-    document.querySelectorAll('[data-basemap]').forEach((el) => {
-      el.classList.toggle('active', el.dataset.basemap === prefs.basemap);
-    });
-  }
-  if (typeof prefs.is3D === 'boolean') {
-    state.is3D = prefs.is3D;
-    const btn = $('btn-2d3d');
-    if (btn) {
-      btn.textContent = state.is3D ? '3D' : '2D';
-      btn.classList.toggle('active', state.is3D);
+  if (prefs.profile) setUiProfile(prefs.profile, false);
+  if (prefs.displayPrefs && typeof prefs.displayPrefs === 'object') {
+    state.displayPrefs = { ...state.displayPrefs, ...prefs.displayPrefs };
+    if (!qs.has('basemap')) {
+      state.basemap = state.displayPrefs.basemap;
+      document.documentElement.dataset.theme = state.basemap === 'topo' ? 'light' : 'dark';
     }
+    state.is3D = Boolean(state.displayPrefs.is3D);
+    state.layer = state.displayPrefs.layer || 'depth';
+    state.particlesOn = Boolean(state.displayPrefs.showParticles);
   }
-  if (prefs.layer && ['depth', 'hazard', 'velocity'].includes(prefs.layer)) {
-    state.layer = prefs.layer;
-  }
-  if (!qs.has('soil') && prefs.soil && $('ctl-soil')) $('ctl-soil').value = prefs.soil;
-  if (!qs.has('hyetograph') && prefs.hyetograph && $('ctl-hyeto')) $('ctl-hyeto').value = prefs.hyetograph;
-  if (!qs.has('boundary') && prefs.boundary && $('ctl-boundary')) $('ctl-boundary').value = prefs.boundary;
-  if (Number.isFinite(prefs.manning_n) && $('ctl-manning')) {
-    $('ctl-manning').value = String(prefs.manning_n);
-    if ($('val-manning')) $('val-manning').textContent = Number(prefs.manning_n).toFixed(3);
-  }
-}
-
-function wirePreferencePersistence() {
-  document.querySelectorAll('[data-basemap]').forEach((el) => {
-    el.addEventListener('click', () => saveUserPrefs({ basemap: el.dataset.basemap }));
-  });
-  document.querySelectorAll('[data-layer]').forEach((el) => {
-    el.addEventListener('click', () => saveUserPrefs({ layer: el.dataset.layer }));
-  });
-  if ($('btn-2d3d')) {
-    $('btn-2d3d').addEventListener('click', () => saveUserPrefs({ is3D: state.is3D }));
-  }
-  if ($('ctl-soil')) {
-    $('ctl-soil').addEventListener('change', (e) => saveUserPrefs({ soil: e.target.value }));
-  }
-  if ($('ctl-hyeto')) {
-    $('ctl-hyeto').addEventListener('change', (e) => saveUserPrefs({ hyetograph: e.target.value }));
-  }
-  if ($('ctl-boundary')) {
-    $('ctl-boundary').addEventListener('change', (e) => saveUserPrefs({ boundary: e.target.value }));
-  }
-  if ($('ctl-manning')) {
-    $('ctl-manning').addEventListener('change', (e) => saveUserPrefs({ manning_n: parseFloat(e.target.value) }));
+  if (prefs.simConfig && typeof prefs.simConfig === 'object') {
+    state.simConfig = { ...state.simConfig, ...prefs.simConfig };
   }
 }
 
@@ -2301,24 +2663,29 @@ async function fetchAndApplyServerConfig(qs) {
     const cfg = await resp.json();
     state.serverConfig = cfg;
     if (cfg.instance_title) document.title = cfg.instance_title;
+    const defaultProfile = cfg.default_ui_profile || (cfg.mode === 'hosted' ? 'public' : 'researcher');
+    setUiProfile(defaultProfile, false);
     const f = cfg.features || {};
     const hide = (el) => { if (el) el.style.display = 'none'; };
     if (f.allow_interventions === false) {
       document.querySelectorAll('[data-tool="bund"], [data-tool="pond"]').forEach(hide);
       hide($('btn-compare'));
+      if ($('sim-stress-pad')) $('sim-stress-pad').disabled = true;
+      hide($('btn-stress-pick'));
     }
     if (f.allow_byod_dem_upload === false) {
-      hide($('dem-file')?.parentElement);
+      hide($('file-asc'));
+      document.querySelectorAll('label[for="file-asc"]').forEach(hide);
     }
     if (f.allow_mp4_export === false) {
       hide($('btn-rec'));
     }
     if (f.allow_direct_nwp_fetch === false) {
-      hide($('btn-nwp-fetch'));
+      hide($('btn-nwp'));
     }
     if (f.allow_gis_export === false) {
-      hide($('btn-exp-asc'));
-      hide($('btn-exp-csv'));
+      hide($('btn-export-asc'));
+      hide($('btn-export-csv'));
     }
     const prefs = loadUserPrefs();
     const dv = cfg.default_view;
@@ -2327,8 +2694,9 @@ async function fetchAndApplyServerConfig(qs) {
         state.center = { lat: dv.lat, lon: dv.lon };
       }
       if (!qs.has('zoom') && Number.isFinite(dv.zoom)) state.initZoom = dv.zoom;
-      if (!qs.has('basemap') && !prefs.basemap && (dv.basemap === 'topo' || dv.basemap === 'sat' || dv.basemap === 'dark')) {
+      if (!qs.has('basemap') && !prefs.displayPrefs?.basemap && (dv.basemap === 'topo' || dv.basemap === 'sat' || dv.basemap === 'dark')) {
         state.basemap = dv.basemap;
+        state.displayPrefs.basemap = dv.basemap;
         document.documentElement.dataset.theme = dv.basemap === 'topo' ? 'light' : 'dark';
       }
     }
@@ -2389,10 +2757,10 @@ function applyStartupParams() {
 window.addEventListener('DOMContentLoaded', async () => {
   const qs = new URLSearchParams(window.location.search);
   wireUi();
-  wirePreferencePersistence();
   await fetchAndApplyServerConfig(qs);
   applyUserPrefs(qs);
   applyStartupParams();
+  await fetchRegionalContext(qs);
   initMap();
   setLayer(state.layer || 'depth');
   requestAnimationFrame(animationLoop);

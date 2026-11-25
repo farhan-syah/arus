@@ -1,0 +1,20 @@
+[package]
+name = "arus-media"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[features]
+default = []
+png-encode = ["dep:containr", "dep:png"]
+
+[dependencies]
+containr = { version = "0.1.1", default-features = false, features = ["mp4"], optional = true }
+numr15 = { package = "numr", version = "0.15.2", default-features = false }
+png = { version = "0.18", optional = true }
+tempfile.workspace = true
+vidr.workspace = true
+
+[lints]
+workspace = true

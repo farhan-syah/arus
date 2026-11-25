@@ -408,19 +408,20 @@ dependencies = [
  "arus-hydraulics",
  "arus-ingest",
  "arus-jobs",
+ "arus-media",
  "arus-model-api",
  "arus-scenarios",
  "arus-storage",
  "arus-web",
  "axum",
  "clap",
- "numr 0.15.2",
  "serde",
  "serde_json",
+ "sha2 0.10.9",
  "tempfile",
+ "time",
  "tokio",
  "tower",
- "vidr",
 ]
 
 [[package]]
@@ -556,6 +557,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "arus-media"
+version = "0.1.0"
+dependencies = [
+ "containr",
+ "numr 0.15.2",
+ "png",
+ "tempfile",
+ "vidr",
+]
+
+[[package]]
 name = "arus-ml"
 version = "0.1.0"
 dependencies = [
@@ -636,20 +648,17 @@ dependencies = [
  "arus-hydrology",
  "arus-ingest",
  "arus-jobs",
+ "arus-media",
  "arus-model-api",
  "arus-scenarios",
  "arus-storage",
  "base64 0.22.1",
  "clap",
- "containr",
- "numr 0.15.2",
- "png",
  "serde",
  "serde_json",
  "sha2 0.10.9",
  "tempfile",
  "time",
- "vidr",
 ]
 
 [[package]]

@@ -15,18 +15,19 @@ arus-geo.workspace = true
 arus-hydraulics.workspace = true
 arus-ingest.workspace = true
 arus-jobs.workspace = true
+arus-media.workspace = true
 arus-model-api.workspace = true
 arus-scenarios.workspace = true
 arus-storage.workspace = true
 arus-web.workspace = true
 axum.workspace = true
 clap.workspace = true
-numr15 = { package = "numr", version = "0.15.2", default-features = false }
 serde.workspace = true
 serde_json.workspace = true
+sha2.workspace = true
 tempfile.workspace = true
+time.workspace = true
 tokio.workspace = true
-vidr.workspace = true
 
 [dev-dependencies]
 arus-domain.workspace = true

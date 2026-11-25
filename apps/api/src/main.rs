@@ -28,6 +28,9 @@ async fn serve(args: ApiArgs) -> Result<(), String> {
         let cfg = ServerConfig::load_json(&config_path)?;
         state = state.with_config(cfg);
     }
+    if let Some(context_dir) = args.context_dir {
+        state = state.with_context_dir(context_dir);
+    }
     let listener = TcpListener::bind(&args.bind)
         .await
         .map_err(|error| format!("bind {} failed: {error}", args.bind))?;

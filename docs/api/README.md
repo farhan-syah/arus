@@ -18,7 +18,8 @@ cargo run --release -p arus-api -- --archive data/runs --bind 127.0.0.1:8080
 | `GET` | `/sources?lang=en\|bm` | Public source catalog page |
 | `GET` | `/runs/{run_id}?lang=en\|bm` | Dioxus SSR location outlook page rendered by `arus-web` |
 | `GET` | `/health` | `{ "status": "ok", "schema_version": "arus-api-v1" }` |
-| `GET` | `/api/v1/config` | Active `ServerConfig` (`mode`, `default_view`, `features`, `limits`, `disclaimer`) |
+| `GET` | `/api/v1/config` | Active `ServerConfig` (`mode`, `default_ui_profile`, `execution_mode`, `default_view`, `features`, `limits`) |
+| `GET` | `/api/v1/context` | Basin-scoped `RegionalContext` (`spatial_rain_grid`, `hourly_tide_m`, `ensemble_15d`, `mjo`, `age_seconds`, `is_stale`) |
 | `GET` | `/api/v1/catalog/sources` | Public `Catalog` from `catalog/sources.json` or `404` when unconfigured |
 | `GET` | `/api/v1/published` | Current `PublishedPointer` or `404` when no operational forecast is published |
 | `GET` | `/api/v1/runs` | `RunIndex` (`latest_run_id`, `run_ids`) |
@@ -46,6 +47,7 @@ cargo run --release -p arus-api -- --archive data/runs --bind 127.0.0.1:8080
 | `hourly_rain_mm`, `hourly_tide_m` | arrays | Single-series hourly rain (`mm/hr`) and coastal sea level (`m MSL`) |
 | `antecedent_rain_mm`, `observed_gauges` | number / array | Pre-state valley wetting and `t = 0` observed river-gauge depth assimilation |
 | `interventions` | array | Cell elevation edits (`+delta_m` floodwall, `-delta_m` detention pond) |
+| `start_dry`, `enable_evaporation`, `enable_drainage`, `tide_mode` | bool / enum | Composable physics toggles (`live` \| `spring-high` \| `off` tide-lock) |
 | `precision` | `f64` \| `f32` | Shallow-water solver precision profile |
 
 Every `ApiLocationOutlook` carries explicit `classification` (`numerical-demonstration`, `event-reconstruction`, `forecast-replay`, or `operational-forecast`) and `support` (`supported` or `unsupported`). Unsupported locations never appear as dry zero.

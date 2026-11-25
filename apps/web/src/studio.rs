@@ -44,11 +44,11 @@ fn StudioShell() -> Element {
             }
             div { class: "top-actions",
                 div { class: "seg-group",
-                    button { class: "seg-btn active", "data-basemap": "topo", "Topo" }
-                    button { class: "seg-btn", "data-basemap": "sat", "Satellite" }
-                    button { class: "seg-btn", "data-basemap": "dark", "Dark" }
+                    button { class: "seg-btn active", "data-profile": "public", "Public" }
+                    button { class: "seg-btn", "data-profile": "researcher", "Researcher" }
                 }
-                button { id: "btn-2d3d", class: "btn active", "3D" }
+                button { id: "btn-open-layers", class: "btn", title: "Map layers, display, and units", "Layers & View" }
+                button { id: "btn-open-sim", class: "btn primary", title: "Forecast, Site Stress-Test, and physics settings", "Simulate" }
                 button { id: "btn-sources", class: "btn", "Sources" }
                 button { id: "btn-snap", class: "btn", title: "Save PNG snapshot", "PNG" }
                 button { id: "btn-rec", class: "btn", title: "Record MP4 video (via vidr)", "Rec" }
@@ -131,71 +131,6 @@ fn StudioShell() -> Element {
                 }
             }
 
-            div { class: "divider" }
-
-            div { class: "sec-head",
-                span { class: "sec-title", "Scenario" }
-            }
-            div { class: "field",
-                div { class: "field-row",
-                    span { class: "field-label", "Rainfall" }
-                    span { id: "val-rain", class: "field-val", "280 mm/hr" }
-                }
-                input { id: "ctl-rain", r#type: "range", min: "40", max: "400", step: "10", value: "280" }
-            }
-            div { class: "field",
-                div { class: "field-row",
-                    span { class: "field-label", "Duration" }
-                    span { id: "val-dur", class: "field-val", "360 s" }
-                }
-                input { id: "ctl-dur", r#type: "range", min: "60", max: "900", step: "60", value: "360" }
-            }
-
-            details { class: "adv-details",
-                summary { class: "adv-summary", "Hydraulics & Boundary" }
-                div { class: "adv-body",
-                    div { class: "row-2",
-                        div { class: "field",
-                            span { class: "field-label", "Hyetograph" }
-                            select { id: "ctl-hyeto", class: "ctl-select",
-                                option { value: "peak-storm", selected: true, "Peak Storm" }
-                                option { value: "uniform", "Uniform" }
-                            }
-                        }
-                        div { class: "field",
-                            span { class: "field-label", "Surface" }
-                            select { id: "ctl-soil", class: "ctl-select",
-                                option { value: "impervious", selected: true, "Impervious" }
-                                option { value: "green-ampt", "Green-Ampt" }
-                            }
-                        }
-                    }
-                    div { class: "row-2",
-                        div { class: "field",
-                            span { class: "field-label", "Boundary" }
-                            select { id: "ctl-boundary", class: "ctl-select",
-                                option { value: "transmissive", selected: true, "Free Outfall" }
-                                option { value: "closed", "Closed Wall" }
-                            }
-                        }
-                        div { class: "field",
-                            div { class: "field-row",
-                                span { class: "field-label", "Manning n" }
-                                span { id: "val-manning", class: "field-val", "0.035" }
-                            }
-                            input { id: "ctl-manning", r#type: "range", min: "0.015", max: "0.120", step: "0.005", value: "0.035" }
-                        }
-                    }
-                    div { class: "field",
-                        div { class: "field-row",
-                            span { class: "field-label", "Wind Surge (hydr 0.2)" }
-                            span { id: "val-wind", class: "field-val", "0 m/s" }
-                        }
-                        input { id: "ctl-wind", r#type: "range", min: "0", max: "30", step: "2", value: "0" }
-                    }
-                }
-            }
-
             div { class: "cta-stack",
                 button { id: "btn-run", class: "btn primary", "Run Simulation" }
                 button { id: "btn-compare", class: "btn compare hidden", disabled: true, "Compare vs Baseline" }
@@ -257,6 +192,8 @@ fn StudioShell() -> Element {
                 span { id: "honesty-text", "Loading DEM…" }
             }
             span { class: "pill-sep", "·" }
+            span { id: "engine-badge", class: "engine-badge", "Server · F64" }
+            span { class: "pill-sep", "·" }
             span { id: "telemetry", class: "telemetry", "Hover map to inspect" }
         }
 
@@ -287,6 +224,306 @@ fn StudioShell() -> Element {
                     button { id: "btn-sources-close", class: "btn btn-xs", "Close" }
                 }
                 div { id: "sources-grid", class: "sources-grid" }
+            }
+        }
+
+        // Popup 1: Spacious Display & Layers Modal (Zero Solver Cost, Draft + Apply)
+        div { id: "layers-modal", class: "modal-backdrop hidden",
+            div { class: "hud modal-card modal-wide",
+                div { class: "inspector-head",
+                    span { class: "inspector-title", "Display & Layers" }
+                    button { id: "btn-layers-close", class: "btn btn-xs", "✕" }
+                }
+                div { class: "modal-grid-2",
+                    div { class: "modal-sec",
+                        div { class: "sec-title", "Map Layers" }
+                        label { class: "toggle-row",
+                            input { id: "opt-show-flood", r#type: "checkbox", checked: true }
+                            span { "Flood overlay (depth / hazard / velocity)" }
+                        }
+                        label { class: "toggle-row",
+                            input { id: "opt-show-rivers", r#type: "checkbox", checked: true }
+                            span { "Normal river channels" }
+                        }
+                        label { class: "toggle-row",
+                            input { id: "opt-show-boundary", r#type: "checkbox", checked: true }
+                            span { "District / basin boundary & mask" }
+                        }
+                        label { class: "toggle-row",
+                            input { id: "opt-show-markers", r#type: "checkbox", checked: true }
+                            span { "Hotspot & coastal tide markers" }
+                        }
+                        label { class: "toggle-row",
+                            input { id: "opt-show-particles", r#type: "checkbox", checked: true }
+                            span { "Animated velocity streamlines" }
+                        }
+                        label { class: "toggle-row",
+                            input { id: "opt-is-3d", r#type: "checkbox", checked: true }
+                            span { "3D tilted view" }
+                        }
+                        label { class: "toggle-row",
+                            input { id: "opt-show-labels", r#type: "checkbox", checked: true }
+                            span { "Map place labels" }
+                        }
+                    }
+                    div { class: "modal-sec",
+                        div { class: "sec-title", "Appearance & Thresholds" }
+                        div { class: "field",
+                            span { class: "field-label", "Basemap" }
+                            select { id: "opt-basemap", class: "ctl-select",
+                                option { value: "topo", selected: true, "Topo (Light)" }
+                                option { value: "sat", "Satellite" }
+                                option { value: "dark", "Dark" }
+                            }
+                        }
+                        div { class: "field",
+                            span { class: "field-label", "Active Overlay" }
+                            select { id: "opt-layer", class: "ctl-select",
+                                option { value: "depth", selected: true, "Flood Depth (h)" }
+                                option { value: "velocity", "Flow Velocity (|v|)" }
+                                option { value: "hazard", "DEFRA FD2320 Hazard" }
+                                option { value: "diff", "Baseline vs Intervention (Δh)" }
+                            }
+                        }
+                        div { class: "field",
+                            span { class: "field-label", "Sheet-Runoff Cutoff" }
+                            select { id: "opt-cutoff", class: "ctl-select",
+                                option { value: "0.02", "2 cm (0.02 m)" }
+                                option { value: "0.06", selected: true, "6 cm (0.06 m — default)" }
+                                option { value: "0.10", "10 cm (0.10 m)" }
+                                option { value: "0.15", "15 cm (0.15 m)" }
+                            }
+                        }
+                        div { class: "field",
+                            div { class: "field-row",
+                                span { class: "field-label", "Flood Opacity" }
+                                span { id: "val-flood-opacity", class: "field-val", "95%" }
+                            }
+                            input { id: "opt-flood-opacity", r#type: "range", min: "40", max: "100", step: "5", value: "95" }
+                        }
+                        div { class: "field",
+                            div { class: "field-row",
+                                span { class: "field-label", "River Line Opacity" }
+                                span { id: "val-river-opacity", class: "field-val", "72%" }
+                            }
+                            input { id: "opt-river-opacity", r#type: "range", min: "20", max: "100", step: "4", value: "72" }
+                        }
+                        div { class: "divider" }
+                        div { class: "sec-title", "HUD & Units" }
+                        div { class: "row-2",
+                            div { class: "field",
+                                span { class: "field-label", "Units" }
+                                select { id: "opt-units", class: "ctl-select",
+                                    option { value: "metric", selected: true, "Metric (m, km², mm/hr)" }
+                                    option { value: "imperial", "Imperial (ft, mi², in/hr)" }
+                                }
+                            }
+                            div { class: "field",
+                                span { class: "field-label", "Clock" }
+                                select { id: "opt-clock", class: "ctl-select",
+                                    option { value: "12h", selected: true, "12-hour (AM/PM)" }
+                                    option { value: "24h", "24-hour" }
+                                }
+                            }
+                        }
+                        label { class: "toggle-row",
+                            input { id: "opt-show-metrics", r#type: "checkbox", checked: true }
+                            span { "Show Area Flood Index card" }
+                        }
+                        label { class: "toggle-row",
+                            input { id: "opt-show-legend", r#type: "checkbox", checked: true }
+                            span { "Show Layers & Legend card" }
+                        }
+                    }
+                }
+                div { class: "modal-foot",
+                    button { id: "btn-layers-reset", class: "btn", "Reset defaults" }
+                    div { class: "modal-foot-right",
+                        button { id: "btn-layers-cancel", class: "btn", "Cancel" }
+                        button { id: "btn-layers-apply", class: "btn primary", "Apply" }
+                    }
+                }
+            }
+        }
+
+        // Popup 2: Spacious Simulation Settings Modal (Live Forecast / Site Stress-Test / Physics)
+        div { id: "sim-modal", class: "modal-backdrop hidden",
+            div { class: "hud modal-card modal-wide",
+                div { class: "inspector-head",
+                    span { class: "inspector-title", "Simulation Settings" }
+                    button { id: "btn-sim-close", class: "btn btn-xs", "✕" }
+                }
+                div { class: "modal-tabs",
+                    button { class: "seg-btn active", "data-sim-tab": "forecast", "Live Forecast" }
+                    button { class: "seg-btn", "data-sim-tab": "stress", "Site Stress-Test" }
+                    button { class: "seg-btn", "data-sim-tab": "physics", "Physics & Advanced" }
+                }
+                div { id: "sim-tab-forecast", class: "sim-tab-pane",
+                    div { class: "modal-grid-2",
+                        div { class: "modal-sec",
+                            div { class: "sec-title", "Forecast Horizon" }
+                            div { class: "field",
+                                span { class: "field-label", "Horizon Mode" }
+                                select { id: "sim-horizon", class: "ctl-select",
+                                    option { value: "5d", selected: true, "Days 1–5 (Deterministic Hourly 2D)" }
+                                    option { value: "15d", "Days 6–15 (Ensemble Quantiles P10/P50/P90)" }
+                                    option { value: "mjo", "Weeks 2–4 (MJO Regime Context)" }
+                                }
+                            }
+                            div { class: "field",
+                                span { class: "field-label", "Rain Sensitivity Multiplier" }
+                                select { id: "sim-rain-mult", class: "ctl-select",
+                                    option { value: "0.5", "0.5× (Drier)" }
+                                    option { value: "1.0", selected: true, "1.0× (Forecast Baseline)" }
+                                    option { value: "1.25", "1.25× (+25% Rain)" }
+                                    option { value: "1.5", "1.5× (+50% Rain)" }
+                                    option { value: "2.0", "2.0× (Double Rain)" }
+                                }
+                            }
+                        }
+                        div { class: "modal-sec",
+                            div { class: "sec-title", "Server Context & MJO Regime" }
+                            div { id: "sim-context-info", class: "context-box", "No regional server context loaded. Using custom/live studio parameters." }
+                        }
+                    }
+                }
+                div { id: "sim-tab-stress", class: "sim-tab-pane hidden",
+                    div { class: "modal-grid-2",
+                        div { class: "modal-sec",
+                            div { class: "sec-title", "Design Storm (1–5 Days)" }
+                            div { class: "field",
+                                span { class: "field-label", "Storm Preset" }
+                                select { id: "sim-stress-preset", class: "ctl-select",
+                                    option { value: "60", "Moderate Rain (60 mm/day)" }
+                                    option { value: "150", selected: true, "Heavy Monsoon (150 mm/day)" }
+                                    option { value: "300", "Extreme Event (300 mm/day)" }
+                                    option { value: "custom", "Custom mm/day" }
+                                }
+                            }
+                            div { class: "row-2",
+                                div { class: "field",
+                                    span { class: "field-label", "Daily Rain (mm/day)" }
+                                    input { id: "sim-stress-mm-day", class: "ctl-select", r#type: "number", min: "10", max: "600", step: "10", value: "150" }
+                                }
+                                div { class: "field",
+                                    span { class: "field-label", "Duration (1–5 days)" }
+                                    select { id: "sim-stress-days", class: "ctl-select",
+                                        option { value: "1", "1 Day (24 h)" }
+                                        option { value: "2", "2 Days (48 h)" }
+                                        option { value: "3", selected: true, "3 Days (72 h)" }
+                                        option { value: "5", "5 Days (120 h)" }
+                                    }
+                                }
+                            }
+                        }
+                        div { class: "modal-sec",
+                            div { class: "sec-title", "Site / House Pad Elevation Test" }
+                            div { class: "field",
+                                span { class: "field-label", "Raise Site Pad (checks neighbor Δh impact)" }
+                                select { id: "sim-stress-pad", class: "ctl-select",
+                                    option { value: "0", selected: true, "None (existing ground)" }
+                                    option { value: "0.5", "+0.5 m raised pad" }
+                                    option { value: "0.8", "+0.8 m raised pad" }
+                                    option { value: "1.2", "+1.2 m raised pad" }
+                                }
+                            }
+                            div { class: "field",
+                                span { class: "field-label", "Target Site Coordinate" }
+                                div { class: "field-row",
+                                    span { id: "sim-stress-coord", class: "field-val", "Basin center" }
+                                    button { id: "btn-stress-pick", class: "btn btn-xs", "Pick on map" }
+                                }
+                            }
+                        }
+                    }
+                }
+                div { id: "sim-tab-physics", class: "sim-tab-pane hidden",
+                    div { class: "modal-grid-2",
+                        div { class: "modal-sec",
+                            div { class: "sec-title", "Composable Physics Toggles" }
+                            label { class: "toggle-row",
+                                input { id: "sim-start-dry", r#type: "checkbox" }
+                                span { "Start from 0 (dry basin, ignore antecedent/gauges)" }
+                            }
+                            label { class: "toggle-row",
+                                input { id: "sim-enable-evap", r#type: "checkbox", checked: true }
+                                span { "Evaporation (FAO-56 / 4.5 mm/day)" }
+                            }
+                            label { class: "toggle-row",
+                                input { id: "sim-enable-drain", r#type: "checkbox", checked: true }
+                                span { "Subsurface & storm drainage (3.0 mm/hr)" }
+                            }
+                            div { class: "field",
+                                span { class: "field-label", "Coastal Tide-Lock" }
+                                select { id: "sim-tide-mode", class: "ctl-select",
+                                    option { value: "live", selected: true, "Live Hourly Tide" }
+                                    option { value: "spring-high", "Spring High Tide (+2.2 m)" }
+                                    option { value: "off", "Off (Free Coastal Outfall)" }
+                                }
+                            }
+                            div { class: "field",
+                                span { class: "field-label", "Compute Target" }
+                                select { id: "sim-compute", class: "ctl-select",
+                                    option { value: "auto", selected: true, "Auto (Browser WASM -> Server F64)" }
+                                    option { value: "server", "Server F64 Reference" }
+                                }
+                            }
+                        }
+                        div { class: "modal-sec",
+                            div { class: "sec-title", "Researcher Hydraulics" }
+                            div { class: "row-2",
+                                div { class: "field",
+                                    span { class: "field-label", "Rainfall (mm/hr)" }
+                                    input { id: "sim-rain", class: "ctl-select", r#type: "number", min: "0", max: "1000", step: "10", value: "280" }
+                                }
+                                div { class: "field",
+                                    span { class: "field-label", "Duration (s)" }
+                                    input { id: "sim-dur", class: "ctl-select", r#type: "number", min: "10", max: "3600", step: "30", value: "360" }
+                                }
+                            }
+                            div { class: "row-2",
+                                div { class: "field",
+                                    span { class: "field-label", "Hyetograph" }
+                                    select { id: "sim-hyeto", class: "ctl-select",
+                                        option { value: "peak-storm", selected: true, "Peak Storm" }
+                                        option { value: "uniform", "Uniform" }
+                                    }
+                                }
+                                div { class: "field",
+                                    span { class: "field-label", "Surface Soil" }
+                                    select { id: "sim-soil", class: "ctl-select",
+                                        option { value: "impervious", selected: true, "Impervious" }
+                                        option { value: "green-ampt", "Modified Green-Ampt" }
+                                    }
+                                }
+                            }
+                            div { class: "row-2",
+                                div { class: "field",
+                                    span { class: "field-label", "Boundary" }
+                                    select { id: "sim-boundary", class: "ctl-select",
+                                        option { value: "transmissive", selected: true, "Free Outfall" }
+                                        option { value: "closed", "Closed Wall" }
+                                    }
+                                }
+                                div { class: "field",
+                                    span { class: "field-label", "Manning n" }
+                                    input { id: "sim-manning", class: "ctl-select", r#type: "number", min: "0.015", max: "0.120", step: "0.005", value: "0.035" }
+                                }
+                            }
+                            div { class: "field",
+                                span { class: "field-label", "Coastal Wind Surge (m/s)" }
+                                input { id: "sim-wind", class: "ctl-select", r#type: "number", min: "0", max: "30", step: "2", value: "0" }
+                            }
+                        }
+                    }
+                }
+                div { class: "modal-foot",
+                    button { id: "btn-sim-reset", class: "btn", "Reset defaults" }
+                    div { class: "modal-foot-right",
+                        button { id: "btn-sim-cancel", class: "btn", "Cancel" }
+                        button { id: "btn-sim-apply", class: "btn primary", "Apply & Run" }
+                    }
+                }
             }
         }
     }

@@ -1,6 +1,7 @@
 //! Public Axum HTTP API serving immutable archived ARUS runs, interactive simulations, and the 3D web portal.
 
 pub mod config;
+pub mod context;
 pub mod sim;
 pub mod video;
 
@@ -25,6 +26,7 @@ use axum::{Json, Router};
 use serde::{Deserialize, Serialize};
 
 use crate::config::ServerConfig;
+use crate::context::{ContextResponse, load_context_async};
 use crate::sim::{
     CompareSimulationsResponse, CreateSimulationRequest, InteractiveStore, JobStore,
     MAX_BODY_BYTES, RunGridResponse, SimulationJobRecord, SimulationSummaryResponse,
@@ -36,6 +38,7 @@ use crate::sim::{
 pub struct ApiState {
     archive: Arc<Archive>,
     catalog_path: Option<PathBuf>,
+    context_dir: Option<PathBuf>,
     interactive: Arc<InteractiveStore>,
     jobs: Arc<JobStore>,
     config: Arc<ServerConfig>,
@@ -47,6 +50,7 @@ impl ApiState {
         Ok(Self {
             archive: Arc::new(Archive::open(archive_root)?),
             catalog_path: None,
+            context_dir: None,
             interactive: Arc::new(InteractiveStore::default()),
             jobs: Arc::new(JobStore::default()),
             config: Arc::new(ServerConfig::default()),
@@ -64,6 +68,13 @@ impl ApiState {
     #[must_use]
     pub fn with_config(mut self, config: ServerConfig) -> Self {
         self.config = Arc::new(config);
+        self
+    }
+
+    /// Attaches an external basin context directory served at `/api/v1/context`.
+    #[must_use]
+    pub fn with_context_dir(mut self, context_dir: PathBuf) -> Self {
+        self.context_dir = Some(context_dir);
         self
     }
 }
@@ -101,6 +112,7 @@ pub fn router(state: ApiState) -> Router {
         .route("/assets/fonts/jbmono-500.woff2", get(serve_font_jbmono_500))
         .route("/health", get(health))
         .route("/api/v1/config", get(get_config))
+        .route("/api/v1/context", get(get_context))
         .route("/api/v1/catalog/sources", get(get_catalog_sources))
         .route("/api/v1/published", get(get_published))
         .route("/api/v1/runs", get(list_runs))
@@ -562,8 +574,28 @@ async fn render_run_html(
     Ok(Html(render_run_page_html(&run_id, &outlooks, locale)))
 }
 
+#[derive(Debug, Deserialize)]
+struct ContextQuery {
+    basin: Option<String>,
+}
+
 async fn get_config(State(state): State<ApiState>) -> Json<ServerConfig> {
     Json((*state.config).clone())
+}
+
+async fn get_context(
+    State(state): State<ApiState>,
+    Query(query): Query<ContextQuery>,
+) -> Result<Json<ContextResponse>, (StatusCode, Json<ErrorResponse>)> {
+    let Some(dir) = state.context_dir.clone() else {
+        return Err(not_found(
+            "no regional context directory is configured".to_owned(),
+        ));
+    };
+    let resp = load_context_async(dir, query.basin)
+        .await
+        .map_err(map_sim_error)?;
+    Ok(Json(resp))
 }
 
 async fn post_job(
@@ -673,6 +705,9 @@ pub struct ApiArgs {
     /// Optional server runtime config JSON file (feature toggles, default view, limits).
     #[arg(long)]
     pub config: Option<PathBuf>,
+    /// Optional directory containing published basin context JSON files served at `/api/v1/context`.
+    #[arg(long)]
+    pub context_dir: Option<PathBuf>,
     /// Socket address to bind.
     #[arg(long, default_value = "127.0.0.1:8080")]
     pub bind: String,
@@ -777,6 +812,60 @@ mod job_queue_tests {
             .await
             .map_err(|e| e.to_string())?;
         assert_eq!(mp4_resp.status(), StatusCode::FORBIDDEN);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn physics_toggles_content_hash_cache_and_compression_guard_work() -> Result<(), String> {
+        let dir = tempfile::tempdir().map_err(|e| e.to_string())?;
+        let state = ApiState::open(dir.path()).map_err(|e| e.to_string())?;
+
+        // 1. Over-compressed 168h over 360s (> 240x) must return 422 instead of truncating mass
+        let mut too_compressed: CreateSimulationRequest =
+            serde_json::from_str(r#"{"cols":6,"rows":6,"dx_m":50.0,"duration_s":360.0}"#)
+                .map_err(|e| e.to_string())?;
+        too_compressed.hourly_rain_mm = vec![5.0; 168];
+        let err = state
+            .interactive
+            .run_simulation(too_compressed, None)
+            .await
+            .err()
+            .ok_or_else(|| "expected 422 for >240x time compression".to_owned())?;
+        assert_eq!(err.0, 422);
+
+        // 2. Identical request hits content-hash cache and returns same run_id
+        let base_req: CreateSimulationRequest = serde_json::from_str(
+            r#"{"cols":6,"rows":6,"dx_m":50.0,"rainfall_mm_per_hr":80.0,"duration_s":30.0,"start_dry":false}"#,
+        )
+        .map_err(|e| e.to_string())?;
+        let first = state
+            .interactive
+            .run_simulation(base_req.clone(), None)
+            .await
+            .map_err(|(_, m)| m)?;
+        let second = state
+            .interactive
+            .run_simulation(base_req.clone(), None)
+            .await
+            .map_err(|(_, m)| m)?;
+        assert_eq!(first.summary.run_id, second.summary.run_id);
+
+        // 3. start_dry: true produces 0.0 m at t = 0 and a distinct cache entry
+        let mut dry_req = base_req;
+        dry_req.start_dry = true;
+        let dry_run = state
+            .interactive
+            .run_simulation(dry_req, None)
+            .await
+            .map_err(|(_, m)| m)?;
+        assert_ne!(dry_run.summary.run_id, first.summary.run_id);
+        let max_t0_dry = dry_run.series.frames[0]
+            .depth_m
+            .iter()
+            .copied()
+            .fold(0.0_f32, f32::max);
+        assert!(max_t0_dry < 1e-6);
+        assert!(dry_run.summary.budget_assessment.passed);
         Ok(())
     }
 }
