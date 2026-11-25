@@ -22,6 +22,15 @@ from pathlib import Path
 from playwright.sync_api import sync_playwright
 
 
+def find_worker_binary() -> str | None:
+    repo = Path(__file__).resolve().parent.parent
+    for rel in ("target/release/arus-worker", "target/debug/arus-worker"):
+        cand = repo / rel
+        if cand.exists():
+            return str(cand)
+    return None
+
+
 def find_arus_api_binary() -> str:
     repo = Path(__file__).resolve().parent.parent
     for rel in ("target/release/arus-api", "target/debug/arus-api"):
@@ -33,12 +42,31 @@ def find_arus_api_binary() -> str:
     )
 
 
-def run_storyboard(spec_path: Path, out_dir: Path, base_url: str | None, port: int) -> None:
+RESOLUTION_PRESETS = {
+    "720p": (1280, 720),
+    "1080p": (1920, 1080),
+    "1k": (1920, 1080),
+    "2k": (2560, 1440),
+    "4k": (3840, 2160),
+}
+
+
+def run_storyboard(
+    spec_path: Path,
+    out_dir: Path,
+    base_url: str | None,
+    port: int,
+    resolution: str | None = None,
+) -> None:
     spec = json.loads(spec_path.read_text(encoding="utf-8"))
     out_dir.mkdir(parents=True, exist_ok=True)
-    vp = spec.get("viewport", {"width": 1280, "height": 720})
-    width = int(vp.get("width", 1280))
-    height = int(vp.get("height", 720))
+    res_key = (resolution or spec.get("resolution") or "").lower()
+    if res_key in RESOLUTION_PRESETS:
+        width, height = RESOLUTION_PRESETS[res_key]
+    else:
+        vp = spec.get("viewport", {"width": 1280, "height": 720})
+        width = int(vp.get("width", 1280))
+        height = int(vp.get("height", 720))
 
     srv = None
     temp_archive = None
@@ -190,15 +218,29 @@ def run_storyboard(spec_path: Path, out_dir: Path, base_url: str | None, port: i
             browser.close()
 
             final_video = None
+            mp4_video = None
             if video_path and os.path.exists(video_path):
-                dest_video = out_dir / f"{spec.get('name', 'recording')}.webm"
+                stem = spec.get("name", "recording")
+                dest_video = out_dir / f"{stem}.webm"
                 shutil.move(video_path, dest_video)
                 final_video = dest_video.name
+                worker = find_worker_binary()
+                if worker and spec.get("export_mp4", True):
+                    dest_mp4 = out_dir / f"{stem}.mp4"
+                    res = subprocess.run(
+                        [worker, "transcode", "--input", str(dest_video), "--output", str(dest_mp4)],
+                        capture_output=True,
+                        text=True,
+                    )
+                    if res.returncode == 0 and dest_mp4.exists():
+                        mp4_video = dest_mp4.name
 
             summary = {
                 "name": spec.get("name", "storyboard"),
                 "spec": str(spec_path),
-                "video": final_video,
+                "video": mp4_video or final_video,
+                "video_webm": final_video,
+                "video_mp4": mp4_video,
                 "screenshots": saved_shots,
                 "steps": step_log,
             }
@@ -221,8 +263,14 @@ def main() -> int:
     parser.add_argument("--out", required=True, help="Local output directory for video & PNGs")
     parser.add_argument("--url", default=None, help="Optional running ARUS Studio URL")
     parser.add_argument("--port", type=int, default=18084, help="Local port if launching arus-api")
+    parser.add_argument(
+        "--resolution",
+        choices=["720p", "1080p", "1k", "2k", "4k"],
+        default=None,
+        help="Output video/screenshot resolution preset (default 720p or spec viewport)",
+    )
     args = parser.parse_args()
-    run_storyboard(Path(args.spec), Path(args.out), args.url, args.port)
+    run_storyboard(Path(args.spec), Path(args.out), args.url, args.port, args.resolution)
     return 0
 
 

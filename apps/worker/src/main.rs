@@ -1,5 +1,7 @@
 //! Native numerical worker for ARUS hydraulic executions.
 
+mod video;
+
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::process::ExitCode;
@@ -177,6 +179,15 @@ enum Command {
         /// Optional coastal wind forcing x-component (m/s) passed to Stage 4 hydr 0.2.0.
         #[arg(long, default_value_t = 0.0)]
         wind_m_per_s: f64,
+    },
+    /// Transcode a VP9 `.webm` storyboard recording to H.264 `.mp4` via `vidr` (WhatsApp/Telegram compatible).
+    Transcode {
+        /// Path to the input VP9 `.webm` file.
+        #[arg(long)]
+        input: PathBuf,
+        /// Path to the output H.264 `.mp4` file.
+        #[arg(long)]
+        output: PathBuf,
     },
     /// Execute a pure-Rust Preissmann-slot pressurized storm-drain network manifest (`hydr 0.2.0`).
     Pipes {
@@ -361,6 +372,15 @@ fn execute(command: Command) -> Result<(), String> {
             trigger_rain_mm,
             wind_m_per_s,
         }),
+        Command::Transcode { input, output } => {
+            let frames = video::transcode_webm_to_mp4(&input, &output)?;
+            println!(
+                "{{\"input\":\"{}\",\"output\":\"{}\",\"frames_encoded\":{frames}}}",
+                input.display(),
+                output.display()
+            );
+            Ok(())
+        }
         Command::Pipes { spec } => run_native_pipes_spec(spec),
         Command::DrainageCheck { spec } => run_drainage_check(spec),
         Command::Resume { archive, from_run } => run_resume_check(archive, from_run),

@@ -20,9 +20,11 @@ arus-model-api.workspace = true
 arus-scenarios.workspace = true
 arus-storage.workspace = true
 clap.workspace = true
+numr15 = { package = "numr", version = "0.15.2", default-features = false }
 serde.workspace = true
 serde_json.workspace = true
 sha2.workspace = true
+vidr.workspace = true
 
 [dev-dependencies]
 arus-geo.workspace = true

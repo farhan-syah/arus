@@ -504,7 +504,7 @@ dependencies = [
  "arus-jobs",
  "arus-model-api",
  "hydr",
- "numr",
+ "numr 0.16.0",
  "serde",
  "serde_json",
  "tempfile",
@@ -517,7 +517,7 @@ dependencies = [
  "arus-domain",
  "arus-model-api",
  "hydr",
- "numr",
+ "numr 0.16.0",
  "serde",
 ]
 
@@ -632,11 +632,13 @@ dependencies = [
  "arus-scenarios",
  "arus-storage",
  "clap",
+ "numr 0.15.2",
  "serde",
  "serde_json",
  "sha2 0.10.9",
  "tempfile",
  "time",
+ "vidr",
 ]
 
 [[package]]
@@ -1117,6 +1119,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "containr"
+version = "0.1.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a575b24844ace654c8d10573d1b1e0265228b1e9de7684c2b42fe95df672e2fc"
+dependencies = [
+ "mp4-atom",
+]
+
+[[package]]
 name = "convert_case"
 version = "0.8.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1277,6 +1288,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "cudarc"
+version = "0.19.10"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7359bf1de037ddada72729c3acec9b040f3468400c6e9e740b01ba0cd2e89562"
+dependencies = [
+ "half",
+ "libloading 0.9.1",
+]
+
+[[package]]
 name = "daachorse"
 version = "5.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1369,6 +1390,27 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 3.0.9",
+]
+
+[[package]]
+name = "derive_more"
+version = "2.1.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d751e9e49156b02b44f9c1815bcb94b984cdcc4396ecc32521c739452808b134"
+dependencies = [
+ "derive_more-impl",
+]
+
+[[package]]
+name = "derive_more-impl"
+version = "2.1.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "799a97264921d8623a957f6c3b9011f3b5492f557bbb7a5a19b7fa6d06ba8dcb"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "rustc_version",
+ "syn 2.0.119",
 ]
 
 [[package]]
@@ -2060,6 +2102,8 @@ dependencies = [
  "cfg-if",
  "crunchy",
  "num-traits",
+ "rand 0.9.5",
+ "rand_distr",
  "zerocopy",
 ]
 
@@ -2246,7 +2290,7 @@ dependencies = [
  "hydr-solver",
  "hydr-storage",
  "hydr-structures",
- "numr",
+ "numr 0.16.0",
  "solvr",
 ]
 
@@ -2257,7 +2301,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7e1489609acc1bd0ebc6e2f2745d5228bac7c9c057a0b7cee98d6c0b1aab512e"
 dependencies = [
  "hydr-core",
- "numr",
+ "numr 0.16.0",
  "solvr",
 ]
 
@@ -2267,7 +2311,7 @@ version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f9e41cbee74a901a6b9f5d1bf9606ff153404a748c6cb8d270d7f4067acc1cc1"
 dependencies = [
- "numr",
+ "numr 0.16.0",
  "solvr",
 ]
 
@@ -2285,7 +2329,7 @@ dependencies = [
  "hydr-solver",
  "hydr-storage",
  "hydr-structures",
- "numr",
+ "numr 0.16.0",
  "solvr",
 ]
 
@@ -2307,7 +2351,7 @@ checksum = "0db7d0c786ecedd4154b902483ed9d131b690ed0bd410e1ab1f2584ea63fd0fe"
 dependencies = [
  "hydr-core",
  "hydr-soil",
- "numr",
+ "numr 0.16.0",
  "solvr",
 ]
 
@@ -2318,7 +2362,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e5880405dc935e7ef309192ceb4f7ef84db588cc6312fee894813de6bab070c5"
 dependencies = [
  "hydr-core",
- "numr",
+ "numr 0.16.0",
  "solvr",
 ]
 
@@ -2330,7 +2374,7 @@ checksum = "9a23c6c8f8f5f93cc8c8ee5a8560e1a882fcb429f8d58135e6e254351e8958b5"
 dependencies = [
  "hydr-core",
  "hydr-soil",
- "numr",
+ "numr 0.16.0",
  "sha2 0.11.1",
  "solvr",
 ]
@@ -2342,7 +2386,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d506f52dac777edc9bea122e460c28e0315be1399519d4e395c745c6041144e5"
 dependencies = [
  "hydr-core",
- "numr",
+ "numr 0.16.0",
  "solvr",
 ]
 
@@ -2353,7 +2397,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "950fc175ada2cde710e86244d6d5719b743aa8df1ba29fa137dbc89642ce517f"
 dependencies = [
  "hydr-core",
- "numr",
+ "numr 0.16.0",
  "solvr",
 ]
 
@@ -2864,6 +2908,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "libloading"
+version = "0.9.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a1832accd5a4ca2795ace4d05d15c4039be15b62d3b950eff99746a990e3cc10"
+dependencies = [
+ "cfg-if",
+ "windows-link 0.2.1",
+]
+
+[[package]]
 name = "libm"
 version = "0.2.16"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3203,6 +3257,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "mp4-atom"
+version = "0.17.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "718b5227fa90c52ed2e72d4d553560130d9e128acb6217d9fe0ea57312ee7063"
+dependencies = [
+ "derive_more",
+ "num",
+ "pastey",
+ "thiserror 1.0.69",
+ "tracing",
+]
+
+[[package]]
 name = "multiversion_no_op"
 version = "1.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3266,6 +3333,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8628de41fe064cc3f0cf07f3d299ee3e73521adaff72278731d5c8cae3797873"
 dependencies = [
  "rand 0.9.5",
+]
+
+[[package]]
+name = "nasm-rs"
+version = "0.3.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "706bf8a5e8c8ddb99128c3291d31bd21f4bcde17f0f4c20ec678d85c74faa149"
+dependencies = [
+ "log",
 ]
 
 [[package]]
@@ -3726,6 +3802,24 @@ dependencies = [
 
 [[package]]
 name = "numr"
+version = "0.15.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "834d6f6d81166a0949dc2e94e0060335afa4f3fc45a9f1c27b0e80f3a45db7b7"
+dependencies = [
+ "bytemuck",
+ "cudarc",
+ "half",
+ "num-traits",
+ "parking_lot",
+ "pastey",
+ "rayon",
+ "rkyv",
+ "smallvec",
+ "thiserror 2.0.21",
+]
+
+[[package]]
+name = "numr"
 version = "0.16.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "320dea576308d9ce195ee54d98dc3f37ad44e25ff334b44d3dfcfe1c0d53e650"
@@ -3780,6 +3874,27 @@ name = "opaque-debug"
 version = "0.3.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c08d65885ee38876c4f86fa503fb49d7b507c2b62552df7c70b2fce627e06381"
+
+[[package]]
+name = "openh264"
+version = "0.9.10"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5a30840cd2b2cd6ae39af2544f66adf55357f68e0e4938a096fe0e9f8f412b59"
+dependencies = [
+ "openh264-sys2",
+ "wide",
+]
+
+[[package]]
+name = "openh264-sys2"
+version = "0.9.10"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b8de206369120cab1be98e587adad1389e2ec00b63c62cdb3c13238000c1290a"
+dependencies = [
+ "cc",
+ "nasm-rs",
+ "walkdir",
+]
 
 [[package]]
 name = "openssl-probe"
@@ -4286,6 +4401,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "63b8176103e19a2643978565ca18b50549f6101881c443590420e4dc998a3c69"
 
 [[package]]
+name = "rand_distr"
+version = "0.5.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6a8615d50dcf34fa31f7ab52692afec947c4dd0ab803cc87cb3b0b4570ff7463"
+dependencies = [
+ "num-traits",
+ "rand 0.9.5",
+]
+
+[[package]]
 name = "rand_pcg"
 version = "0.10.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4664,6 +4789,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "cf54715a573b99ac80df0bc206da022bcd442c974952c7b9720069370852e21f"
 
 [[package]]
+name = "rusty_vp9"
+version = "0.1.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9bf32821db20be4ea56ce1f8feb757bf55f146f2685ba98822c3bd2d43a33889"
+
+[[package]]
 name = "ruzstd"
 version = "0.9.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4970,7 +5101,7 @@ version = "0.4.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a6e4e360c91f8ee3c004f638cb5abfd80806c27884865114f061f391d6ca54a2"
 dependencies = [
- "numr",
+ "numr 0.16.0",
 ]
 
 [[package]]
@@ -5097,7 +5228,7 @@ checksum = "d350d5788fa94d560d92269266a50efc77b036bfca6675e420b64df7b3211f37"
 dependencies = [
  "js-sys",
  "libc",
- "libloading",
+ "libloading 0.8.9",
  "memfd",
  "memmap2",
  "serde",
@@ -5601,6 +5732,18 @@ name = "version_check"
 version = "0.9.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0b928f33d975fc6ad9f86c8f283853ad26bdd5b10b7f1542aa2fa15e2289105a"
+
+[[package]]
+name = "vidr"
+version = "0.1.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1d8be75bc23fd63ff929fd93d106a3574c4a3daba848053b78a05c3e885ee19c"
+dependencies = [
+ "containr",
+ "numr 0.15.2",
+ "openh264",
+ "rusty_vp9",
+]
 
 [[package]]
 name = "walkdir"

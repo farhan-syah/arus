@@ -63,6 +63,7 @@ thiserror = "2.0.21"
 time = { version = "0.3.55", features = ["formatting", "parsing", "serde"] }
 tokio = { version = "1", features = ["macros", "net", "rt-multi-thread"] }
 tower = { version = "0.5", features = ["util"] }
+vidr = { version = "0.1.1", features = ["cpu-vp9", "openh264", "mkv", "mp4", "pipeline"] }
 
 [workspace.lints.rust]
 unsafe_code = "forbid"
