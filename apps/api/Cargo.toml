@@ -21,9 +21,12 @@ arus-storage.workspace = true
 arus-web.workspace = true
 axum.workspace = true
 clap.workspace = true
+numr15 = { package = "numr", version = "0.15.2", default-features = false }
 serde.workspace = true
 serde_json.workspace = true
+tempfile.workspace = true
 tokio.workspace = true
+vidr.workspace = true
 
 [dev-dependencies]
 arus-domain.workspace = true

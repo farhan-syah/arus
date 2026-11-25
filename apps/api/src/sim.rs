@@ -378,8 +378,8 @@ fn validate_request(req: &CreateSimulationRequest) -> Result<(), (u16, String)> 
                 format!("grid must be at least 4x4 and <= {MAX_INTERACTIVE_CELLS} cells"),
             ));
         }
-        if !req.dx_m.is_finite() || !(1.0..=500.0).contains(&req.dx_m) {
-            return Err((422, "dx_m must be finite in [1, 500] metres".to_owned()));
+        if !req.dx_m.is_finite() || !(1.0..=2500.0).contains(&req.dx_m) {
+            return Err((422, "dx_m must be finite in [1, 2500] metres".to_owned()));
         }
     }
     Ok(())

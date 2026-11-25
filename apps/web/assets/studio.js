@@ -38,6 +38,9 @@ const state = {
   nwpPeakMmHr: null,
   startEpochMs: Date.now(),
   tzLabel: 'UTC',
+  spanHours: 0,
+  boundaryGeoJson: null,
+  boundaryGrid: null,
   particles: [],
 };
 
@@ -166,16 +169,47 @@ function ensureMapLayers() {
   const beforeLabels = findFirstLabelLayerId();
   const isDark = state.basemap !== 'topo';
 
+  const isPres = document.documentElement.dataset.presentation === 'true';
   map.addSource('arus-domain-box', { type: 'geojson', data: empty });
   map.addLayer(
     {
       id: 'arus-domain-outline',
       type: 'line',
       source: 'arus-domain-box',
+      layout: { visibility: isPres || state.boundaryGeoJson ? 'none' : 'visible' },
       paint: {
         'line-color': isDark ? 'rgba(148, 163, 184, 0.5)' : 'rgba(15, 23, 42, 0.30)',
         'line-width': 1.2,
         'line-dasharray': [4, 3],
+      },
+    },
+    beforeLabels,
+  );
+
+  map.addSource('arus-region-mask', { type: 'geojson', data: empty });
+  map.addLayer(
+    {
+      id: 'arus-region-mask-fill',
+      type: 'fill',
+      source: 'arus-region-mask',
+      paint: {
+        'fill-color': isDark ? '#020617' : '#0f172a',
+        'fill-opacity': isDark ? 0.32 : 0.10,
+      },
+    },
+    beforeLabels,
+  );
+
+  map.addSource('arus-region-boundary', { type: 'geojson', data: empty });
+  map.addLayer(
+    {
+      id: 'arus-region-outline',
+      type: 'line',
+      source: 'arus-region-boundary',
+      paint: {
+        'line-color': isDark ? '#38bdf8' : '#0284c7',
+        'line-width': 2.2,
+        'line-opacity': 0.85,
       },
     },
     beforeLabels,
@@ -234,6 +268,14 @@ function ensureMapLayers() {
 
 function updateDomainOutline(bounds) {
   if (!map || !layersReady) return;
+  const isPres = document.documentElement.dataset.presentation === 'true';
+  if (map.getLayer('arus-domain-outline')) {
+    map.setLayoutProperty(
+      'arus-domain-outline',
+      'visibility',
+      isPres || state.boundaryGeoJson ? 'none' : 'visible',
+    );
+  }
   const [minLon, minLat, maxLon, maxLat] = bounds;
   map.getSource('arus-domain-box').setData({
     type: 'Feature',
@@ -242,6 +284,94 @@ function updateDomainOutline(bounds) {
       coordinates: [[[minLon, minLat], [maxLon, minLat], [maxLon, maxLat], [minLon, maxLat], [minLon, minLat]]],
     },
   });
+  if (state.boundaryGeoJson) applyRegionBoundary();
+}
+
+function applyRegionBoundary() {
+  if (!map || !layersReady || !state.boundaryGeoJson) return;
+  const geom = state.boundaryGeoJson;
+  const bSrc = map.getSource('arus-region-boundary');
+  const mSrc = map.getSource('arus-region-mask');
+  if (bSrc) bSrc.setData({ type: 'Feature', geometry: geom, properties: {} });
+  if (mSrc) {
+    const worldRing = [[-180, -85], [180, -85], [180, 85], [-180, 85], [-180, -85]];
+    const holes = [];
+    if (geom.type === 'Polygon' && Array.isArray(geom.coordinates?.[0])) {
+      holes.push(geom.coordinates[0]);
+    } else if (geom.type === 'MultiPolygon' && Array.isArray(geom.coordinates)) {
+      for (const poly of geom.coordinates) {
+        if (Array.isArray(poly?.[0])) holes.push(poly[0]);
+      }
+    }
+    if (holes.length > 0) {
+      mSrc.setData({
+        type: 'Feature',
+        geometry: { type: 'Polygon', coordinates: [worldRing, ...holes] },
+        properties: {},
+      });
+    }
+  }
+  if (map.getLayer('arus-domain-outline')) {
+    map.setLayoutProperty('arus-domain-outline', 'visibility', 'none');
+  }
+}
+
+function computeGeomBbox(geom) {
+  let minLon = Infinity;
+  let minLat = Infinity;
+  let maxLon = -Infinity;
+  let maxLat = -Infinity;
+  const walk = (arr) => {
+    if (!Array.isArray(arr)) return;
+    if (typeof arr[0] === 'number' && typeof arr[1] === 'number') {
+      if (arr[0] < minLon) minLon = arr[0];
+      if (arr[0] > maxLon) maxLon = arr[0];
+      if (arr[1] < minLat) minLat = arr[1];
+      if (arr[1] > maxLat) maxLat = arr[1];
+    } else {
+      for (const item of arr) walk(item);
+    }
+  };
+  walk(geom.coordinates);
+  return [minLon, minLat, maxLon, maxLat];
+}
+
+async function loadBoundaryByQuery(query) {
+  if (!query) return false;
+  try {
+    const resp = await fetch(
+      `https://nominatim.openstreetmap.org/search?format=json&polygon_geojson=1&limit=1&q=${encodeURIComponent(query)}`,
+    );
+    const hits = await resp.json();
+    const geom = hits?.[0]?.geojson;
+    if (geom && (geom.type === 'Polygon' || geom.type === 'MultiPolygon')) {
+      state.boundaryGeoJson = geom;
+      const [minLon, minLat, maxLon, maxLat] = computeGeomBbox(geom);
+      const midLat = (minLat + maxLat) * 0.5;
+      const midLon = (minLon + maxLon) * 0.5;
+      const mPerDegLat = 111320.0;
+      const mPerDegLon = Math.max(10000.0, 111320.0 * Math.cos((midLat * Math.PI) / 180));
+      const spanXm = (maxLon - minLon) * mPerDegLon * 1.06;
+      const spanYm = (maxLat - minLat) * mPerDegLat * 1.06;
+      const aspect = Math.max(0.4, Math.min(2.5, spanXm / Math.max(1, spanYm)));
+      const rows = Math.max(24, Math.min(54, Math.round(Math.sqrt(1800 / aspect))));
+      const cols = Math.max(24, Math.min(54, Math.round(rows * aspect)));
+      const dxM = Math.max(45.0, Math.min(2400.0, Math.max(spanXm / cols, spanYm / rows)));
+      state.center = { lat: midLat, lon: midLon };
+      state.boundaryGrid = { cols, rows, dxM };
+      state.cachedDem = null;
+      applyRegionBoundary();
+      map.fitBounds([[minLon, minLat], [maxLon, maxLat]], {
+        padding: { top: 64, bottom: 92, left: 315, right: 215 },
+        pitch: 24,
+        bearing: -6,
+        duration: 0,
+      });
+      await runSimulation(false);
+      return true;
+    }
+  } catch (_) { /* offline */ }
+  return false;
 }
 
 function decodeFramesBin(buffer) {
@@ -421,6 +551,31 @@ function updateSmoothWaterImage(meta, env, frame) {
   rasterCtx.putImageData(img, 0, 0);
 
   const [minLon, minLat, maxLon, maxLat] = meta.wgs84_bounds;
+  if (state.boundaryGeoJson) {
+    rasterCtx.save();
+    rasterCtx.globalCompositeOperation = 'destination-in';
+    rasterCtx.beginPath();
+    const traceRing = (ring) => {
+      for (let i = 0; i < ring.length; i++) {
+        const x = ((ring[i][0] - minLon) / (maxLon - minLon)) * W;
+        const y = ((maxLat - ring[i][1]) / (maxLat - minLat)) * H;
+        if (i === 0) rasterCtx.moveTo(x, y);
+        else rasterCtx.lineTo(x, y);
+      }
+      rasterCtx.closePath();
+    };
+    const geom = state.boundaryGeoJson;
+    if (geom.type === 'Polygon' && Array.isArray(geom.coordinates?.[0])) {
+      traceRing(geom.coordinates[0]);
+    } else if (geom.type === 'MultiPolygon' && Array.isArray(geom.coordinates)) {
+      for (const poly of geom.coordinates) {
+        if (Array.isArray(poly?.[0])) traceRing(poly[0]);
+      }
+    }
+    rasterCtx.fillStyle = '#000000';
+    rasterCtx.fill('evenodd');
+    rasterCtx.restore();
+  }
   const coords = [[minLon, maxLat], [maxLon, maxLat], [maxLon, minLat], [minLon, minLat]];
   const url = rasterCanvas.toDataURL('image/png');
   if (map.getSource('arus-water-img')) {
@@ -781,7 +936,7 @@ async function fetchTerrariumElevations(centerLon, centerLat, cols, rows, dxM) {
   const minLat = centerLat - (heightM * 0.5) / mPerDegLat;
   const maxLat = centerLat + (heightM * 0.5) / mPerDegLat;
 
-  const zoom = 14;
+  const zoom = dxM >= 600 ? 10 : dxM >= 200 ? 12 : 14;
   const needed = new Map();
   const samples = [];
   for (let r = 0; r < rows; r++) {
@@ -835,9 +990,9 @@ async function buildRequestPayload() {
   const boundary = $('ctl-boundary').value === 'closed'
     ? { kind: 'closed' }
     : { kind: 'transmissive' };
-  const cols = 32;
-  const rows = 28;
-  const dxM = 45.0;
+  const cols = state.boundaryGrid ? state.boundaryGrid.cols : 32;
+  const rows = state.boundaryGrid ? state.boundaryGrid.rows : 28;
+  const dxM = state.boundaryGrid ? state.boundaryGrid.dxM : 45.0;
   const sampled = state.uploadedDem
     ? null
     : await fetchTerrariumElevations(state.center.lon, state.center.lat, cols, rows, dxM);
@@ -994,11 +1149,76 @@ function fmtCalendarTime(epochMs, tzLabel) {
   return `${yyyy}-${mm}-${dd} ${hh}:${mi}:${ss} ${tzLabel}`;
 }
 
+const DAYS_SHORT = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+
+function fmtCalloutTime(epochMs, tzLabel) {
+  const d = new Date(epochMs);
+  const dow = DAYS_SHORT[d.getUTCDay()];
+  const day = d.getUTCDate();
+  const h24 = d.getUTCHours();
+  const mi = d.getUTCMinutes();
+  const ampm = h24 >= 12 ? 'PM' : 'AM';
+  const h12 = h24 % 12 || 12;
+  const minPart = mi === 0 ? '' : `:${String(mi).padStart(2, '0')}`;
+  return `${dow} ${day} · ${h12}${minPart} ${ampm} ${tzLabel}`;
+}
+
+function renderForecastSegments() {
+  const bar = $('forecast-bar');
+  const tl = $('timeline');
+  if (!bar || !tl) return;
+  if (!(state.spanHours > 0)) {
+    bar.classList.add('hidden');
+    tl.classList.remove('hidden');
+    return;
+  }
+  tl.classList.add('hidden');
+  bar.classList.remove('hidden');
+  const segEl = $('fb-segments');
+  const startMs = state.startEpochMs;
+  const spanMs = state.spanHours * 3600_000;
+  const segs = [];
+  if (state.spanHours >= 24) {
+    const days = Math.max(2, Math.min(10, Math.round(state.spanHours / 24)));
+    for (let i = 0; i < days; i++) {
+      const d = new Date(startMs + i * 86_400_000);
+      const dowIdx = d.getUTCDay();
+      const wk = dowIdx === 0 || dowIdx === 6 ? ' weekend' : '';
+      segs.push(`<div class="fb-seg${wk}" data-seg="${i}">${DAYS_SHORT[dowIdx]} ${d.getUTCDate()}</div>`);
+    }
+  } else {
+    const slots = Math.max(4, Math.min(8, Math.round(state.spanHours / 3) || 4));
+    for (let i = 0; i < slots; i++) {
+      const d = new Date(startMs + (spanMs * i) / slots);
+      const hh = String(d.getUTCHours()).padStart(2, '0');
+      const mi = String(d.getUTCMinutes()).padStart(2, '0');
+      segs.push(`<div class="fb-seg" data-seg="${i}">${hh}:${mi}</div>`);
+    }
+  }
+  segEl.innerHTML = segs.join('');
+}
+
 function updateTimeReadout() {
   if (!state.frames.length) return;
-  const cur = state.frames[Math.min(state.frameIdx, state.frames.length - 1)].time_s;
+  const idx = Math.min(state.frameIdx, state.frames.length - 1);
+  const cur = state.frames[idx].time_s;
   const ts = fmtCalendarTime(state.startEpochMs + cur * 1000, state.tzLabel);
   $('time-readout').textContent = `${ts} (+${fmtMMSS(cur)})`;
+
+  if (state.spanHours > 0) {
+    const frac = state.frames.length > 1 ? idx / (state.frames.length - 1) : 0;
+    const epochMs = state.startEpochMs + frac * state.spanHours * 3600_000;
+    const pct = frac * 100;
+    $('fb-fill').style.width = `${pct.toFixed(2)}%`;
+    const callout = $('fb-callout');
+    callout.textContent = fmtCalloutTime(epochMs, state.tzLabel);
+    callout.style.left = `${Math.max(12, Math.min(88, pct)).toFixed(2)}%`;
+    const segNodes = document.querySelectorAll('#fb-segments .fb-seg');
+    if (segNodes.length > 0) {
+      const activeIdx = Math.min(segNodes.length - 1, Math.floor(frac * segNodes.length));
+      segNodes.forEach((n, i) => n.classList.toggle('active', i === activeIdx));
+    }
+  }
 }
 
 function updateInterventionBar() {
@@ -1334,10 +1554,30 @@ function toggleVideoRecording() {
   activeRecorder.ondataavailable = (e) => {
     if (e.data && e.data.size > 0) recordedChunks.push(e.data);
   };
-  activeRecorder.onstop = () => {
+  activeRecorder.onstop = async () => {
     const blob = new Blob(recordedChunks, { type: mime });
-    downloadBlob(blob, `arus-${state.runId || 'recording'}.webm`);
     recordedChunks = [];
+    const baseName = `arus-${state.runId || 'recording'}`;
+    btn.disabled = true;
+    btn.textContent = 'MP4…';
+    try {
+      const resp = await fetch('/api/v1/export/mp4', {
+        method: 'POST',
+        headers: { 'content-type': 'video/webm' },
+        body: blob,
+      });
+      if (resp.ok) {
+        const mp4Blob = await resp.blob();
+        downloadBlob(mp4Blob, `${baseName}.mp4`);
+      } else {
+        downloadBlob(blob, `${baseName}.webm`);
+      }
+    } catch (_) {
+      downloadBlob(blob, `${baseName}.webm`);
+    } finally {
+      btn.disabled = false;
+      btn.textContent = 'Rec';
+    }
   };
   activeRecorder.start();
   btn.classList.add('recording');
@@ -1405,6 +1645,10 @@ window.arusDirector = {
       if (Number.isFinite(parsed)) state.startEpochMs = parsed;
     }
     if (opts.tz_label) state.tzLabel = String(opts.tz_label);
+    if (typeof opts.span_hours === 'number' && Number.isFinite(opts.span_hours)) {
+      state.spanHours = Math.max(0, opts.span_hours);
+      renderForecastSegments();
+    }
     updateTimeReadout();
   },
   runSimulation: () => runSimulation(false),
@@ -1461,7 +1705,15 @@ window.arusDirector = {
   },
   setPresentationMode: (enabled) => {
     document.documentElement.dataset.presentation = enabled ? 'true' : 'false';
+    if (map && map.getLayer('arus-domain-outline')) {
+      map.setLayoutProperty(
+        'arus-domain-outline',
+        'visibility',
+        enabled || state.boundaryGeoJson ? 'none' : 'visible',
+      );
+    }
   },
+  loadBoundaryByQuery: (query) => loadBoundaryByQuery(query),
   setPublicOutlook: (cfg) => {
     const card = $('public-outlook');
     if (!cfg) {
@@ -1528,6 +1780,8 @@ function applyStartupParams() {
   if (qs.get('boundary')) scen.boundary = qs.get('boundary');
   if (qs.get('start_iso')) scen.start_iso = qs.get('start_iso');
   if (qs.get('tz')) scen.tz_label = qs.get('tz');
+  const spanHours = parseFloat(qs.get('span_hours'));
+  if (Number.isFinite(spanHours) && spanHours > 0) scen.span_hours = spanHours;
   if (Object.keys(scen).length > 0) window.arusDirector.setScenario(scen);
 }
 

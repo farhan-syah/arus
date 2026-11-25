@@ -19,11 +19,15 @@ arus-jobs.workspace = true
 arus-model-api.workspace = true
 arus-scenarios.workspace = true
 arus-storage.workspace = true
+base64 = "0.22"
 clap.workspace = true
+containr = { version = "0.1.1", default-features = false, features = ["mp4"] }
 numr15 = { package = "numr", version = "0.15.2", default-features = false }
+png = "0.18"
 serde.workspace = true
 serde_json.workspace = true
 sha2.workspace = true
+tempfile.workspace = true
 vidr.workspace = true
 
 [dev-dependencies]

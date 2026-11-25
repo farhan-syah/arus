@@ -51,7 +51,7 @@ fn StudioShell() -> Element {
                 button { id: "btn-2d3d", class: "btn active", "3D" }
                 button { id: "btn-sources", class: "btn", "Sources" }
                 button { id: "btn-snap", class: "btn", title: "Save PNG snapshot", "PNG" }
-                button { id: "btn-rec", class: "btn", title: "Record WebM video", "Rec" }
+                button { id: "btn-rec", class: "btn", title: "Record MP4 video (via vidr)", "Rec" }
                 button { id: "btn-export-asc", class: "btn", ".ASC" }
                 button { id: "btn-export-csv", class: "btn", ".CSV" }
             }
@@ -216,11 +216,22 @@ fn StudioShell() -> Element {
         }
 
         // Bottom-Center Compact Playback Capsule
-        footer { class: "hud timeline",
+        footer { id: "timeline", class: "hud timeline",
             button { id: "btn-play", class: "btn btn-icon active", title: "Play / Pause", "❚❚" }
             button { id: "btn-speed", class: "btn btn-xs", "1x" }
             span { id: "time-readout", class: "time-readout", "00:00 / 06:00" }
             input { id: "scrubber", class: "scrubber", r#type: "range", min: "0", max: "47", value: "0" }
+        }
+
+        // Adaptive Multi-Day / Interval Forecast Timeline
+        footer { id: "forecast-bar", class: "hud forecast-bar hidden",
+            div { class: "fb-callout-rail",
+                div { id: "fb-callout", class: "fb-callout", "Wed 25 · 08:00 MYT" }
+            }
+            div { class: "fb-track",
+                div { id: "fb-fill", class: "fb-fill" }
+            }
+            div { id: "fb-segments", class: "fb-segments" }
         }
 
         // Data Sources Modal

@@ -1,5 +1,6 @@
 //! Native numerical worker for ARUS hydraulic executions.
 
+mod recorder;
 mod video;
 
 use std::collections::BTreeMap;
@@ -191,6 +192,27 @@ enum Command {
         /// Optional leading seconds to trim from the start of the recording (e.g. browser boot/tile load).
         #[arg(long, default_value_t = 0.0)]
         trim_start_s: f64,
+    },
+    /// Record a declarative JSON storyboard directly to H.264 `.mp4` via headless Chromium + `vidr` (zero Python).
+    Record {
+        /// Path to the storyboard JSON spec.
+        #[arg(long)]
+        spec: PathBuf,
+        /// Local output directory for `.mp4`, `.png` screenshots, and `summary.json`.
+        #[arg(long)]
+        out: PathBuf,
+        /// Optional running `arus-api` base URL (spawns `arus-api` automatically if omitted).
+        #[arg(long)]
+        url: Option<String>,
+        /// Port for auto-spawned `arus-api`.
+        #[arg(long, default_value_t = 18084)]
+        port: u16,
+        /// Output resolution preset: `720p`, `1080p`/`1k`, `2k`, or `4k`.
+        #[arg(long)]
+        resolution: Option<String>,
+        /// Target output frames per second.
+        #[arg(long, default_value_t = 15)]
+        fps: u32,
     },
     /// Execute a pure-Rust Preissmann-slot pressurized storm-drain network manifest (`hydr 0.2.0`).
     Pipes {
@@ -388,6 +410,21 @@ fn execute(command: Command) -> Result<(), String> {
             );
             Ok(())
         }
+        Command::Record {
+            spec,
+            out,
+            url,
+            port,
+            resolution,
+            fps,
+        } => recorder::run_record(recorder::RecordArgs {
+            spec,
+            out,
+            url,
+            port,
+            resolution,
+            fps,
+        }),
         Command::Pipes { spec } => run_native_pipes_spec(spec),
         Command::DrainageCheck { spec } => run_drainage_check(spec),
         Command::Resume { archive, from_run } => run_resume_check(archive, from_run),

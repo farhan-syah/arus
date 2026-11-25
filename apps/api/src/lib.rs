@@ -1,6 +1,7 @@
 //! Public Axum HTTP API serving immutable archived ARUS runs, interactive simulations, and the 3D web portal.
 
 pub mod sim;
+pub mod video;
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -14,7 +15,7 @@ use arus_web::{
     MAPLIBRE_CSS, MAPLIBRE_JS, STUDIO_CSS, STUDIO_JS, render_index_page_html, render_run_page_html,
     render_sources_page_html, render_studio_page_html,
 };
-use axum::body::Body;
+use axum::body::{Body, Bytes};
 use axum::extract::{DefaultBodyLimit, Path, Query, State};
 use axum::http::{StatusCode, header};
 use axum::response::{Html, Response};
@@ -102,6 +103,10 @@ pub fn router(state: ApiState) -> Router {
         )
         .route("/api/v1/simulations", post(post_simulation))
         .route("/api/v1/compare", post(post_compare))
+        .route(
+            "/api/v1/export/mp4",
+            post(post_export_mp4).layer(DefaultBodyLimit::max(64 * 1024 * 1024)),
+        )
         .route("/runs/{run_id}", get(render_run_html))
         .layer(DefaultBodyLimit::max(MAX_BODY_BYTES))
         .with_state(state)
@@ -312,6 +317,23 @@ async fn export_run_outlooks_csv(
             format!("attachment; filename=\"{run_id}-envelope.csv\""),
         )
         .body(Body::from(csv))
+        .map_err(internal_error)
+}
+
+async fn post_export_mp4(body: Bytes) -> Result<Response, (StatusCode, Json<ErrorResponse>)> {
+    let webm = body.to_vec();
+    let mp4 = tokio::task::spawn_blocking(move || video::transcode_webm_bytes_to_mp4(&webm))
+        .await
+        .map_err(|e| internal_error(format!("mp4 export worker join failed: {e}")))?
+        .map_err(|e| (StatusCode::BAD_REQUEST, Json(ErrorResponse { error: e })))?;
+    Response::builder()
+        .status(StatusCode::OK)
+        .header(header::CONTENT_TYPE, "video/mp4")
+        .header(
+            header::CONTENT_DISPOSITION,
+            "attachment; filename=\"arus-recording.mp4\"",
+        )
+        .body(Body::from(mp4))
         .map_err(internal_error)
 }
 
