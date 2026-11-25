@@ -67,6 +67,42 @@ fn StudioShell() -> Element {
             div { id: "po-foot", class: "po-foot", "Screening forecast · Check official local warnings" }
         }
 
+        // Live Per-Frame Area Flood Gauge (relative to calculated boundary)
+        section { id: "live-metrics", class: "hud live-metrics hidden",
+            div { class: "lm-head",
+                span { class: "lm-title", "Area Flood Index" }
+                span { id: "lm-badge", class: "lm-badge low", "LOW" }
+            }
+            div { class: "lm-bar-wrap",
+                div { class: "lm-bar" }
+                div { id: "lm-marker", class: "lm-marker" }
+            }
+            div { class: "lm-bar-labels",
+                span { "Low" }
+                span { "Mod" }
+                span { "High" }
+                span { "Danger" }
+            }
+            div { class: "lm-grid",
+                div { class: "lm-cell",
+                    span { class: "lm-k", "Avg Depth" }
+                    strong { id: "lm-avg", class: "lm-v", "0.00 m" }
+                }
+                div { class: "lm-cell",
+                    span { class: "lm-k", "Peak Depth" }
+                    strong { id: "lm-peak", class: "lm-v", "0.00 m" }
+                }
+                div { class: "lm-cell",
+                    span { class: "lm-k", "Flooded Area" }
+                    strong { id: "lm-pct", class: "lm-v", "0%" }
+                }
+                div { class: "lm-cell",
+                    span { class: "lm-k", "Active Extent" }
+                    strong { id: "lm-km2", class: "lm-v", "0.0 km²" }
+                }
+            }
+        }
+
         // Left Scenario & Tools Drawer
         aside { id: "drawer", class: "hud drawer",
             div { class: "sec-head",

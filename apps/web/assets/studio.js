@@ -41,6 +41,7 @@ const state = {
   spanHours: 0,
   boundaryGeoJson: null,
   boundaryGrid: null,
+  boundaryCellMask: null,
   particles: [],
 };
 
@@ -263,6 +264,19 @@ function ensureMapLayers() {
     },
   });
 
+  map.addSource('arus-hotspots', { type: 'geojson', data: empty });
+  map.addLayer({
+    id: 'arus-hotspots-circle',
+    type: 'circle',
+    source: 'arus-hotspots',
+    paint: {
+      'circle-radius': 6,
+      'circle-color': ['get', 'color'],
+      'circle-stroke-color': '#ffffff',
+      'circle-stroke-width': 2,
+    },
+  });
+
   layersReady = true;
 }
 
@@ -362,9 +376,9 @@ async function loadBoundaryByQuery(query) {
       state.cachedDem = null;
       applyRegionBoundary();
       map.fitBounds([[minLon, minLat], [maxLon, maxLat]], {
-        padding: { top: 64, bottom: 92, left: 315, right: 215 },
-        pitch: 24,
-        bearing: -6,
+        padding: { top: 40, bottom: 72, left: 255, right: 32 },
+        pitch: 8,
+        bearing: 0,
         duration: 0,
       });
       await runSimulation(false);
@@ -412,14 +426,14 @@ function seedParticles() {
 
 // Hydrological blue depth ramp: dry/shallow (< 0.025m) is 100% transparent
 function colorForDepth(h) {
-  if (h < 0.025) return null;
-  const fade = Math.min(1, (h - 0.025) / 0.055);
+  if (h < 0.06) return null;
+  const fade = Math.min(1, (h - 0.06) / 0.04);
   const stops = [
-    [0.025, 186, 230, 253, 120], // #bae6fd pale sky
-    [0.12,   56, 189, 248, 178], // #38bdf8 cyan-blue
-    [0.32,    2, 132, 199, 212], // #0284c7 river blue
-    [0.65,   29,  78, 216, 230], // #1d4ed8 cobalt
-    [1.20,   30,  27,  75, 242], // #1e1b4b deep indigo
+    [0.06,   56, 189, 248, 175], // #38bdf8 crisp sky (shallow flood)
+    [0.14,    2, 132, 199, 212], // #0284c7 river blue
+    [0.32,   29,  78, 216, 232], // #1d4ed8 cobalt
+    [0.65,   30,  58, 138, 242], // #1e3a8a deep blue
+    [1.10,   30,  27,  75, 248], // #1e1b4b deep indigo
   ];
   if (h >= stops[stops.length - 1][0]) {
     const last = stops[stops.length - 1];
@@ -1031,6 +1045,7 @@ async function loadRun(runId) {
   state.frameIdx = state.playing
     ? Math.min(Math.floor(state.frames.length * 0.72), state.frames.length - 1)
     : 0;
+  rebuildBoundaryCellMask();
   seedParticles();
   ensureMapLayers();
   updateDomainOutline(state.grid.metadata.wgs84_bounds);
@@ -1183,8 +1198,7 @@ function renderForecastSegments() {
     for (let i = 0; i < days; i++) {
       const d = new Date(startMs + i * 86_400_000);
       const dowIdx = d.getUTCDay();
-      const wk = dowIdx === 0 || dowIdx === 6 ? ' weekend' : '';
-      segs.push(`<div class="fb-seg${wk}" data-seg="${i}">${DAYS_SHORT[dowIdx]} ${d.getUTCDate()}</div>`);
+      segs.push(`<div class="fb-seg" data-seg="${i}">${DAYS_SHORT[dowIdx]} ${d.getUTCDate()}</div>`);
     }
   } else {
     const slots = Math.max(4, Math.min(8, Math.round(state.spanHours / 3) || 4));
@@ -1196,6 +1210,104 @@ function renderForecastSegments() {
     }
   }
   segEl.innerHTML = segs.join('');
+}
+
+function pointInRing(lon, lat, ring) {
+  let inside = false;
+  for (let i = 0, j = ring.length - 1; i < ring.length; j = i++) {
+    const xi = ring[i][0], yi = ring[i][1];
+    const xj = ring[j][0], yj = ring[j][1];
+    const intersect = ((yi > lat) !== (yj > lat))
+      && (lon < ((xj - xi) * (lat - yi)) / ((yj - yi) || 1e-12) + xi);
+    if (intersect) inside = !inside;
+  }
+  return inside;
+}
+
+function pointInGeom(lon, lat, geom) {
+  if (!geom) return true;
+  if (geom.type === 'Polygon' && Array.isArray(geom.coordinates?.[0])) {
+    return pointInRing(lon, lat, geom.coordinates[0]);
+  }
+  if (geom.type === 'MultiPolygon' && Array.isArray(geom.coordinates)) {
+    for (const poly of geom.coordinates) {
+      if (Array.isArray(poly?.[0]) && pointInRing(lon, lat, poly[0])) return true;
+    }
+    return false;
+  }
+  return true;
+}
+
+function rebuildBoundaryCellMask() {
+  if (!state.grid) { state.boundaryCellMask = null; return; }
+  const meta = state.grid.metadata;
+  const { cols, rows, active_mask } = meta;
+  const [minLon, minLat, maxLon, maxLat] = meta.wgs84_bounds;
+  const mask = new Uint8Array(cols * rows);
+  for (let r = 0; r < rows; r++) {
+    const lat = minLat + ((r + 0.5) / rows) * (maxLat - minLat);
+    for (let c = 0; c < cols; c++) {
+      const idx = r * cols + c;
+      if (!active_mask[idx]) continue;
+      const lon = minLon + ((c + 0.5) / cols) * (maxLon - minLon);
+      if (!state.boundaryGeoJson || pointInGeom(lon, lat, state.boundaryGeoJson)) {
+        mask[idx] = 1;
+      }
+    }
+  }
+  state.boundaryCellMask = mask;
+}
+
+function updateLiveMetrics() {
+  const card = $('live-metrics');
+  if (!card || !state.grid || !state.frames.length) return;
+  const isPres = document.documentElement.dataset.presentation === 'true';
+  const show = isPres || !$('public-outlook').classList.contains('hidden');
+  card.classList.toggle('hidden', !show);
+  if (!show) return;
+
+  if (!state.boundaryCellMask || state.boundaryCellMask.length !== state.grid.metadata.cols * state.grid.metadata.rows) {
+    rebuildBoundaryCellMask();
+  }
+  const meta = state.grid.metadata;
+  const mask = state.boundaryCellMask;
+  const idx = Math.min(state.frameIdx, state.frames.length - 1);
+  const depth = state.frames[idx].depth;
+  let totalCells = 0;
+  let floodedCells = 0;
+  let sumDepth = 0;
+  let peakDepth = 0;
+  for (let i = 0; i < depth.length; i++) {
+    if (!mask[i]) continue;
+    totalCells++;
+    const h = depth[i];
+    if (h > 0) sumDepth += h;
+    if (h >= 0.06) floodedCells++;
+    if (h > peakDepth) peakDepth = h;
+  }
+  const avgDepth = totalCells > 0 ? sumDepth / totalCells : 0;
+  const floodedPct = totalCells > 0 ? (floodedCells / totalCells) * 100 : 0;
+  const cellKm2 = (meta.dx_m * meta.dx_m) / 1_000_000;
+  const floodedKm2 = floodedCells * cellKm2;
+
+  // Area-relative flood severity index in [0, 1] combining mean depth (0..0.45m) and flooded fraction
+  const depthScore = Math.min(1, avgDepth / 0.45);
+  const areaScore = Math.min(1, floodedPct / 85);
+  const score = Math.min(1, depthScore * 0.65 + areaScore * 0.35);
+
+  const badge = $('lm-badge');
+  let lvl = 'low';
+  let label = 'LOW';
+  if (score >= 0.72) { lvl = 'danger'; label = 'DANGER'; }
+  else if (score >= 0.46) { lvl = 'high'; label = 'HIGH'; }
+  else if (score >= 0.22) { lvl = 'moderate'; label = 'MODERATE'; }
+  badge.className = `lm-badge ${lvl}`;
+  badge.textContent = label;
+  $('lm-marker').style.left = `${(score * 100).toFixed(1)}%`;
+  $('lm-avg').textContent = `${avgDepth.toFixed(2)} m`;
+  $('lm-peak').textContent = `${peakDepth.toFixed(2)} m`;
+  $('lm-pct').textContent = `${floodedPct.toFixed(0)}%`;
+  $('lm-km2').textContent = `${floodedKm2.toFixed(1)} km²`;
 }
 
 function updateTimeReadout() {
@@ -1219,6 +1331,7 @@ function updateTimeReadout() {
       segNodes.forEach((n, i) => n.classList.toggle('active', i === activeIdx));
     }
   }
+  updateLiveMetrics();
 }
 
 function updateInterventionBar() {
@@ -1245,9 +1358,9 @@ function setLayer(layer) {
   const ticks = $('legend-ticks');
   const note = $('legend-note');
   if (layer === 'depth') {
-    bar.style.background = 'linear-gradient(90deg, #bae6fd, #38bdf8, #0284c7, #1d4ed8, #1e1b4b)';
-    ticks.innerHTML = '<span>0.03m</span><span>0.30m</span><span>1.2m+</span>';
-    note.textContent = 'Water depth h (transparent below 3 cm).';
+    bar.style.background = 'linear-gradient(90deg, #38bdf8, #0284c7, #1d4ed8, #1e1b4b)';
+    ticks.innerHTML = '<span>0.06m</span><span>0.30m</span><span>1.1m+</span>';
+    note.textContent = 'Flood depth h (sheet runoff < 6 cm hidden).';
   } else if (layer === 'velocity') {
     bar.style.background = 'linear-gradient(90deg, #2dd4bf, #0284c7, #4f46e5)';
     ticks.innerHTML = '<span>0.0 m/s</span><span>0.7 m/s</span><span>1.4+ m/s</span>';
@@ -1731,6 +1844,19 @@ window.arusDirector = {
       const cls = s.tone ? ` ${s.tone}` : '';
       return `<div class="po-spot"><span class="po-spot-name">${s.name}</span><span class="po-spot-val${cls}">${s.status}</span></div>`;
     }).join('');
+    if (map && map.getSource('arus-hotspots')) {
+      const features = spots
+        .filter((s) => Number.isFinite(s.lat) && Number.isFinite(s.lon))
+        .map((s) => ({
+          type: 'Feature',
+          geometry: { type: 'Point', coordinates: [s.lon, s.lat] },
+          properties: {
+            name: s.name || '',
+            color: s.tone === 'danger' ? '#e11d48' : s.tone === 'warn' ? '#d97706' : '#0284c7',
+          },
+        }));
+      map.getSource('arus-hotspots').setData({ type: 'FeatureCollection', features });
+    }
     if (cfg.footnote) $('po-foot').textContent = cfg.footnote;
     card.classList.remove('hidden');
   },
