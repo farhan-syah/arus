@@ -95,7 +95,7 @@ pub(crate) fn condition_hydrological_dem(elevations: &mut [Option<f64>], cols: u
         }
     }
 
-    let eps = 0.04;
+    let eps = 0.015;
     let dirs: [(isize, isize); 8] = [
         (-1, 0),
         (1, 0),
@@ -122,14 +122,14 @@ pub(crate) fn condition_hydrological_dem(elevations: &mut [Option<f64>], cols: u
             }
             visited[nidx] = true;
             if let Some(nz) = elevations[nidx] {
-                let filled = if nz < cur.val + eps && (cur.val - nz) <= 0.6 {
+                let filled = if nz < cur.val + eps {
                     cur.val + eps
                 } else {
                     nz
                 };
                 elevations[nidx] = Some(filled);
                 heap.push(MinF64 {
-                    val: filled.max(cur.val),
+                    val: filled,
                     idx: nidx,
                 });
             }

@@ -114,7 +114,7 @@ fn StudioShell() -> Element {
                         strong { id: "lm-pct", class: "lm-v", "0%" }
                     }
                     div { class: "lm-cell",
-                        span { class: "lm-k", "Stagnant" }
+                        span { class: "lm-k", "Flooded Extent" }
                         strong { id: "lm-stagnant", class: "lm-v", "0.0 km²" }
                     }
                 }

@@ -106,12 +106,52 @@ impl Ord for MinF64 {
     }
 }
 
-/// Barnes Priority-Flood depression filling with selective preservation of deep natural basins (> 0.6 m).
+/// Barnes Priority-Flood depression filling with 2-pass 3x3 canopy/noise smoothing so 30 m
+/// Terrarium DEM noise pits do not trap runoff into artificial multi-metre polka-dot wells.
 pub(super) fn condition_hydrological_dem(elevations: &mut [Option<f64>], cols: usize, rows: usize) {
     let n = cols * rows;
     if elevations.len() != n || cols < 3 || rows < 3 {
         return;
     }
+    // 2-pass gentle 3x3 smoothing removes 30 m SRTM/Terrarium canopy & building noise spikes.
+    let dirs: [(isize, isize); 8] = [
+        (-1, 0),
+        (1, 0),
+        (0, -1),
+        (0, 1),
+        (-1, -1),
+        (-1, 1),
+        (1, -1),
+        (1, 1),
+    ];
+    for _ in 0..2 {
+        let prev = elevations.to_vec();
+        for r in 0..rows {
+            for c in 0..cols {
+                let idx = r * cols + c;
+                let Some(z0) = prev[idx] else { continue };
+                let mut sum = 0.0;
+                let mut cnt = 0.0;
+                for (dr, dc) in dirs {
+                    let nr = r as isize + dr;
+                    let nc = c as isize + dc;
+                    if nr >= 0
+                        && nc >= 0
+                        && nr < rows as isize
+                        && nc < cols as isize
+                        && let Some(nz) = prev[(nr as usize) * cols + (nc as usize)]
+                    {
+                        sum += nz;
+                        cnt += 1.0;
+                    }
+                }
+                if cnt > 0.0 {
+                    elevations[idx] = Some(z0 * 0.5 + (sum / cnt) * 0.5);
+                }
+            }
+        }
+    }
+
     let mut visited = vec![false; n];
     let mut heap: BinaryHeap<MinF64> = BinaryHeap::with_capacity(n);
 
@@ -127,17 +167,7 @@ pub(super) fn condition_hydrological_dem(elevations: &mut [Option<f64>], cols: u
         }
     }
 
-    let eps = 0.04;
-    let dirs: [(isize, isize); 8] = [
-        (-1, 0),
-        (1, 0),
-        (0, -1),
-        (0, 1),
-        (-1, -1),
-        (-1, 1),
-        (1, -1),
-        (1, 1),
-    ];
+    let eps = 0.015;
 
     while let Some(cur) = heap.pop() {
         let r = (cur.idx / cols) as isize;
@@ -154,14 +184,14 @@ pub(super) fn condition_hydrological_dem(elevations: &mut [Option<f64>], cols: u
             }
             visited[nidx] = true;
             if let Some(nz) = elevations[nidx] {
-                let filled = if nz < cur.val + eps && (cur.val - nz) <= 0.6 {
+                let filled = if nz < cur.val + eps {
                     cur.val + eps
                 } else {
                     nz
                 };
                 elevations[nidx] = Some(filled);
                 heap.push(MinF64 {
-                    val: filled.max(cur.val),
+                    val: filled,
                     idx: nidx,
                 });
             }

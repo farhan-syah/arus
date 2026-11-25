@@ -302,8 +302,10 @@ function ensureMapLayers() {
       },
       beforeLabels,
     );
-    if (state.is3D) {
+    if (state.is3D && !isPres && !state.boundaryGeoJson) {
       try { map.setTerrain({ source: 'arus-terrarium-dem', exaggeration: 1.35 }); } catch (_) {}
+    } else {
+      try { map.setTerrain(null); } catch (_) {}
     }
   }
   const showBox = !isPres && !state.boundaryGeoJson && ['pick', 'bund', 'pond'].includes(state.tool);
@@ -538,6 +540,27 @@ function registerTideMarkerIcons(targetMap) {
       'circle-stroke-width': 2,
     },
   });
+  try {
+    map.addLayer({
+      id: 'arus-hotspots-label',
+      type: 'symbol',
+      source: 'arus-hotspots',
+      filter: ['!=', ['get', 'kind'], 'tide'],
+      layout: {
+        'text-field': ['get', 'name'],
+        'text-size': 11,
+        'text-font': ['Noto Sans Bold'],
+        'text-offset': [0, -1.15],
+        'text-anchor': 'bottom',
+        'text-allow-overlap': true,
+      },
+      paint: {
+        'text-color': '#0f172a',
+        'text-halo-color': 'rgba(255,255,255,0.95)',
+        'text-halo-width': 2.0,
+      },
+    });
+  } catch (_) {}
   map.addLayer({
     id: 'arus-hotspots-tide',
     type: 'symbol',
@@ -624,39 +647,76 @@ function computeGeomBbox(geom) {
   return [minLon, minLat, maxLon, maxLat];
 }
 
-async function loadBoundaryByQuery(query) {
+function buildRadiusPolygon(lon, lat, radiusKm = 5.0, shape = 'hex') {
+  const rMeters = Math.max(0.5, Math.min(50, Number(radiusKm) || 5.0)) * 1000.0;
+  const mPerDegLat = 111320.0;
+  const mPerDegLon = Math.max(10000.0, 111320.0 * Math.cos((lat * Math.PI) / 180));
+  const sides = shape === 'circle' ? 48 : 6;
+  const rotOffset = shape === 'circle' ? 0 : Math.PI / 6; // pointy-top hexagon
+  const ring = [];
+  for (let i = 0; i <= sides; i++) {
+    const theta = rotOffset + (i / sides) * Math.PI * 2;
+    const dx = Math.cos(theta) * rMeters;
+    const dy = Math.sin(theta) * rMeters;
+    ring.push([lon + dx / mPerDegLon, lat + dy / mPerDegLat]);
+  }
+  return { type: 'Polygon', coordinates: [ring] };
+}
+
+async function applyBoundaryGeometry(geom, runSim = true) {
+  if (!geom || (geom.type !== 'Polygon' && geom.type !== 'MultiPolygon')) return false;
+  state.boundaryGeoJson = geom;
+  const [minLon, minLat, maxLon, maxLat] = computeGeomBbox(geom);
+  const midLat = (minLat + maxLat) * 0.5;
+  const midLon = (minLon + maxLon) * 0.5;
+  const mPerDegLat = 111320.0;
+  const mPerDegLon = Math.max(10000.0, 111320.0 * Math.cos((midLat * Math.PI) / 180));
+  const spanXm = (maxLon - minLon) * mPerDegLon * 1.06;
+  const spanYm = (maxLat - minLat) * mPerDegLat * 1.06;
+  const aspect = Math.max(0.4, Math.min(2.5, spanXm / Math.max(1, spanYm)));
+  const rows = Math.max(28, Math.min(56, Math.round(Math.sqrt(2000 / aspect))));
+  const cols = Math.max(28, Math.min(56, Math.round(rows * aspect)));
+  const dxM = Math.max(45.0, Math.min(2400.0, Math.max(spanXm / cols, spanYm / rows)));
+  state.center = { lat: midLat, lon: midLon };
+  state.boundaryGrid = { cols, rows, dxM };
+  state.cachedDem = null;
+  if (map) { try { map.setTerrain(null); } catch (_) {} }
+  applyRegionBoundary();
+  map.fitBounds([[minLon, minLat], [maxLon, maxLat]], {
+    padding: { top: 64, bottom: 78, left: 310, right: 235 },
+    pitch: 12,
+    bearing: 0,
+    duration: 0,
+  });
+  if (runSim) await runSimulation(false);
+  return true;
+}
+
+async function setCustomBoundary(lon, lat, radiusKm = 5.0, shape = 'hex', runSim = false) {
+  const geom = buildRadiusPolygon(lon, lat, radiusKm, shape);
+  return applyBoundaryGeometry(geom, runSim);
+}
+
+async function loadBoundaryByQuery(query, opts = {}) {
   if (!query) return false;
   try {
     const resp = await fetch(
       `https://nominatim.openstreetmap.org/search?format=json&polygon_geojson=1&limit=1&q=${encodeURIComponent(query)}`,
     );
     const hits = await resp.json();
-    const geom = hits?.[0]?.geojson;
+    const hit = hits?.[0];
+    const geom = hit?.geojson;
     if (geom && (geom.type === 'Polygon' || geom.type === 'MultiPolygon')) {
-      state.boundaryGeoJson = geom;
-      const [minLon, minLat, maxLon, maxLat] = computeGeomBbox(geom);
-      const midLat = (minLat + maxLat) * 0.5;
-      const midLon = (minLon + maxLon) * 0.5;
-      const mPerDegLat = 111320.0;
-      const mPerDegLon = Math.max(10000.0, 111320.0 * Math.cos((midLat * Math.PI) / 180));
-      const spanXm = (maxLon - minLon) * mPerDegLon * 1.06;
-      const spanYm = (maxLat - minLat) * mPerDegLat * 1.06;
-      const aspect = Math.max(0.4, Math.min(2.5, spanXm / Math.max(1, spanYm)));
-      const rows = Math.max(24, Math.min(54, Math.round(Math.sqrt(1800 / aspect))));
-      const cols = Math.max(24, Math.min(54, Math.round(rows * aspect)));
-      const dxM = Math.max(45.0, Math.min(2400.0, Math.max(spanXm / cols, spanYm / rows)));
-      state.center = { lat: midLat, lon: midLon };
-      state.boundaryGrid = { cols, rows, dxM };
-      state.cachedDem = null;
-      applyRegionBoundary();
-      map.fitBounds([[minLon, minLat], [maxLon, maxLat]], {
-        padding: { top: 64, bottom: 74, left: 255, right: 32 },
-        pitch: 8,
-        bearing: 0,
-        duration: 0,
-      });
-      await runSimulation(false);
-      return true;
+      return applyBoundaryGeometry(geom, opts.runSim !== false);
+    }
+    if (hit && hit.lat && hit.lon) {
+      const custom = buildRadiusPolygon(
+        parseFloat(hit.lon),
+        parseFloat(hit.lat),
+        opts.radiusKm || 5.0,
+        opts.shape || 'hex',
+      );
+      return applyBoundaryGeometry(custom, opts.runSim !== false);
     }
   } catch (_) { /* offline */ }
   return false;
@@ -1346,11 +1406,11 @@ function lonLatToTilePixel(lon, lat, zoom) {
   return { tx, ty, px, py };
 }
 
-function loadTerrariumTile(z, tx, ty) {
+function loadTerrariumTileOnce(z, tx, ty) {
   return new Promise((resolve) => {
     const img = new Image();
     img.crossOrigin = 'anonymous';
-    const timer = setTimeout(() => resolve(null), 4000);
+    const timer = setTimeout(() => resolve(null), 8000);
     img.onload = () => {
       clearTimeout(timer);
       const c = document.createElement('canvas');
@@ -1366,6 +1426,12 @@ function loadTerrariumTile(z, tx, ty) {
     };
     img.src = `https://s3.amazonaws.com/elevation-tiles-prod/terrarium/${z}/${tx}/${ty}.png`;
   });
+}
+
+async function loadTerrariumTile(z, tx, ty) {
+  const first = await loadTerrariumTileOnce(z, tx, ty);
+  if (first) return first;
+  return loadTerrariumTileOnce(z, tx, ty);
 }
 
 // Gentle 1-pass 3x3 smoothing to remove single-pixel Terrarium quantization pits while keeping channels
@@ -1409,7 +1475,7 @@ async function fetchTerrariumElevations(centerLon, centerLat, cols, rows, dxM) {
   const minLat = centerLat - (heightM * 0.5) / mPerDegLat;
   const maxLat = centerLat + (heightM * 0.5) / mPerDegLat;
 
-  const zoom = dxM >= 600 ? 10 : dxM >= 200 ? 12 : 14;
+  const zoom = dxM >= 600 ? 10 : dxM >= 120 ? 12 : dxM >= 45 ? 13 : 14;
   const needed = new Map();
   const samples = [];
   for (let r = 0; r < rows; r++) {
@@ -1866,7 +1932,10 @@ function updateHonestyPill() {
       : 'Synthetic DEM';
   pill.classList.toggle('fail', !ok);
   pill.title = `Engine: ${state.activeEngine} · Mass residual: ${res.toExponential(1)} m³ (screening only)`;
-  txt.textContent = `${state.activeEngine} · ${demTag} · Mass ${ok ? 'OK' : 'FAIL'}`;
+  const isPres = document.documentElement.dataset.presentation === 'true';
+  txt.textContent = isPres
+    ? `${demTag} screening · Mass ${ok ? 'OK' : 'FAIL'}`
+    : `${state.activeEngine} · ${demTag} · Mass ${ok ? 'OK' : 'FAIL'}`;
   updateFrameTelemetry();
 }
 
@@ -2019,7 +2088,7 @@ function updateLiveMetrics() {
     if (h > 0) sumDepth += h;
     if (h >= cut) {
       floodedCells++;
-      if (Math.hypot(vx[i], vy[i]) < 0.03) stagnantCells++;
+      stagnantCells++;
     }
     if (h > peakDepth) peakDepth = h;
   }
@@ -2168,7 +2237,7 @@ function updateLiveHotspots(frameIdx) {
         }
       } else {
         tone = hCur >= 0.35 ? 'danger' : hCur >= 0.08 ? 'warn' : '';
-        statusText = hCur >= 0.06 ? `${hCur.toFixed(2)} m depth` : 'Dry (<6 cm)';
+        statusText = hCur >= 0.06 ? `~${hCur.toFixed(1)} m est.` : 'Dry (<6 cm)';
       }
 
       pinFeatures.push({
@@ -2910,7 +2979,9 @@ window.arusDirector = {
       );
     }
   },
-  loadBoundaryByQuery: (query) => loadBoundaryByQuery(query),
+  loadBoundaryByQuery: (query, opts) => loadBoundaryByQuery(query, opts),
+  setCustomBoundary: (lon, lat, radiusKm, shape, runSim) =>
+    setCustomBoundary(lon, lat, radiusKm, shape, runSim),
   setPublicOutlook: (cfg) => {
     const card = $('public-outlook');
     if (!cfg) {
@@ -3098,6 +3169,7 @@ function applyDisplayPrefsToMap() {
     setVis('sat-labels', p.showLabels);
     setVis('arus-domain-outline', p.showBoundary && !state.boundaryGeoJson && document.documentElement.dataset.presentation !== 'true');
     setVis('arus-hotspots-circle', p.showMarkers);
+    setVis('arus-hotspots-label', p.showMarkers);
     setVis('arus-hotspots-tide', p.showMarkers);
     if (map.getLayer('arus-water-smooth')) map.setPaintProperty('arus-water-smooth', 'raster-opacity', p.floodOpacity);
     if (map.getLayer('arus-river-line')) map.setPaintProperty('arus-river-line', 'line-opacity', p.riverOpacity);

@@ -381,9 +381,22 @@ fn apply_instant_action(cdp: &mut CdpClient, step: &Value) -> Result<(), String>
         }
         "load_boundary" => {
             let query = step.get("query").and_then(Value::as_str).unwrap_or("");
+            let radius_km = step.get("radius_km").and_then(Value::as_f64).unwrap_or(5.0);
+            let shape = step.get("shape").and_then(Value::as_str).unwrap_or("hex");
             let js_arg = serde_json::to_string(query).map_err(|e| e.to_string())?;
+            let js_shape = serde_json::to_string(shape).map_err(|e| e.to_string())?;
             cdp.eval(&format!(
-                "window.arusDirector.loadBoundaryByQuery({js_arg})"
+                "window.arusDirector.loadBoundaryByQuery({js_arg}, {{ radiusKm: {radius_km}, shape: {js_shape} }})"
+            ))?;
+        }
+        "custom_boundary" => {
+            let lon = step.get("lon").and_then(Value::as_f64).unwrap_or(101.415);
+            let lat = step.get("lat").and_then(Value::as_f64).unwrap_or(3.310);
+            let radius_km = step.get("radius_km").and_then(Value::as_f64).unwrap_or(5.0);
+            let shape = step.get("shape").and_then(Value::as_str).unwrap_or("hex");
+            let js_shape = serde_json::to_string(shape).map_err(|e| e.to_string())?;
+            cdp.eval(&format!(
+                "window.arusDirector.setCustomBoundary({lon}, {lat}, {radius_km}, {js_shape}, false)"
             ))?;
         }
         other => return Err(format!("unsupported storyboard action `{other}`")),
