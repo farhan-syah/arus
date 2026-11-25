@@ -124,7 +124,7 @@ pub fn evaluate_compound_tide_lock(
     }
 }
 
-/// Stage 4: Windowed 2D `hydr 0.2.0` inundation and recession (`waktu surut`) summary.
+/// Stage 4: Windowed 2D `hydr 0.2.0` inundation and recession timing summary.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Windowed2DOutcome {
     pub triggered: bool,

@@ -1175,7 +1175,7 @@ fn run_four_stage_pipeline(args: PipelineArgs) -> Result<(), String> {
         None => None,
     };
 
-    // Stage 4: Windowed 2D hydr 0.2.0 inundation + onset/recession (waktu surut)
+    // Stage 4: Windowed 2D hydr 0.2.0 inundation + onset/recession timing
     let tide_risk = stage3_compound_tide
         .as_ref()
         .is_some_and(|t| t.compound_backwater_risk);
