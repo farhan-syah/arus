@@ -381,13 +381,11 @@ fn StudioShell() -> Element {
                             }
                         }
                         div { class: "field",
-                            span { class: "field-label", "Sheet-Runoff Cutoff" }
-                            select { id: "opt-cutoff", class: "ctl-select",
-                                option { value: "0.02", "2 cm (0.02 m)" }
-                                option { value: "0.06", selected: true, "6 cm (0.06 m — default)" }
-                                option { value: "0.10", "10 cm (0.10 m)" }
-                                option { value: "0.15", "15 cm (0.15 m)" }
+                            div { class: "field-row",
+                                span { class: "field-label", "Min Flood Cutoff" }
+                                span { id: "val-cutoff", class: "field-val", "8 cm (Auto)" }
                             }
+                            input { id: "opt-cutoff", r#type: "range", min: "0.05", max: "0.30", step: "0.01", value: "0.08" }
                         }
                         div { class: "field",
                             div { class: "field-row",

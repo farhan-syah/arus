@@ -81,7 +81,7 @@ const state = {
     showLabels: true,
     basemap: 'topo',
     layer: 'depth',
-    depthCutoffM: 0.06,
+    depthCutoffM: 0.08,
     floodOpacity: 0.95,
     riverOpacity: 0.72,
     units: 'metric', // metric | imperial
@@ -111,6 +111,7 @@ const state = {
     compute: 'auto', // auto | server
   },
   stormDrainGrid: null,
+  userOverrideCutoff: false,
 };
 
 function fmtDepth(m, decimals = 2) {
@@ -1704,6 +1705,9 @@ function applyLoadedSimulation(grid, frames, runId, engineLabel) {
   state.frames = frames;
   state.runId = runId;
   state.activeEngine = engineLabel || 'Server · F64';
+  if (!state.userOverrideCutoff && grid?.metadata?.dx_m) {
+    state.displayPrefs.depthCutoffM = grid.metadata.dx_m >= 300 ? 0.15 : 0.08;
+  }
   state.frameIdx = state.playing
     ? Math.min(Math.floor(state.frames.length * 0.72), state.frames.length - 1)
     : 0;
@@ -1718,7 +1722,7 @@ function applyLoadedSimulation(grid, frames, runId, engineLabel) {
   scrubber.value = String(state.frameIdx);
   updateHonestyPill();
   updateTimeReadout();
-  renderFloodCanvas(true);
+  setLayer(state.layer);
 }
 
 async function loadRun(runId) {
@@ -2349,8 +2353,9 @@ function updateLiveHotspots(frameIdx) {
           statusText = `${liveStage.toFixed(2)} m · ${hCur.toFixed(2)} m`;
         }
       } else {
-        tone = hCur >= 0.35 ? 'danger' : hCur >= 0.06 ? 'warn' : '';
-        statusText = hCur >= 0.06 ? `~${hCur.toFixed(1)} m est.` : 'Dry (<6 cm)';
+        const cut = state.displayPrefs.depthCutoffM || 0.06;
+        tone = hCur >= 0.35 ? 'danger' : hCur >= cut ? 'warn' : '';
+        statusText = hCur >= cut ? `~${hCur.toFixed(1)} m est.` : `Dry (<${Math.round(cut * 100)} cm)`;
       }
 
       pinFeatures.push({
@@ -2663,6 +2668,12 @@ function wireUi() {
   $('btn-open-sim').addEventListener('click', openSimModal);
   $('btn-sim-close').addEventListener('click', () => $('sim-modal').classList.add('hidden'));
   $('btn-sim-cancel').addEventListener('click', () => $('sim-modal').classList.add('hidden'));
+  if ($('opt-cutoff')) {
+    $('opt-cutoff').addEventListener('input', (e) => {
+      const cm = Math.round((parseFloat(e.target.value) || 0.08) * 100);
+      if ($('val-cutoff')) $('val-cutoff').textContent = `${cm} cm`;
+    });
+  }
   $('btn-sim-apply').addEventListener('click', applySimModalDraftAndRun);
   if ($('sim-storm-drain')) {
     $('sim-storm-drain').addEventListener('input', (e) => {
@@ -3297,6 +3308,10 @@ function populateLayersModal() {
   $('opt-basemap').value = p.basemap;
   $('opt-layer').value = p.layer;
   $('opt-cutoff').value = String(p.depthCutoffM);
+  if ($('val-cutoff')) {
+    const cm = Math.round((p.depthCutoffM || 0.08) * 100);
+    $('val-cutoff').textContent = state.userOverrideCutoff ? `${cm} cm` : `${cm} cm (Auto)`;
+  }
   const fPct = Math.round((p.floodOpacity || 0.95) * 100);
   $('opt-flood-opacity').value = String(fPct);
   $('val-flood-opacity').textContent = `${fPct}%`;
@@ -3375,7 +3390,7 @@ function applyLayersModalDraft() {
     showLabels: $('opt-show-labels').checked,
     basemap: $('opt-basemap').value,
     layer: $('opt-layer').value,
-    depthCutoffM: parseFloat($('opt-cutoff').value) || 0.06,
+    depthCutoffM: parseFloat($('opt-cutoff').value) || 0.08,
     floodOpacity: (parseInt($('opt-flood-opacity').value, 10) || 95) / 100,
     riverOpacity: (parseInt($('opt-river-opacity').value, 10) || 72) / 100,
     units: $('opt-units').value,
@@ -3383,6 +3398,7 @@ function applyLayersModalDraft() {
     showMetrics: $('opt-show-metrics').checked,
     showLegend: $('opt-show-legend').checked,
   };
+  state.userOverrideCutoff = true;
   saveUserPrefs({ displayPrefs: state.displayPrefs });
   applyDisplayPrefsToMap();
   $('layers-modal').classList.add('hidden');
