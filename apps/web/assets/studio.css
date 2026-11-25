@@ -795,6 +795,9 @@ input[type="range"] {
 [data-profile="researcher"]:not([data-presentation="true"]) .left-stack {
   display: none !important;
 }
+body.has-forecast-bar .inspector {
+  bottom: 94px;
+}
 .coord-well {
   display: flex;
   align-items: center;

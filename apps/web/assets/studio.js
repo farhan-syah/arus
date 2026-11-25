@@ -54,6 +54,7 @@ const state = {
   profile: 'researcher', // public | researcher
   serverConfig: null,
   serverContext: null,
+  directorOutlookSet: false,
   pickingStressSite: false,
   stressSite: null,
   displayPrefs: {
@@ -269,13 +270,39 @@ function ensureMapLayers() {
   const isDark = state.basemap !== 'topo';
 
   const isPres = document.documentElement.dataset.presentation === 'true';
+  if (!map.getSource('arus-terrarium-dem')) {
+    map.addSource('arus-terrarium-dem', {
+      type: 'raster-dem',
+      tiles: ['https://s3.amazonaws.com/elevation-tiles-prod/terrarium/{z}/{x}/{y}.png'],
+      encoding: 'terrarium',
+      tileSize: 256,
+      maxzoom: 15,
+    });
+    map.addLayer(
+      {
+        id: 'arus-hillshade',
+        type: 'hillshade',
+        source: 'arus-terrarium-dem',
+        paint: {
+          'hillshade-exaggeration': isDark ? 0.25 : 0.32,
+          'hillshade-shadow-color': isDark ? '#020617' : '#334155',
+          'hillshade-highlight-color': isDark ? '#334155' : '#ffffff',
+        },
+      },
+      beforeLabels,
+    );
+    if (state.is3D) {
+      try { map.setTerrain({ source: 'arus-terrarium-dem', exaggeration: 1.35 }); } catch (_) {}
+    }
+  }
+  const showBox = !isPres && !state.boundaryGeoJson && ['pick', 'bund', 'pond'].includes(state.tool);
   map.addSource('arus-domain-box', { type: 'geojson', data: empty });
   map.addLayer(
     {
       id: 'arus-domain-outline',
       type: 'line',
       source: 'arus-domain-box',
-      layout: { visibility: isPres || state.boundaryGeoJson ? 'none' : 'visible' },
+      layout: { visibility: showBox ? 'visible' : 'none' },
       paint: {
         'line-color': isDark ? 'rgba(148, 163, 184, 0.5)' : 'rgba(15, 23, 42, 0.30)',
         'line-width': 1.2,
@@ -345,7 +372,7 @@ function ensureMapLayers() {
         paint: {
           'line-color': '#10b981',
           'line-width': ['interpolate', ['linear'], ['zoom'], 8, 0.9, 12, 1.4, 15, 2.0],
-          'line-opacity': 0.72,
+          'line-opacity': state.displayPrefs.riverOpacity ?? 0.72,
         },
         layout: { 'line-cap': 'round', 'line-join': 'round' },
       },
@@ -519,10 +546,11 @@ function updateDomainOutline(bounds) {
   if (!map || !layersReady) return;
   const isPres = document.documentElement.dataset.presentation === 'true';
   if (map.getLayer('arus-domain-outline')) {
+    const showBox = !isPres && !state.boundaryGeoJson && ['pick', 'bund', 'pond'].includes(state.tool);
     map.setLayoutProperty(
       'arus-domain-outline',
       'visibility',
-      isPres || state.boundaryGeoJson ? 'none' : 'visible',
+      showBox ? 'visible' : 'none',
     );
   }
   const [minLon, minLat, maxLon, maxLat] = bounds;
@@ -838,7 +866,7 @@ function updateSmoothWaterImage(meta, env, frame) {
         id: 'arus-water-smooth',
         type: 'raster',
         source: 'arus-water-img',
-        paint: { 'raster-opacity': 0.85, 'raster-resampling': 'linear', 'raster-fade-duration': 0 },
+        paint: { 'raster-opacity': state.displayPrefs.floodOpacity ?? 0.95, 'raster-resampling': 'linear', 'raster-fade-duration': 0 },
       },
       anchor,
     );
@@ -1251,9 +1279,9 @@ async function buildRequestPayload() {
   const boundary = sc.boundary === 'closed'
     ? { kind: 'closed' }
     : { kind: 'transmissive' };
-  const cols = state.boundaryGrid ? state.boundaryGrid.cols : 32;
-  const rows = state.boundaryGrid ? state.boundaryGrid.rows : 28;
-  const dxM = state.boundaryGrid ? state.boundaryGrid.dxM : 45.0;
+  const cols = state.boundaryGrid ? state.boundaryGrid.cols : 64;
+  const rows = state.boundaryGrid ? state.boundaryGrid.rows : 56;
+  const dxM = state.boundaryGrid ? state.boundaryGrid.dxM : 30.0;
   const sampled = state.uploadedDem
     ? null
     : await fetchTerrariumElevations(state.center.lon, state.center.lat, cols, rows, dxM);
@@ -1490,6 +1518,7 @@ function renderForecastSegments() {
   const bar = $('forecast-bar');
   const tl = $('timeline');
   if (!bar || !tl) return;
+  document.body.classList.toggle('has-forecast-bar', state.spanHours > 0);
   if (!(state.spanHours > 0)) {
     bar.classList.add('hidden');
     tl.classList.remove('hidden');
@@ -1658,6 +1687,26 @@ function updateLiveMetrics() {
   $('lm-pct').textContent = `${floodedPct.toFixed(0)}%`;
   const stagEl = $('lm-stagnant');
   if (stagEl) stagEl.textContent = fmtArea(stagnantKm2, 1);
+  if (state.profile === 'public' && !isPres && !state.directorOutlookSet) {
+    const po = $('public-outlook');
+    if (po) {
+      const sel = $('preset-select');
+      const locName = sel && sel.selectedOptions[0] ? sel.selectedOptions[0].textContent : 'Local Flood Screening';
+      $('po-title').textContent = locName;
+      const risk = $('po-risk');
+      risk.className = `po-risk ${lvl}`;
+      risk.textContent = label;
+      const sc = state.simConfig;
+      const modeDesc = sc.mode === 'stress'
+        ? `${sc.stressMmDay} mm/day × ${sc.stressDays}d stress-test`
+        : `${fmtRain(sc.rainfallMmHr * (sc.rainMult || 1), 0)} scenario`;
+      $('po-summary').textContent =
+        `Peak simulated depth ${fmtDepth(peakDepth, 2)} across ${floodedPct.toFixed(0)}% of the area (${modeDesc}). Open Simulate… to test other rain or site pad scenarios.`;
+      $('po-hotspots').innerHTML = '';
+      if (state.serverConfig?.disclaimer) $('po-foot').textContent = state.serverConfig.disclaimer;
+      po.classList.remove('hidden');
+    }
+  }
   updateLiveHotspots(idx);
 }
 
@@ -1808,6 +1857,11 @@ function setTool(tool) {
   document.querySelectorAll('[data-tool]').forEach((el) => {
     el.classList.toggle('active', el.dataset.tool === tool);
   });
+  if (map && layersReady && map.getLayer('arus-domain-outline')) {
+    const isPres = document.documentElement.dataset.presentation === 'true';
+    const showBox = !isPres && !state.boundaryGeoJson && ['pick', 'bund', 'pond'].includes(tool);
+    map.setLayoutProperty('arus-domain-outline', 'visibility', showBox ? 'visible' : 'none');
+  }
 }
 
 function setLayer(layer) {
@@ -2342,9 +2396,11 @@ window.arusDirector = {
   setPublicOutlook: (cfg) => {
     const card = $('public-outlook');
     if (!cfg) {
+      state.directorOutlookSet = false;
       card.classList.add('hidden');
       return;
     }
+    state.directorOutlookSet = true;
     $('po-title').textContent = cfg.title || 'Flood Outlook';
     const risk = $('po-risk');
     const lvl = (cfg.risk_level || 'moderate').toLowerCase();
@@ -2454,7 +2510,14 @@ function applyDisplayPrefsToMap() {
   if (p.basemap !== state.basemap) setBasemap(p.basemap);
   if (p.is3D !== state.is3D) {
     state.is3D = p.is3D;
-    if (map) map.easeTo({ pitch: state.is3D ? 48 : 0, bearing: state.is3D ? -16 : 0, duration: 400 });
+    if (map) {
+      try {
+        map.setTerrain(state.is3D && map.getSource('arus-terrarium-dem')
+          ? { source: 'arus-terrarium-dem', exaggeration: 1.35 }
+          : null);
+      } catch (_) {}
+      map.easeTo({ pitch: state.is3D ? 48 : 0, bearing: state.is3D ? -16 : 0, duration: 400 });
+    }
   }
   const layerPanel = document.querySelector('.layer-panel');
   if (layerPanel && document.documentElement.dataset.presentation !== 'true') {
