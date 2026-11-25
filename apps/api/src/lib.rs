@@ -898,4 +898,81 @@ mod job_queue_tests {
         assert!(dry_run.summary.budget_assessment.passed);
         Ok(())
     }
+
+    #[tokio::test]
+    async fn hourly_forcing_preserves_flash_spike_and_recession() -> Result<(), String> {
+        let state = ApiState::open(std::path::Path::new("/tmp/arus-flash-test-empty"))
+            .map_err(|e| e.to_string())?;
+        let mut hourly = vec![0.0_f64; 72];
+        hourly[10] = 65.0; // Single 1-hour convective cloudburst inside a 3-day run
+        let mut req: CreateSimulationRequest = serde_json::from_str(
+            r#"{"cols":8,"rows":8,"dx_m":60.0,"rainfall_mm_per_hr":0.0,"duration_s":1200.0,"drainage_mm_per_hr":4.0,"evaporation_mm_per_day":4.0,"start_dry":true}"#,
+        )
+        .map_err(|e| e.to_string())?;
+        req.hourly_rain_mm = hourly;
+        let sim = state
+            .interactive
+            .run_simulation(req, None)
+            .await
+            .map_err(|(_, m)| m)?;
+        assert!(sim.summary.budget_assessment.passed);
+        let peak_m = sim
+            .series
+            .envelope
+            .max_depth_m
+            .iter()
+            .copied()
+            .fold(0.0_f32, f32::max);
+        let final_m = sim
+            .series
+            .frames
+            .last()
+            .map(|f| f.depth_m.iter().copied().fold(0.0_f32, f32::max))
+            .unwrap_or(0.0);
+        assert!(
+            peak_m > 0.10 && final_m < peak_m * 0.80,
+            "expected flash spike + recession: peak={peak_m:.4} m, final={final_m:.4} m"
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn coastal_sea_outfall_drains_sloped_shoreline() -> Result<(), String> {
+        let state = ApiState::open(std::path::Path::new("/tmp/arus-coast-test-empty"))
+            .map_err(|e| e.to_string())?;
+        let (cols, rows) = (10usize, 8usize);
+        // Columns 0..2 are masked sea (None); columns 2..10 slope gently upward from 1 m to 8 m
+        let mut elevs = Vec::with_capacity(cols * rows);
+        for _r in 0..rows {
+            for c in 0..cols {
+                if c < 2 {
+                    elevs.push(None);
+                } else {
+                    elevs.push(Some((c - 1) as f64));
+                }
+            }
+        }
+        let mut req: CreateSimulationRequest = serde_json::from_str(
+            r#"{"cols":10,"rows":8,"dx_m":100.0,"rainfall_mm_per_hr":0.0,"duration_s":600.0,"drainage_mm_per_hr":2.0,"evaporation_mm_per_day":3.0,"start_dry":true,"tide_mode":"off"}"#,
+        )
+        .map_err(|e| e.to_string())?;
+        req.terrain_elevations_m = Some(elevs);
+        req.terrain_provenance = Some("BrowserTerrariumScreening".to_owned());
+        req.hourly_rain_mm = vec![8.0; 24];
+        let sim = state
+            .interactive
+            .run_simulation(req, None)
+            .await
+            .map_err(|(_, m)| m)?;
+        assert!(sim.summary.budget_assessment.passed);
+        let last = sim.series.frames.last().ok_or("missing final frame")?;
+        let max_shore = (0..rows)
+            .map(|r| last.depth_m[r * cols + 2])
+            .fold(0.0_f32, f32::max);
+        assert!(
+            max_shore < 0.05,
+            "shoreline cells should drain into masked sea instead of piling up: max_shore={max_shore:.4} m"
+        );
+        Ok(())
+    }
 }

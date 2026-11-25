@@ -521,6 +521,10 @@ pub struct CreateSimulationRequest {
     /// build-up and dry-window recession.
     #[serde(default)]
     pub hourly_rain_mm: Vec<f64>,
+    /// Optional 15-minute radar / nowcast precipitation series (mm per 15-min interval, e.g.
+    /// hours 0–6) seamlessly blended ahead of hourly NWP forcing for flash-flood resolution.
+    #[serde(default)]
+    pub nowcast_15min_mm: Vec<f64>,
     /// Optional spatially varying NWP rainfall grid (`nx x ny` points across the domain bbox).
     #[serde(default)]
     pub spatial_rain_grid: Option<SpatialRainGrid>,
@@ -936,6 +940,16 @@ fn validate_request(
             "hourly_rain_mm values must be finite nonnegative".to_owned(),
         ));
     }
+    if req
+        .nowcast_15min_mm
+        .iter()
+        .any(|v| !v.is_finite() || *v < 0.0)
+    {
+        return Err((
+            422,
+            "nowcast_15min_mm values must be finite nonnegative".to_owned(),
+        ));
+    }
     if req.hourly_tide_m.iter().any(|v| !v.is_finite()) {
         return Err((422, "hourly_tide_m values must be finite".to_owned()));
     }
@@ -1077,6 +1091,10 @@ fn compute_request_hash(req: &CreateSimulationRequest) -> [u8; 32] {
     hash_f64(&mut h, req.antecedent_rain_mm);
     hash_usize(&mut h, req.hourly_rain_mm.len());
     for &v in &req.hourly_rain_mm {
+        hash_f64(&mut h, v);
+    }
+    hash_usize(&mut h, req.nowcast_15min_mm.len());
+    for &v in &req.nowcast_15min_mm {
         hash_f64(&mut h, v);
     }
     match &req.spatial_rain_grid {
@@ -1411,10 +1429,17 @@ where
         } else {
             req.hourly_rain_mm.len()
         };
-        let n_bins = n_hours.clamp(1, 24);
+        let n_bins = n_hours.clamp(1, 168);
         let bin_dur_s = req.duration_s / (n_bins as f64);
         let bin_hours = (n_hours as f64) / (n_bins as f64);
         let time_compression = ((n_hours as f64) * 3600.0 / req.duration_s).clamp(1.0, 240.0);
+        // Optional 15-min radar/nowcast blend: convert mm per 15-min step to mm/hr peak-preserving
+        // hourly rates for the lead-in hours (0..nowcast_hours).
+        let nowcast_hourly_mm: Vec<f64> = req
+            .nowcast_15min_mm
+            .chunks(4)
+            .map(|chunk| chunk.iter().copied().filter(|v| v.is_finite() && *v > 0.0).sum::<f64>())
+            .collect();
 
         let accum = compute_d8_flow_accum(terrain.cells(), cols, rows);
         let depression_mask = detect_real_depressions(terrain.cells(), cols, rows);
@@ -1520,7 +1545,11 @@ where
             } else {
                 Vec::new()
             };
-            let fallback_mean_mm: f64 = if !has_spatial {
+            let fallback_mean_mm: f64 = if !nowcast_hourly_mm.is_empty() && h0 < nowcast_hourly_mm.len() {
+                let nc_end = h1.min(nowcast_hourly_mm.len());
+                nowcast_hourly_mm[h0..nc_end].iter().sum::<f64>()
+                    / (nc_end.saturating_sub(h0).max(1) as f64)
+            } else if !has_spatial {
                 req.hourly_rain_mm[h0..h1]
                     .iter()
                     .copied()

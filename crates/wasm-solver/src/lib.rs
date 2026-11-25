@@ -169,6 +169,8 @@ struct WasmSimRequest {
     #[serde(default)]
     hourly_rain_mm: Vec<f64>,
     #[serde(default)]
+    nowcast_15min_mm: Vec<f64>,
+    #[serde(default)]
     spatial_rain_grid: Option<SpatialRainGrid>,
     #[serde(default)]
     hourly_tide_m: Vec<f64>,
@@ -539,9 +541,14 @@ fn prepare_problem(req: &WasmSimRequest) -> Result<PreparedProblem, String> {
         } else {
             req.hourly_rain_mm.len()
         };
-        let n_bins = n_hours.clamp(1, 24);
+        let n_bins = n_hours.clamp(1, 168);
         let bin_dur_s = req.duration_s / (n_bins as f64);
         let time_compression = ((n_hours as f64) * 3600.0 / req.duration_s).clamp(1.0, 240.0);
+        let nowcast_hourly_mm: Vec<f64> = req
+            .nowcast_15min_mm
+            .chunks(4)
+            .map(|chunk| chunk.iter().copied().filter(|v| v.is_finite() && *v > 0.0).sum::<f64>())
+            .collect();
 
         for b in 0..n_bins {
             let h0 = (b * n_hours) / n_bins;
@@ -566,7 +573,11 @@ fn prepare_problem(req: &WasmSimRequest) -> Result<PreparedProblem, String> {
             } else {
                 Vec::new()
             };
-            let fallback_mean_mm = if !has_spatial {
+            let fallback_mean_mm = if !nowcast_hourly_mm.is_empty() && h0 < nowcast_hourly_mm.len() {
+                let nc_end = h1.min(nowcast_hourly_mm.len());
+                nowcast_hourly_mm[h0..nc_end].iter().sum::<f64>()
+                    / (nc_end.saturating_sub(h0).max(1) as f64)
+            } else if !has_spatial {
                 req.hourly_rain_mm[h0..h1]
                     .iter()
                     .copied()
