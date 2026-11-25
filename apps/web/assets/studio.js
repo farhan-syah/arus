@@ -92,7 +92,7 @@ const state = {
     enableEvap: true,
     enableDrain: true,
     tideMode: 'live', // live | spring-high | off
-    compute: 'auto',  // auto | server
+    compute: 'server', // server | auto
   },
 };
 
@@ -1426,12 +1426,11 @@ function updateFrameTelemetry() {
     const curRate = state.hourlyRainMm[hIdx] || 0;
     rainPart = `${curRate.toFixed(1)} mm/hr NWP`;
   } else {
-    const rain = $('ctl-rain')?.value || '0';
-    rainPart = `${rain} mm/hr`;
+    rainPart = fmtRain(state.simConfig.rainfallMmHr || 0, 0);
   }
-  const wind = parseFloat($('ctl-wind')?.value || '0') || 0;
-  const windPart = wind > 0 ? ` · ${wind} m/s` : '';
-  $('telemetry').textContent = `${c.lat.toFixed(4)}°, ${c.lng.toFixed(4)}° · z${z.toFixed(1)} · ${rainPart}${windPart}`;
+  const wind = state.simConfig.windX || 0;
+  const windPart = wind > 0 ? ` · ${fmtSpeed(wind, 0)}` : '';
+  $('telemetry').textContent = `${c.lat.toFixed(2)}°, ${c.lng.toFixed(2)}° · z${z.toFixed(1)} · ${rainPart}${windPart}`;
 }
 
 function updateHonestyPill() {
@@ -1758,8 +1757,13 @@ function updateTimeReadout() {
   if (!state.frames.length) return;
   const idx = Math.min(state.frameIdx, state.frames.length - 1);
   const cur = state.frames[idx].time_s;
-  const ts = fmtCalendarTime(state.startEpochMs + cur * 1000, state.tzLabel);
-  $('time-readout').textContent = `${ts} (+${fmtMMSS(cur)})`;
+  const tot = state.frames[state.frames.length - 1].time_s || 0;
+  if (state.spanHours > 0) {
+    const ts = fmtCalendarTime(state.startEpochMs + cur * 1000, state.tzLabel);
+    $('time-readout').textContent = `${ts} (+${fmtMMSS(cur)})`;
+  } else {
+    $('time-readout').textContent = `${fmtMMSS(cur)} / ${fmtMMSS(tot)}`;
+  }
 
   if (state.spanHours > 0) {
     const frac = state.frames.length > 1 ? idx / (state.frames.length - 1) : 0;
@@ -2029,7 +2033,7 @@ function wireUi() {
       mode: 'forecast', horizon: '5d', rainMult: 1.0, stressMmDay: 150, stressDays: 3, stressPadM: 0,
       rainfallMmHr: 280, durationS: 360, hyetograph: 'peak-storm', soil: 'impervious',
       boundary: 'transmissive', manningN: 0.035, windX: 0, startDry: false,
-      enableEvap: true, enableDrain: true, tideMode: 'live', compute: 'auto',
+      enableEvap: true, enableDrain: true, tideMode: 'live', compute: 'server',
     };
     populateSimModal();
   });
@@ -2458,15 +2462,19 @@ function applyDisplayPrefsToMap() {
   }
   if (map && layersReady) {
     const setVis = (id, on) => { if (map.getLayer(id)) map.setLayoutProperty(id, 'visibility', on ? 'visible' : 'none'); };
-    setVis('arus-water-layer', p.showFlood);
-    setVis('arus-particles-layer', p.showFlood && p.showParticles);
-    setVis('arus-rivers-line', p.showRivers);
-    setVis('arus-region-boundary-line', p.showBoundary);
+    setVis('arus-water-smooth', p.showFlood);
+    setVis('arus-particles-line', p.showFlood && p.showParticles);
+    setVis('arus-river-line', p.showRivers);
+    setVis('arus-river-halo', p.showRivers);
+    setVis('arus-region-outline', p.showBoundary);
     setVis('arus-region-mask-fill', p.showBoundary);
+    setVis('sat-labels', p.showLabels);
+    setVis('arus-domain-outline', p.showBoundary && !state.boundaryGeoJson && document.documentElement.dataset.presentation !== 'true');
     setVis('arus-hotspots-circle', p.showMarkers);
     setVis('arus-hotspots-tide', p.showMarkers);
-    if (map.getLayer('arus-water-layer')) map.setPaintProperty('arus-water-layer', 'raster-opacity', p.floodOpacity);
-    if (map.getLayer('arus-rivers-line')) map.setPaintProperty('arus-rivers-line', 'line-opacity', p.riverOpacity);
+    if (map.getLayer('arus-water-smooth')) map.setPaintProperty('arus-water-smooth', 'raster-opacity', p.floodOpacity);
+    if (map.getLayer('arus-river-line')) map.setPaintProperty('arus-river-line', 'line-opacity', p.riverOpacity);
+    if (map.getLayer('arus-river-halo')) map.setPaintProperty('arus-river-halo', 'line-opacity', p.riverOpacity * 0.45);
     const style = map.getStyle();
     if (style && Array.isArray(style.layers)) {
       for (const lyr of style.layers) {
@@ -2520,7 +2528,8 @@ function populateSimModal() {
   const sc = state.simConfig;
   switchSimTab(sc.mode || 'forecast');
   $('sim-horizon').value = sc.horizon;
-  $('sim-rain-mult').value = String(sc.rainMult);
+    const multStr = String(Number(sc.rainMult));
+    $('sim-rain-mult').value = multStr;
   $('sim-stress-mm-day').value = String(sc.stressMmDay);
   $('sim-stress-days').value = String(sc.stressDays);
   $('sim-stress-pad').value = String(sc.stressPadM);
@@ -2681,7 +2690,7 @@ async function fetchAndApplyServerConfig(qs) {
       hide($('btn-rec'));
     }
     if (f.allow_direct_nwp_fetch === false) {
-      hide($('btn-nwp'));
+      hide($('nwp-section'));
     }
     if (f.allow_gis_export === false) {
       hide($('btn-export-asc'));
@@ -2692,6 +2701,12 @@ async function fetchAndApplyServerConfig(qs) {
     if (dv && !qs.has('lat') && !qs.has('lon') && !prefs.last_center) {
       if (Number.isFinite(dv.lat) && Number.isFinite(dv.lon)) {
         state.center = { lat: dv.lat, lon: dv.lon };
+        const matched = PRESETS.find((p) => Math.abs(p.lat - dv.lat) < 0.02 && Math.abs(p.lon - dv.lon) < 0.02);
+        if (matched && $('preset-select')) {
+          $('preset-select').value = matched.id;
+        } else {
+          setCustomPresetLabel(`Default · ${dv.lat.toFixed(4)}, ${dv.lon.toFixed(4)}`);
+        }
       }
       if (!qs.has('zoom') && Number.isFinite(dv.zoom)) state.initZoom = dv.zoom;
       if (!qs.has('basemap') && !prefs.displayPrefs?.basemap && (dv.basemap === 'topo' || dv.basemap === 'sat' || dv.basemap === 'dark')) {

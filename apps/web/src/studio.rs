@@ -48,7 +48,7 @@ fn StudioShell() -> Element {
                     button { class: "seg-btn", "data-profile": "researcher", "Researcher" }
                 }
                 button { id: "btn-open-layers", class: "btn", title: "Map layers, display, and units", "Layers & View" }
-                button { id: "btn-open-sim", class: "btn primary", title: "Forecast, Site Stress-Test, and physics settings", "Simulate" }
+                button { id: "btn-open-sim", class: "btn", title: "Forecast, Site Stress-Test, and physics settings", "Simulate…" }
                 button { id: "btn-sources", class: "btn", "Sources" }
                 button { id: "btn-snap", class: "btn", title: "Save PNG snapshot", "PNG" }
                 button { id: "btn-rec", class: "btn", title: "Record MP4 video (via vidr)", "Rec" }
@@ -136,18 +136,20 @@ fn StudioShell() -> Element {
                 button { id: "btn-compare", class: "btn compare hidden", disabled: true, "Compare vs Baseline" }
             }
 
-            div { class: "divider" }
+            div { id: "nwp-section", class: "nwp-section",
+                div { class: "divider" }
 
-            div { class: "sec-head",
-                span { class: "sec-title", "Multi-Model NWP" }
-                button { id: "btn-nwp", class: "btn btn-xs", "Fetch Live" }
-            }
-            div { id: "nwp-card", class: "nwp-card hidden",
-                div { class: "nwp-head",
-                    span { id: "nwp-agree", class: "nwp-badge", "Agreement" }
-                    button { id: "btn-nwp-apply", class: "upload-link", "Apply Peak" }
+                div { class: "sec-head",
+                    span { class: "sec-title", "Multi-Model NWP" }
+                    button { id: "btn-nwp", class: "btn btn-xs", "Fetch Live" }
                 }
-                div { id: "nwp-rows", class: "nwp-rows" }
+                div { id: "nwp-card", class: "nwp-card hidden",
+                    div { class: "nwp-head",
+                        span { id: "nwp-agree", class: "nwp-badge", "Agreement" }
+                        button { id: "btn-nwp-apply", class: "upload-link", "Apply Peak" }
+                    }
+                    div { id: "nwp-rows", class: "nwp-rows" }
+                }
             }
         }
 
@@ -187,12 +189,10 @@ fn StudioShell() -> Element {
 
         // Bottom-Left Status & Cursor Telemetry Pill
         div { class: "hud status-pill",
-            div { id: "honesty-pill", class: "honesty-inline",
+            div { id: "honesty-pill", class: "honesty-inline", title: "Engine: Server · F64",
                 span { class: "dot" }
                 span { id: "honesty-text", "Loading DEM…" }
             }
-            span { class: "pill-sep", "·" }
-            span { id: "engine-badge", class: "engine-badge", "Server · F64" }
             span { class: "pill-sep", "·" }
             span { id: "telemetry", class: "telemetry", "Hover map to inspect" }
         }
@@ -265,6 +265,32 @@ fn StudioShell() -> Element {
                             input { id: "opt-show-labels", r#type: "checkbox", checked: true }
                             span { "Map place labels" }
                         }
+                        div { class: "divider" }
+                        div { class: "sec-title", "HUD & Units" }
+                        div { class: "row-2",
+                            div { class: "field",
+                                span { class: "field-label", "Units" }
+                                select { id: "opt-units", class: "ctl-select",
+                                    option { value: "metric", selected: true, "Metric (m, km²)" }
+                                    option { value: "imperial", "Imperial (ft, mi²)" }
+                                }
+                            }
+                            div { class: "field",
+                                span { class: "field-label", "Clock" }
+                                select { id: "opt-clock", class: "ctl-select",
+                                    option { value: "12h", selected: true, "12-hour (AM/PM)" }
+                                    option { value: "24h", "24-hour" }
+                                }
+                            }
+                        }
+                        label { class: "toggle-row",
+                            input { id: "opt-show-metrics", r#type: "checkbox", checked: true }
+                            span { "Show Area Flood Index card" }
+                        }
+                        label { class: "toggle-row",
+                            input { id: "opt-show-legend", r#type: "checkbox", checked: true }
+                            span { "Show Layers & Legend card" }
+                        }
                     }
                     div { class: "modal-sec",
                         div { class: "sec-title", "Appearance & Thresholds" }
@@ -308,32 +334,6 @@ fn StudioShell() -> Element {
                             }
                             input { id: "opt-river-opacity", r#type: "range", min: "20", max: "100", step: "4", value: "72" }
                         }
-                        div { class: "divider" }
-                        div { class: "sec-title", "HUD & Units" }
-                        div { class: "row-2",
-                            div { class: "field",
-                                span { class: "field-label", "Units" }
-                                select { id: "opt-units", class: "ctl-select",
-                                    option { value: "metric", selected: true, "Metric (m, km², mm/hr)" }
-                                    option { value: "imperial", "Imperial (ft, mi², in/hr)" }
-                                }
-                            }
-                            div { class: "field",
-                                span { class: "field-label", "Clock" }
-                                select { id: "opt-clock", class: "ctl-select",
-                                    option { value: "12h", selected: true, "12-hour (AM/PM)" }
-                                    option { value: "24h", "24-hour" }
-                                }
-                            }
-                        }
-                        label { class: "toggle-row",
-                            input { id: "opt-show-metrics", r#type: "checkbox", checked: true }
-                            span { "Show Area Flood Index card" }
-                        }
-                        label { class: "toggle-row",
-                            input { id: "opt-show-legend", r#type: "checkbox", checked: true }
-                            span { "Show Layers & Legend card" }
-                        }
                     }
                 }
                 div { class: "modal-foot",
@@ -366,18 +366,18 @@ fn StudioShell() -> Element {
                                 span { class: "field-label", "Horizon Mode" }
                                 select { id: "sim-horizon", class: "ctl-select",
                                     option { value: "5d", selected: true, "Days 1–5 (Deterministic Hourly 2D)" }
-                                    option { value: "15d", "Days 6–15 (Ensemble Quantiles P10/P50/P90)" }
-                                    option { value: "mjo", "Weeks 2–4 (MJO Regime Context)" }
+                                    option { value: "15d", disabled: true, "Days 6–15 Ensemble (Requires server context)" }
+                                    option { value: "mjo", disabled: true, "Weeks 2–4 MJO Regime (Requires server context)" }
                                 }
                             }
                             div { class: "field",
                                 span { class: "field-label", "Rain Sensitivity Multiplier" }
                                 select { id: "sim-rain-mult", class: "ctl-select",
                                     option { value: "0.5", "0.5× (Drier)" }
-                                    option { value: "1.0", selected: true, "1.0× (Forecast Baseline)" }
+                                    option { value: "1", selected: true, "1.0× (Forecast Baseline)" }
                                     option { value: "1.25", "1.25× (+25% Rain)" }
                                     option { value: "1.5", "1.5× (+50% Rain)" }
-                                    option { value: "2.0", "2.0× (Double Rain)" }
+                                    option { value: "2", "2.0× (Double Rain)" }
                                 }
                             }
                         }
@@ -429,7 +429,7 @@ fn StudioShell() -> Element {
                             }
                             div { class: "field",
                                 span { class: "field-label", "Target Site Coordinate" }
-                                div { class: "field-row",
+                                div { class: "coord-well",
                                     span { id: "sim-stress-coord", class: "field-val", "Basin center" }
                                     button { id: "btn-stress-pick", class: "btn btn-xs", "Pick on map" }
                                 }
@@ -464,8 +464,8 @@ fn StudioShell() -> Element {
                             div { class: "field",
                                 span { class: "field-label", "Compute Target" }
                                 select { id: "sim-compute", class: "ctl-select",
-                                    option { value: "auto", selected: true, "Auto (Browser WASM -> Server F64)" }
-                                    option { value: "server", "Server F64 Reference" }
+                                    option { value: "server", selected: true, "Server F64 Reference (Active)" }
+                                    option { value: "auto", disabled: true, "Browser WASM / WebGPU (Coming soon)" }
                                 }
                             }
                         }

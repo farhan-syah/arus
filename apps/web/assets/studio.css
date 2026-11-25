@@ -116,7 +116,7 @@ button, input, select, textarea {
 }
 
 /* MapLibre native controls */
-.maplibregl-ctrl-top-right { top: 244px !important; right: 12px !important; }
+.maplibregl-ctrl-top-right { top: 300px !important; right: 12px !important; }
 .maplibregl-ctrl-bottom-left { bottom: 62px !important; left: 12px !important; }
 .maplibregl-ctrl-bottom-right { display: none !important; }
 .maplibregl-ctrl-group {
@@ -606,6 +606,9 @@ input[type="range"] {
   font-size: 11.5px;
   color: var(--ink-2);
   white-space: nowrap;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 /* Bottom-Center Compact Playback Capsule */
@@ -653,7 +656,7 @@ input[type="range"] {
   transform: translateX(-50%);
   background: var(--accent);
   color: #ffffff;
-  font-family: var(--font);
+  font-family: var(--sans);
   font-size: 12px;
   font-weight: 600;
   padding: 5px 12px;
@@ -783,8 +786,29 @@ input[type="range"] {
 [data-presentation="true"] .left-stack {
   top: 14px;
 }
-[data-profile="public"] #drawer {
+[data-profile="public"] #drawer,
+[data-profile="public"] #btn-export-asc,
+[data-profile="public"] #btn-export-csv,
+[data-profile="public"] [data-layer="diff"] {
   display: none !important;
+}
+[data-profile="researcher"]:not([data-presentation="true"]) .left-stack {
+  display: none !important;
+}
+.coord-well {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 7px 10px;
+  border-radius: 8px;
+  background: var(--hud-well);
+  border: 1px solid var(--hud-border);
+}
+.nwp-section {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
 }
 .modal-wide {
   width: min(680px, calc(100vw - 32px));
@@ -821,9 +845,10 @@ input[type="range"] {
 }
 .toggle-row {
   display: flex;
-  align-items: center;
+  align-items: flex-start;
   gap: 8px;
   font-size: 12px;
+  line-height: 1.35;
   color: var(--ink-1);
   cursor: pointer;
 }
@@ -831,6 +856,8 @@ input[type="range"] {
   accent-color: var(--accent);
   width: 14px;
   height: 14px;
+  margin-top: 2px;
+  flex-shrink: 0;
   cursor: pointer;
 }
 .modal-foot {
