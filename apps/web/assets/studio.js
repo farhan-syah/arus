@@ -327,7 +327,9 @@ function ensureMapLayers() {
       },
       beforeLabels,
     );
-    if (state.is3D && !isPres && !state.boundaryGeoJson) {
+    // Keep crisp 2D hillshade relief in Live mode (avoids MapLibre v5 3D terrain-tile
+    // seam clipping on wide regional ImageSource overlays, e.g. z=7 lat 2.811°N).
+    if (state.is3D && !isPres && !state.boundaryGeoJson && state.profile !== 'public') {
       try { map.setTerrain({ source: 'arus-terrarium-dem', exaggeration: 1.35 }); } catch (_) {}
     } else {
       try { map.setTerrain(null); } catch (_) {}
@@ -3985,6 +3987,7 @@ function setUiProfile(profile, persist = false) {
     if (state.tool !== 'inspect') setTool('inspect');
     if (state.layer === 'diff') setLayer('depth');
     if ($('inspector')) $('inspector').classList.add('hidden');
+    if (map) { try { map.setTerrain(null); } catch (_) {} }
     renderSecondaryLiveOverlays(true);
     refreshAlertsAndBeacons();
   } else {
@@ -4251,7 +4254,7 @@ function renderAlertsButtonAndDropdown(clusters) {
     row.addEventListener('click', () => {
       $('alerts-dropdown')?.classList.add('hidden');
       if (map) {
-        map.flyTo({ center: [item.lon, item.lat], zoom: 11.4, pitch: state.is3D ? 45 : 0, duration: 900 });
+        map.flyTo({ center: [item.lon, item.lat], zoom: 11.4, pitch: 0, bearing: 0, duration: 900 });
       }
     });
     list.appendChild(row);
@@ -4411,7 +4414,7 @@ function updateBeaconsForZoom(force = false) {
     el.addEventListener('click', (ev) => {
       ev.stopPropagation();
       hideBeaconTooltip();
-      map.flyTo({ center: [b.lon, b.lat], zoom: b.targetZoom, pitch: b.targetZoom >= 10.5 && state.is3D ? 45 : 0, duration: 850 });
+      map.flyTo({ center: [b.lon, b.lat], zoom: b.targetZoom, pitch: 0, bearing: 0, duration: 850 });
     });
 
     const marker = new maplibregl.Marker({ element: el, anchor: 'center' })
@@ -4773,7 +4776,7 @@ function applyDisplayPrefsToMap() {
     state.is3D = p.is3D;
     if (map) {
       try {
-        map.setTerrain(state.is3D && map.getSource('arus-terrarium-dem')
+        map.setTerrain(state.is3D && state.profile !== 'public' && map.getSource('arus-terrarium-dem')
           ? { source: 'arus-terrarium-dem', exaggeration: 1.35 }
           : null);
       } catch (_) {}

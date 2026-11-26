@@ -45,7 +45,21 @@ fn StudioShell() -> Element {
                     button { id: "btn-save-default", class: "btn btn-xs", title: "Save current view as your personal default view", "Set Default" }
                     div { class: "alerts-wrap",
                         button { id: "btn-alerts", class: "btn btn-xs alert-btn none", title: "Active flood alerts within monitored coverage",
-                            span { class: "alert-tri", "▲" }
+                            svg {
+                                class: "alert-tri",
+                                width: "13",
+                                height: "13",
+                                view_box: "0 0 24 24",
+                                fill: "none",
+                                stroke: "currentColor",
+                                stroke_width: "2.3",
+                                stroke_linecap: "round",
+                                stroke_linejoin: "round",
+                                "aria-hidden": "true",
+                                path { d: "M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z" }
+                                line { x1: "12", y1: "9", x2: "12", y2: "13" }
+                                line { x1: "12", y1: "17", x2: "12.01", y2: "17" }
+                            }
                             span { id: "alerts-badge", "0" }
                         }
                         div { id: "alerts-dropdown", class: "hud alerts-dropdown hidden",
