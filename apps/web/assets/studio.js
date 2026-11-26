@@ -3392,13 +3392,20 @@ async function openSourcesModal() {
 function setCustomPresetLabel(label) {
   const sel = $('preset-select');
   if (!sel) return;
+  const clean = String(label || '').replace(/^★\s*/, '').trim();
+  const matched = PRESETS.find((p) => p.name.toLowerCase() === clean.toLowerCase());
+  if (matched) {
+    sel.querySelector('option[value="__custom"]')?.remove();
+    sel.value = matched.id;
+    return;
+  }
   let opt = sel.querySelector('option[value="__custom"]');
   if (!opt) {
     opt = document.createElement('option');
     opt.value = '__custom';
     sel.insertBefore(opt, sel.firstChild);
   }
-  opt.textContent = label;
+  opt.textContent = clean;
   sel.value = '__custom';
 }
 
@@ -5092,7 +5099,12 @@ function rebuildPresetDropdown() {
   if (sel) {
     const prev = sel.value;
     sel.innerHTML = PRESETS.map((p) => `<option value="${p.id}">${p.name}</option>`).join('');
+    const prefs = loadUserPrefs();
+    const defId = prefs.default_location_id;
+    const defLabel = String(prefs.last_center?.label || '').replace(/^★\s*/, '').trim().toLowerCase();
+    const defMatch = PRESETS.find((p) => p.id === defId || (defLabel && p.name.toLowerCase() === defLabel));
     if (PRESETS.some((p) => p.id === prev)) sel.value = prev;
+    else if (defMatch) sel.value = defMatch.id;
   }
 }
 
