@@ -36,11 +36,15 @@ fn StudioShell() -> Element {
                 }
                 div { class: "search-wrap",
                     select { id: "preset-select", class: "search-select", title: "Jump to basin" }
-                    input {
-                        id: "coord-search",
-                        class: "search-input",
-                        r#type: "text",
-                        placeholder: "Search place or lat, lon",
+                    div { class: "search-input-wrap",
+                        input {
+                            id: "coord-search",
+                            class: "search-input",
+                            r#type: "text",
+                            autocomplete: "off",
+                            placeholder: "Search place or lat, lon",
+                        }
+                        div { id: "search-results", class: "hud search-results hidden", role: "listbox" }
                     }
                     button { id: "btn-save-view", class: "btn btn-xs", title: "Save current map view as a custom location", "Save View" }
                     div { class: "alerts-wrap",

@@ -2674,6 +2674,9 @@ function setSimProgress(text) {
 }
 
 async function runSimulation(compareMode) {
+  if (state.serverConfig?.features?.allow_simulation === false) {
+    return;
+  }
   if (state.activeAbort) {
     try { state.activeAbort.abort(); } catch (_) {}
   }
@@ -3755,52 +3758,185 @@ function wireUi() {
     showToast(`Saved "${label}" as your personal default view.`);
   });
 
-  $('coord-search').addEventListener('keydown', async (e) => {
+  const searchInput = $('coord-search');
+  const searchDropdown = $('search-results');
+  let searchTimer = null;
+  let searchSeq = 0;
+  let searchHits = [];
+  let searchActiveIdx = -1;
+
+  const hideSearchDropdown = () => {
+    if (searchDropdown) searchDropdown.classList.add('hidden');
+    searchActiveIdx = -1;
+  };
+
+  const selectSearchHit = async (hit) => {
+    if (!hit) return;
+    hideSearchDropdown();
+    const shouldSim = state.profile !== 'public' && state.serverConfig?.features?.allow_simulation !== false;
+    const label = hit.name || hit.display_name?.split(',')[0]?.trim() || searchInput.value.trim();
+    if (searchInput) searchInput.value = label;
+    const geo = hit.geojson;
+    const isAdminPoly = (hit.class === 'boundary' || hit.type === 'administrative')
+      && geo && (geo.type === 'Polygon' || geo.type === 'MultiPolygon');
+    if (isAdminPoly) {
+      state.activeBoundaryName = label;
+      setCustomPresetLabel(label);
+      await applyBoundaryGeometry(geo, shouldSim);
+      return;
+    }
+    const lat = parseFloat(hit.lat);
+    const lon = parseFloat(hit.lon);
+    if (!Number.isFinite(lat) || !Number.isFinite(lon)) return;
+    clearBoundaryFocus();
+    state.center = { lat, lon };
+    state.cachedDem = null;
+    setCustomPresetLabel(label);
+    map.flyTo({ center: [lon, lat], zoom: 14.2, duration: 900 });
+    if (shouldSim) runSimulation(false);
+  };
+
+  const renderSearchDropdown = (hits, statusMsg = '') => {
+    if (!searchDropdown) return;
+    searchDropdown.replaceChildren();
+    searchHits = hits;
+    searchActiveIdx = -1;
+    if (statusMsg) {
+      const msg = document.createElement('div');
+      msg.className = 'search-result-empty';
+      msg.textContent = statusMsg;
+      searchDropdown.appendChild(msg);
+      searchDropdown.classList.remove('hidden');
+      return;
+    }
+    if (!hits.length) {
+      const empty = document.createElement('div');
+      empty.className = 'search-result-empty';
+      empty.textContent = 'No matching places found.';
+      searchDropdown.appendChild(empty);
+      searchDropdown.classList.remove('hidden');
+      return;
+    }
+    hits.forEach((hit, i) => {
+      const btn = document.createElement('button');
+      btn.type = 'button';
+      btn.className = 'search-result-item';
+      btn.dataset.idx = String(i);
+      const primary = hit.name || hit.display_name?.split(',')[0]?.trim() || 'Location';
+      const rest = (hit.display_name || '')
+        .split(',')
+        .map((s) => s.trim())
+        .filter((s, idx) => idx > 0 && s)
+        .slice(0, 3)
+        .join(', ');
+      const nameEl = document.createElement('div');
+      nameEl.className = 'search-result-name';
+      nameEl.textContent = primary;
+      btn.appendChild(nameEl);
+      if (rest) {
+        const subEl = document.createElement('div');
+        subEl.className = 'search-result-sub';
+        subEl.textContent = rest;
+        btn.appendChild(subEl);
+      }
+      btn.addEventListener('mousedown', (ev) => {
+        ev.preventDefault();
+        selectSearchHit(hit);
+      });
+      searchDropdown.appendChild(btn);
+    });
+    searchDropdown.classList.remove('hidden');
+  };
+
+  const fetchSearchSuggestions = async (raw) => {
+    const q = raw.trim();
+    if (q.length < 3) {
+      hideSearchDropdown();
+      return;
+    }
+    const seq = ++searchSeq;
+    const sKey = `search6:${q.toLowerCase()}`;
+    let hits = readNominatimCache(sKey);
+    if (!Array.isArray(hits)) {
+      renderSearchDropdown([], 'Searching…');
+      try {
+        let url = `https://nominatim.openstreetmap.org/search?format=json&addressdetails=1&polygon_geojson=1&polygon_threshold=0.005&limit=6&q=${encodeURIComponent(q)}`;
+        const ab = state.serverConfig?.alert_bounds;
+        if (Array.isArray(ab) && ab.length === 4) {
+          url += `&viewbox=${ab[0]},${ab[3]},${ab[2]},${ab[1]}`;
+        }
+        const resp = await fetch(url);
+        const data = await resp.json();
+        hits = Array.isArray(data) ? data : [];
+        if (hits.length) writeNominatimCache(sKey, hits);
+      } catch (_) {
+        if (seq === searchSeq) renderSearchDropdown([], 'Search unavailable offline.');
+        return;
+      }
+    }
+    if (seq !== searchSeq) return;
+    renderSearchDropdown(hits);
+  };
+
+  searchInput?.addEventListener('input', (e) => {
+    const raw = e.target.value.trim();
+    if (searchTimer) clearTimeout(searchTimer);
+    const parts = raw.split(',').map((v) => parseFloat(v.trim()));
+    if (parts.length === 2 && Number.isFinite(parts[0]) && Number.isFinite(parts[1])) {
+      hideSearchDropdown();
+      return;
+    }
+    if (raw.length < 3) {
+      hideSearchDropdown();
+      return;
+    }
+    searchTimer = setTimeout(() => fetchSearchSuggestions(raw), 350);
+  });
+
+  searchInput?.addEventListener('keydown', async (e) => {
+    if (e.key === 'Escape') {
+      hideSearchDropdown();
+      return;
+    }
+    if (e.key === 'ArrowDown' && searchHits.length > 0 && !searchDropdown?.classList.contains('hidden')) {
+      e.preventDefault();
+      searchActiveIdx = (searchActiveIdx + 1) % searchHits.length;
+      searchDropdown.querySelectorAll('.search-result-item').forEach((el, i) => el.classList.toggle('active', i === searchActiveIdx));
+      return;
+    }
+    if (e.key === 'ArrowUp' && searchHits.length > 0 && !searchDropdown?.classList.contains('hidden')) {
+      e.preventDefault();
+      searchActiveIdx = (searchActiveIdx - 1 + searchHits.length) % searchHits.length;
+      searchDropdown.querySelectorAll('.search-result-item').forEach((el, i) => el.classList.toggle('active', i === searchActiveIdx));
+      return;
+    }
     if (e.key !== 'Enter') return;
+    e.preventDefault();
+    if (searchActiveIdx >= 0 && searchHits[searchActiveIdx]) {
+      selectSearchHit(searchHits[searchActiveIdx]);
+      return;
+    }
     const raw = e.target.value.trim();
     if (!raw) return;
     const parts = raw.split(',').map((v) => parseFloat(v.trim()));
     if (parts.length === 2 && Number.isFinite(parts[0]) && Number.isFinite(parts[1])) {
-      state.boundaryGeoJson = null;
-      state.boundaryGrid = null;
-      state.boundaryCellMask = null;
+      hideSearchDropdown();
+      clearBoundaryFocus();
       state.center = { lat: parts[0], lon: parts[1] };
       state.cachedDem = null;
       setCustomPresetLabel(`Custom · ${parts[0].toFixed(4)}, ${parts[1].toFixed(4)}`);
       map.flyTo({ center: [parts[1], parts[0]], zoom: 14.2, duration: 800 });
-      runSimulation(false);
-      return;
-    }
-    try {
-      const sKey = `search:${raw.toLowerCase().trim()}`;
-      let hit = readNominatimCache(sKey);
-      if (!hit) {
-        const resp = await fetch(`https://nominatim.openstreetmap.org/search?format=json&polygon_geojson=1&polygon_threshold=0.005&limit=1&q=${encodeURIComponent(raw)}`);
-        const hits = await resp.json();
-        hit = hits?.[0] || null;
-        if (hit) writeNominatimCache(sKey, hit);
-      }
-      if (hit) {
-        const geo = hit.geojson;
-        const isAdminPoly = (hit.class === 'boundary' || hit.type === 'administrative')
-          && geo && (geo.type === 'Polygon' || geo.type === 'MultiPolygon');
-        if (isAdminPoly) {
-          setCustomPresetLabel(raw);
-          await applyBoundaryGeometry(geo, true);
-          return;
-        }
-        const lat = parseFloat(hit.lat);
-        const lon = parseFloat(hit.lon);
-        state.boundaryGeoJson = null;
-        state.boundaryGrid = null;
-        state.boundaryCellMask = null;
-        state.center = { lat, lon };
-        state.cachedDem = null;
-        setCustomPresetLabel(raw);
-        map.flyTo({ center: [lon, lat], zoom: 14.2, duration: 900 });
+      if (state.profile !== 'public' && state.serverConfig?.features?.allow_simulation !== false) {
         runSimulation(false);
       }
-    } catch (_) { /* offline geocoding unavailable */ }
+      return;
+    }
+    if (searchTimer) clearTimeout(searchTimer);
+    await fetchSearchSuggestions(raw);
+  });
+
+  document.addEventListener('click', (e) => {
+    if (!e.target.closest('.search-input-wrap')) hideSearchDropdown();
   });
 
   document.querySelectorAll('[data-profile]').forEach((el) => {
