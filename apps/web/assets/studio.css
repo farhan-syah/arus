@@ -1550,17 +1550,9 @@ input:focus-visible {
     width: auto;
     max-width: none;
   }
-}
   .time-readout {
     min-width: 96px;
     font-size: 11px;
-  }
-  .inspector,
-  .site-verdict {
-    left: 8px;
-    right: 8px;
-    bottom: 62px;
-    width: auto;
   }
   .drawer {
     top: 106px;

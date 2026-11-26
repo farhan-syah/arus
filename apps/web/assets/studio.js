@@ -2886,16 +2886,51 @@ function updateLiveMetrics() {
     const meta = state.grid.metadata;
     const frame = state.frames[idx];
     const depth = usePeakEnv ? state.grid.envelope.max_depth_m : frame.depth;
-    for (let i = 0; i < depth.length; i++) {
-      if (!mask[i]) continue;
-      totalCells++;
-      const h = depth[i];
-      if (h > 0) sumDepth += h;
-      if (h >= cut) {
-        floodedCells++;
-        stagnantCells++;
+    const [bMinLon, bMinLat, bMaxLon, bMaxLat] = meta.wgs84_bounds;
+    const cols = meta.cols;
+    const rows = meta.rows;
+    // Intersect focused boundary with current map viewport so zooming in updates KPIs live
+    const useViewportClip = state.profile === 'public' && Boolean(map);
+    const vb = useViewportClip ? map.getBounds() : null;
+    const vMinLon = vb ? vb.getWest() : -180;
+    const vMaxLon = vb ? vb.getEast() : 180;
+    const vMinLat = vb ? vb.getSouth() : -90;
+    const vMaxLat = vb ? vb.getNorth() : 90;
+    for (let r = 0; r < rows; r++) {
+      const lat = bMinLat + ((r + 0.5) / rows) * (bMaxLat - bMinLat);
+      if (useViewportClip && (lat < vMinLat || lat > vMaxLat)) continue;
+      for (let c = 0; c < cols; c++) {
+        const i = r * cols + c;
+        if (!mask[i]) continue;
+        if (useViewportClip) {
+          const lon = bMinLon + ((c + 0.5) / cols) * (bMaxLon - bMinLon);
+          if (lon < vMinLon || lon > vMaxLon) continue;
+        }
+        totalCells++;
+        const h = depth[i];
+        if (h > 0) sumDepth += h;
+        if (h >= cut) {
+          floodedCells++;
+          stagnantCells++;
+        }
+        if (h > peakDepth) peakDepth = h;
       }
-      if (h > peakDepth) peakDepth = h;
+    }
+    // If zoomed tighter than 1 grid cell inside focused boundary, sample the center cell
+    if (totalCells === 0 && useViewportClip) {
+      const ctr = map.getCenter();
+      if (ctr.lng >= bMinLon && ctr.lng <= bMaxLon && ctr.lat >= bMinLat && ctr.lat <= bMaxLat) {
+        const c = Math.min(cols - 1, Math.max(0, Math.floor(((ctr.lng - bMinLon) / (bMaxLon - bMinLon)) * cols)));
+        const r = Math.min(rows - 1, Math.max(0, Math.floor(((ctr.lat - bMinLat) / (bMaxLat - bMinLat)) * rows)));
+        const i = r * cols + c;
+        if (mask[i]) {
+          const h = depth[i];
+          totalCells = 1;
+          sumDepth = h > 0 ? h : 0;
+          peakDepth = h;
+          if (h >= cut) { floodedCells = 1; stagnantCells = 1; }
+        }
+      }
     }
     const cellKm2 = (meta.dx_m * meta.dx_m) / 1_000_000;
     stagnantKm2 = stagnantCells * cellKm2;
@@ -4115,7 +4150,9 @@ function closeRecPreviewModal() {
 }
 
 function drawRecordingHudOverlay(ctx, W, H) {
-  const s = Math.max(0.85, Math.min(1.6, W / 1280));
+  const dpr = window.devicePixelRatio || 1;
+  const cssW = W / dpr;
+  const s = dpr * Math.max(0.68, Math.min(1.0, cssW / 960));
   const pad = Math.round(16 * s);
   const title = $('po-title')?.textContent?.trim()
     || $('preset-select')?.selectedOptions?.[0]?.textContent?.trim()
