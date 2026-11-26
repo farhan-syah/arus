@@ -1,13 +1,11 @@
 # CI: thin wrapper over the reusable test workflow.
 #
-# Runs on each push to main, pull request, and manual dispatch.
-# The draft guard skips draft pull requests only.
+# Runs on each pull request and on manual dispatch. The draft guard skips draft
+# pull requests only.
 
 name: CI
 
 on:
-  push:
-    branches: [main]
   pull_request:
     branches: [main]
     types: [opened, synchronize, reopened, ready_for_review]
