@@ -263,6 +263,7 @@ function initMap() {
 
   map.on('load', () => {
     if (!layersReady) ensureMapLayers();
+    renderIncidentMarkers();
     if (state.grid) {
       updateDomainOutline(state.grid.metadata.wgs84_bounds);
       renderFloodCanvas(true);
@@ -4838,6 +4839,45 @@ function refreshAlertsAndBeacons() {
   }
 }
 
+let activeIncidentMarkers = [];
+function renderIncidentMarkers() {
+  for (const m of activeIncidentMarkers) {
+    try { m.remove(); } catch (_) {}
+  }
+  activeIncidentMarkers = [];
+  if (!map || state.displayPrefs.showMarkers === false) return;
+  const markers = state.serverContext?.context?.incident_markers;
+  if (!Array.isArray(markers) || !markers.length) return;
+  const tip = ensureBeaconTooltip();
+  for (const inc of markers) {
+    if (!Number.isFinite(inc.lat) || !Number.isFinite(inc.lon)) continue;
+    const el = document.createElement('div');
+    el.className = 'incident-pin';
+    el.textContent = `⚠ ${inc.title || 'Field Incident'}`;
+    el.addEventListener('mouseenter', (ev) => {
+      tip.innerHTML = '';
+      const strong = document.createElement('strong');
+      strong.textContent = inc.title || 'Field Incident';
+      const line1 = document.createElement('div');
+      line1.textContent = inc.note || 'Operator-curated field incident.';
+      tip.append(strong, line1);
+      tip.style.left = `${Math.min(window.innerWidth - 255, ev.clientX + 14)}px`;
+      tip.style.top = `${Math.max(12, ev.clientY - 12)}px`;
+      tip.classList.remove('hidden');
+    });
+    el.addEventListener('mouseleave', hideBeaconTooltip);
+    el.addEventListener('click', (ev) => {
+      ev.stopPropagation();
+      hideBeaconTooltip();
+      map.flyTo({ center: [inc.lon, inc.lat], zoom: 12.2, pitch: 0, bearing: 0, duration: 850 });
+    });
+    const m = new maplibregl.Marker({ element: el, anchor: 'center' })
+      .setLngLat([inc.lon, inc.lat])
+      .addTo(map);
+    activeIncidentMarkers.push(m);
+  }
+}
+
 // ---------- Settings Dialog & Manage Locations ----------
 const CUSTOM_LOCS_KEY = 'arus.customLocations.v1';
 let editingCustomLocId = null;
@@ -5674,6 +5714,7 @@ async function fetchRegionalContext(qs) {
       }
     }
     renderServerContextBox();
+    renderIncidentMarkers();
   } catch (_) { /* optional server context */ }
 }
 

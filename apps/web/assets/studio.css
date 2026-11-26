@@ -662,8 +662,23 @@ input[type="range"] {
   display: inline-flex;
   align-items: center;
   gap: 6px;
-  padding: 6px 8px;
+  padding: 6px;
+  height: 44px;
+  box-sizing: border-box;
   flex-shrink: 0;
+}
+.fb-playback .btn {
+  height: 30px;
+  min-width: 34px;
+  padding: 0 8px;
+  border-radius: 7px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-family: var(--mono);
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 1;
 }
 .fb-card {
   position: relative;
@@ -1161,21 +1176,20 @@ a.btn {
   cursor: grab;
   pointer-events: auto;
 }
-.fb-fill {
-  position: relative;
-}
-.fb-fill::after {
-  content: "";
-  position: absolute;
-  right: -7px;
-  top: 50%;
-  width: 14px;
-  height: 14px;
-  margin-top: -7px;
+.incident-pin {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 3px 8px;
   border-radius: 999px;
-  background: var(--accent);
+  background: rgba(185, 28, 28, 0.94);
+  color: #fff;
+  font-size: 11px;
+  font-weight: 700;
   border: 2px solid #fff;
-  box-shadow: 0 1px 5px rgba(15, 23, 42, 0.35);
+  box-shadow: 0 3px 10px rgba(15, 23, 42, 0.35);
+  cursor: pointer;
+  white-space: nowrap;
 }
 [data-profile="researcher"]:not([data-presentation="true"]) .public-outlook {
   display: none !important;

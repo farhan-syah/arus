@@ -58,6 +58,18 @@ pub struct ContextWarning {
     pub issued_iso: Option<String>,
 }
 
+/// Operator-curated field incident marker (e.g. embankment breach, culvert blockage, pump outage).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct IncidentMarker {
+    pub title: String,
+    pub lat: f64,
+    pub lon: f64,
+    #[serde(default)]
+    pub kind: String,
+    #[serde(default)]
+    pub note: Option<String>,
+}
+
 /// Normalized basin context published by an external ops pipeline into `--context-dir`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct RegionalContext {
@@ -76,6 +88,8 @@ pub struct RegionalContext {
     pub observed_gauges: Vec<ObservedGaugeSeed>,
     #[serde(default)]
     pub active_incidents: Vec<String>,
+    #[serde(default)]
+    pub incident_markers: Vec<IncidentMarker>,
     #[serde(default)]
     pub interventions: Vec<serde_json::Value>,
     #[serde(default)]
