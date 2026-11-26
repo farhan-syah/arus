@@ -3196,10 +3196,17 @@ function wireUi() {
     });
   }
 
-  ['sources-modal', 'layers-modal', 'sim-modal', 'saved-sims-modal', 'about-modal'].forEach((id) => {
+  ['sources-modal', 'layers-modal', 'sim-modal', 'saved-sims-modal', 'rec-preview-modal', 'about-modal'].forEach((id) => {
     const el = $(id);
-    if (el) el.addEventListener('click', (e) => { if (e.target === el) el.classList.add('hidden'); });
+    if (el) el.addEventListener('click', (e) => {
+      if (e.target === el) {
+        if (id === 'rec-preview-modal') closeRecPreviewModal();
+        else el.classList.add('hidden');
+      }
+    });
   });
+  $('btn-rec-close')?.addEventListener('click', closeRecPreviewModal);
+  $('btn-rec-dismiss')?.addEventListener('click', closeRecPreviewModal);
   $('btn-saved-sims')?.addEventListener('click', openSavedSimsModal);
   $('btn-saved-close')?.addEventListener('click', () => $('saved-sims-modal')?.classList.add('hidden'));
   $('btn-saved-done')?.addEventListener('click', () => $('saved-sims-modal')?.classList.add('hidden'));
@@ -3212,6 +3219,7 @@ function wireUi() {
     const typing = tag === 'input' || tag === 'select' || tag === 'textarea';
     if (e.key === 'Escape') {
       ['sources-modal', 'layers-modal', 'sim-modal', 'saved-sims-modal', 'about-modal'].forEach((id) => { const el = $(id); if (el) el.classList.add('hidden'); });
+      closeRecPreviewModal();
       if (state.pickingStressSite) {
         state.pickingStressSite = false;
         document.body.classList.remove('picking-site');
@@ -3485,6 +3493,37 @@ function captureSnapshotPng() {
 }
 
 let activeRecRepaintTimer = null;
+let lastRecBlobUrl = null;
+
+function openRecPreviewModal(blob, filename) {
+  if (lastRecBlobUrl) {
+    try { URL.revokeObjectURL(lastRecBlobUrl); } catch (_) {}
+  }
+  lastRecBlobUrl = URL.createObjectURL(blob);
+  const vid = $('rec-preview-video');
+  const dl = $('btn-rec-download');
+  const meta = $('rec-preview-meta');
+  if (vid) {
+    vid.src = lastRecBlobUrl;
+    vid.currentTime = 0;
+    vid.play().catch(() => {});
+  }
+  if (dl) {
+    dl.href = lastRecBlobUrl;
+    dl.download = filename;
+  }
+  if (meta) {
+    const mb = (blob.size / (1024 * 1024)).toFixed(2);
+    meta.textContent = `${filename} · ${mb} MB · Click Download Video to save where you choose.`;
+  }
+  $('rec-preview-modal')?.classList.remove('hidden');
+}
+
+function closeRecPreviewModal() {
+  const vid = $('rec-preview-video');
+  if (vid) { try { vid.pause(); } catch (_) {} }
+  $('rec-preview-modal')?.classList.add('hidden');
+}
 
 function toggleVideoRecording() {
   const btn = $('btn-rec');
@@ -3538,8 +3577,7 @@ function toggleVideoRecording() {
     const baseName = `arus-${slug}-${fmtMytSlug(getCurrentFrameEpochMs())}`;
     if (isNativeMp4 || state.serverConfig?.features?.allow_mp4_export === false) {
       const ext = isNativeMp4 ? 'mp4' : 'webm';
-      downloadBlob(blob, `${baseName}.${ext}`);
-      showToast(`Saved ${baseName}.${ext} (recorded locally in browser).`);
+      openRecPreviewModal(blob, `${baseName}.${ext}`);
       return;
     }
     btn.disabled = true;
@@ -3552,12 +3590,12 @@ function toggleVideoRecording() {
       });
       if (resp.ok) {
         const mp4Blob = await resp.blob();
-        downloadBlob(mp4Blob, `${baseName}.mp4`);
+        openRecPreviewModal(mp4Blob, `${baseName}.mp4`);
       } else {
-        downloadBlob(blob, `${baseName}.webm`);
+        openRecPreviewModal(blob, `${baseName}.webm`);
       }
     } catch (_) {
-      downloadBlob(blob, `${baseName}.webm`);
+      openRecPreviewModal(blob, `${baseName}.webm`);
     } finally {
       btn.disabled = false;
       btn.textContent = 'Rec';

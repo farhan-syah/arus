@@ -620,6 +620,30 @@ fn StudioShell() -> Element {
                 }
             }
         }
+        // Recording Ready Preview & Download Modal
+        div { id: "rec-preview-modal", class: "modal-backdrop hidden", role: "dialog", "aria-modal": "true",
+            div { class: "hud modal-card", style: "max-width:680px;width:min(92vw,680px)",
+                div { class: "inspector-head",
+                    span { class: "inspector-title", "Recording Ready" }
+                    button { id: "btn-rec-close", class: "btn btn-xs", "Close" }
+                }
+                div { class: "modal-body", style: "display:flex;flex-direction:column;gap:10px",
+                    video {
+                        id: "rec-preview-video",
+                        controls: true,
+                        autoplay: true,
+                        r#loop: true,
+                        playsinline: true,
+                        style: "width:100%;max-height:55vh;border-radius:8px;background:#000",
+                    }
+                    div { id: "rec-preview-meta", style: "font-size:12px;color:var(--ink-3)", "" }
+                }
+                div { class: "modal-foot",
+                    button { id: "btn-rec-dismiss", class: "btn", "Close" }
+                    a { id: "btn-rec-download", class: "btn primary", download: "arus-recording.mp4", "Download Video" }
+                }
+            }
+        }
         // Saved Configs & Completed Simulations Modal (Browser IndexedDB)
         div { id: "saved-sims-modal", class: "modal-backdrop hidden", role: "dialog", "aria-modal": "true",
             div { class: "hud modal-card",
