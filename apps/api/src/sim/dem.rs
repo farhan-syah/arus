@@ -106,8 +106,180 @@ impl Ord for MinF64 {
     }
 }
 
-/// Barnes Priority-Flood depression filling with 2-pass 3x3 canopy/noise smoothing so 30 m
-/// Terrarium DEM noise pits do not trap runoff into artificial multi-metre polka-dot wells.
+/// Lindsay (2016) Least-Cost Depression Breaching: carves a monotonic descending outlet
+/// channel through the lowest ridge saddle from each inland pit to a lower elevation or
+/// coastal/domain boundary, preventing coarse grids from damming river valleys into flat
+/// filled pancakes.
+fn breach_depressions_least_cost(elevations: &mut [Option<f64>], cols: usize, rows: usize) {
+    let n = cols * rows;
+    let dirs: [(isize, isize, f64); 8] = [
+        (-1, 0, 1.0),
+        (1, 0, 1.0),
+        (0, -1, 1.0),
+        (0, 1, 1.0),
+        (-1, -1, std::f64::consts::SQRT_2),
+        (-1, 1, std::f64::consts::SQRT_2),
+        (1, -1, std::f64::consts::SQRT_2),
+        (1, 1, std::f64::consts::SQRT_2),
+    ];
+
+    let is_outlet_cell = |idx: usize, elev: &[Option<f64>]| -> bool {
+        let r = idx / cols;
+        let c = idx % cols;
+        if r == 0 || r + 1 == rows || c == 0 || c + 1 == cols {
+            return true;
+        }
+        [(-1isize, 0isize), (1, 0), (0, -1), (0, 1)]
+            .into_iter()
+            .any(|(dr, dc)| {
+                let nr = (r as isize + dr) as usize;
+                let nc = (c as isize + dc) as usize;
+                elev[nr * cols + nc].is_none()
+            })
+    };
+
+    // Collect inland pit cells (strictly lower than all active 8-neighbors).
+    let mut pits: Vec<(f64, usize)> = Vec::new();
+    for r in 1..rows.saturating_sub(1) {
+        for c in 1..cols.saturating_sub(1) {
+            let idx = r * cols + c;
+            let Some(z0) = elevations[idx] else { continue };
+            if is_outlet_cell(idx, elevations) {
+                continue;
+            }
+            let mut is_pit = true;
+            for (dr, dc, _) in dirs {
+                let nidx = ((r as isize + dr) as usize) * cols + ((c as isize + dc) as usize);
+                if let Some(nz) = elevations[nidx]
+                    && nz <= z0
+                {
+                    is_pit = false;
+                    break;
+                }
+            }
+            if is_pit {
+                pits.push((z0, idx));
+            }
+        }
+    }
+    // Process deepest pits first so downstream gorges open before upstream tributaries.
+    pits.sort_by(|a, b| a.0.total_cmp(&b.0));
+
+    let max_expanded = 512usize;
+    let mut dist = vec![f64::INFINITY; n];
+    let mut parent = vec![usize::MAX; n];
+    let mut touched: Vec<usize> = Vec::with_capacity(max_expanded);
+    let mut heap: BinaryHeap<MinF64> = BinaryHeap::new();
+
+    for (_, pit_idx) in pits {
+        let Some(z_pit) = elevations[pit_idx] else {
+            continue;
+        };
+        // Re-check if an earlier breach already gave this pit a downhill neighbor.
+        let pr = pit_idx / cols;
+        let pc = pit_idx % cols;
+        let still_pit = dirs.iter().all(|&(dr, dc, _)| {
+            let nr = pr as isize + dr;
+            let nc = pc as isize + dc;
+            if nr < 0 || nc < 0 || nr >= rows as isize || nc >= cols as isize {
+                return true;
+            }
+            elevations[(nr as usize) * cols + (nc as usize)].is_none_or(|nz| nz > z_pit)
+        });
+        if !still_pit {
+            continue;
+        }
+
+        // Bounded Dijkstra least-cost search for lowest-elevation saddle path to an outlet.
+        for &t in &touched {
+            dist[t] = f64::INFINITY;
+            parent[t] = usize::MAX;
+        }
+        touched.clear();
+        heap.clear();
+
+        dist[pit_idx] = 0.0;
+        touched.push(pit_idx);
+        heap.push(MinF64 {
+            val: 0.0,
+            idx: pit_idx,
+        });
+
+        let mut target_idx: Option<usize> = None;
+        let mut expanded = 0usize;
+
+        while let Some(cur) = heap.pop() {
+            if cur.val > dist[cur.idx] {
+                continue;
+            }
+            if cur.idx != pit_idx {
+                let z_cur = elevations[cur.idx].unwrap_or(z_pit);
+                if z_cur < z_pit || is_outlet_cell(cur.idx, elevations) {
+                    target_idx = Some(cur.idx);
+                    break;
+                }
+            }
+            expanded += 1;
+            if expanded >= max_expanded {
+                break;
+            }
+            let r = (cur.idx / cols) as isize;
+            let c = (cur.idx % cols) as isize;
+            for &(dr, dc, step_len) in &dirs {
+                let nr = r + dr;
+                let nc = c + dc;
+                if nr < 0 || nc < 0 || nr >= rows as isize || nc >= cols as isize {
+                    continue;
+                }
+                let nidx = (nr as usize) * cols + (nc as usize);
+                let Some(nz) = elevations[nidx] else {
+                    continue;
+                };
+                let cut_depth = (nz - z_pit).max(0.0);
+                // Penalize deep ridge cuts quadratically so paths hug natural saddles/gorges.
+                let edge_cost = (cut_depth + 0.05 * cut_depth * cut_depth + 0.02) * step_len;
+                let nd = cur.val + edge_cost;
+                if nd < dist[nidx] {
+                    if dist[nidx].is_infinite() {
+                        touched.push(nidx);
+                    }
+                    dist[nidx] = nd;
+                    parent[nidx] = cur.idx;
+                    heap.push(MinF64 { val: nd, idx: nidx });
+                }
+            }
+        }
+
+        if let Some(t_idx) = target_idx {
+            let mut path = Vec::new();
+            let mut cur = t_idx;
+            while cur != usize::MAX {
+                path.push(cur);
+                if cur == pit_idx {
+                    break;
+                }
+                cur = parent[cur];
+            }
+            if path.len() >= 2 && *path.last().unwrap_or(&usize::MAX) == pit_idx {
+                path.reverse(); // pit_idx -> ... -> t_idx
+                let z_end = elevations[t_idx].unwrap_or(z_pit).min(z_pit - 0.01);
+                let steps = (path.len() - 1) as f64;
+                for (k, &cell) in path.iter().enumerate().skip(1) {
+                    let frac = (k as f64) / steps;
+                    let target_z = z_pit - frac * (z_pit - z_end);
+                    if let Some(existing) = elevations[cell]
+                        && existing > target_z
+                    {
+                        elevations[cell] = Some(target_z);
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// Hydrological DEM conditioning: 2-pass gentle 3x3 canopy/noise smoothing, Lindsay (2016)
+/// least-cost depression breaching along natural saddles, and minimal Priority-Flood cleanup.
 pub(super) fn condition_hydrological_dem(elevations: &mut [Option<f64>], cols: usize, rows: usize) {
     let n = cols * rows;
     if elevations.len() != n || cols < 3 || rows < 3 {
@@ -152,6 +324,9 @@ pub(super) fn condition_hydrological_dem(elevations: &mut [Option<f64>], cols: u
         }
     }
 
+    // Breach dammed river gorges along lowest saddles before minimal residual fill.
+    breach_depressions_least_cost(elevations, cols, rows);
+
     let mut visited = vec![false; n];
     let mut heap: BinaryHeap<MinF64> = BinaryHeap::with_capacity(n);
 
@@ -175,7 +350,7 @@ pub(super) fn condition_hydrological_dem(elevations: &mut [Option<f64>], cols: u
         }
     }
 
-    let eps = 0.015;
+    let eps = 0.002;
 
     while let Some(cur) = heap.pop() {
         let r = (cur.idx / cols) as isize;

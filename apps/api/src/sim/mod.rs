@@ -1808,10 +1808,15 @@ where
                                 }
                             }
                         };
-                        if let Some(idx) = land_idx
+                        let is_sea_face = match face.axis {
+                            BoundaryAxisSpec::X => face.column > 0 && face.column < cols,
+                            BoundaryAxisSpec::Y => face.row > 0 && face.row < rows,
+                        };
+                        if is_sea_face
+                            && let Some(idx) = land_idx
                             && accum[idx] >= channel_accum_min
                             && let Some(z) = terrain.cells()[idx]
-                            && z <= bin_tide_m + 0.5
+                            && z < bin_tide_m - 0.15
                         {
                             BoundaryForcingSpec::Stage {
                                 face,

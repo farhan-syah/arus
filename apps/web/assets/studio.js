@@ -11,10 +11,10 @@ let PRESETS = [
 
 const state = {
   basemap: 'topo', // topo | sat | dark
-  center: { lon: 101.535, lat: 3.031 },
-  initZoom: 14.3,
-  initPitch: 48,
-  initBearing: -16,
+  center: { lon: 109.2, lat: 4.15 },
+  initZoom: 5.5,
+  initPitch: 0,
+  initBearing: 0,
   fixedView: false,
   tool: 'inspect', // inspect | pick | bund | pond | xsection
   layer: 'depth',  // depth | velocity | hazard | diff
