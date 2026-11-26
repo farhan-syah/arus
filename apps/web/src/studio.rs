@@ -610,9 +610,9 @@ fn StudioShell() -> Element {
         }
         // About, Curated-Data Disclaimer, Self-Hosting & Support Modal
         div { id: "about-modal", class: "modal-backdrop hidden", role: "dialog", "aria-modal": "true",
-            div { class: "modal-card",
-                div { class: "modal-head",
-                    span { class: "modal-title", "About ARUS & Data Disclaimer" }
+            div { class: "hud modal-card",
+                div { class: "inspector-head",
+                    span { class: "inspector-title", "About ARUS & Data Disclaimer" }
                     button { id: "btn-about-close", class: "btn btn-xs", "Close" }
                 }
                 div { class: "modal-body", style: "display:flex;flex-direction:column;gap:12px;font-size:13px;line-height:1.5;color:var(--ink-2)",
