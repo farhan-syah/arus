@@ -813,7 +813,10 @@ impl InteractiveStore {
                 cancel_handle.cancel();
                 return Err((
                     408,
-                    format!("simulation exceeded {}s wall-clock limit", limits.timeout_secs),
+                    format!(
+                        "simulation exceeded {}s wall-clock limit",
+                        limits.timeout_secs
+                    ),
                 ));
             }
         };
@@ -1493,7 +1496,13 @@ where
         let nowcast_hourly_mm: Vec<f64> = req
             .nowcast_15min_mm
             .chunks(4)
-            .map(|chunk| chunk.iter().copied().filter(|v| v.is_finite() && *v > 0.0).sum::<f64>())
+            .map(|chunk| {
+                chunk
+                    .iter()
+                    .copied()
+                    .filter(|v| v.is_finite() && *v > 0.0)
+                    .sum::<f64>()
+            })
             .collect();
 
         let accum = compute_d8_flow_accum(terrain.cells(), cols, rows);
@@ -1600,20 +1609,21 @@ where
             } else {
                 Vec::new()
             };
-            let fallback_mean_mm: f64 = if !nowcast_hourly_mm.is_empty() && h0 < nowcast_hourly_mm.len() {
-                let nc_end = h1.min(nowcast_hourly_mm.len());
-                nowcast_hourly_mm[h0..nc_end].iter().sum::<f64>()
-                    / (nc_end.saturating_sub(h0).max(1) as f64)
-            } else if !has_spatial {
-                req.hourly_rain_mm[h0..h1]
-                    .iter()
-                    .copied()
-                    .filter(|v| v.is_finite() && *v > 0.0)
-                    .sum::<f64>()
-                    / bin_len
-            } else {
-                bin_pt_means.iter().sum::<f64>() / (bin_pt_means.len().max(1) as f64)
-            };
+            let fallback_mean_mm: f64 =
+                if !nowcast_hourly_mm.is_empty() && h0 < nowcast_hourly_mm.len() {
+                    let nc_end = h1.min(nowcast_hourly_mm.len());
+                    nowcast_hourly_mm[h0..nc_end].iter().sum::<f64>()
+                        / (nc_end.saturating_sub(h0).max(1) as f64)
+                } else if !has_spatial {
+                    req.hourly_rain_mm[h0..h1]
+                        .iter()
+                        .copied()
+                        .filter(|v| v.is_finite() && *v > 0.0)
+                        .sum::<f64>()
+                        / bin_len
+                } else {
+                    bin_pt_means.iter().sum::<f64>() / (bin_pt_means.len().max(1) as f64)
+                };
 
             let bin_tide_m = match req.tide_mode {
                 TideMode::Off => 0.0,
@@ -1658,8 +1668,7 @@ where
                         && z > low_z_cutoff
                         && a >= channel_accum_min;
                     let routing_mult = if is_perim_inlet { 1.25 } else { 1.0 };
-                    rain_grid[idx] =
-                        (local_mm_hr / 3_600_000.0) * time_compression * routing_mult;
+                    rain_grid[idx] = (local_mm_hr / 3_600_000.0) * time_compression * routing_mult;
 
                     // Live FAO-56 Penman-Monteith ET0 (suppressed during active rainfall > 0.2 mm/hr)
                     let local_et0_m_s = if let Some(sg) = &req.spatial_rain_grid
@@ -1785,7 +1794,9 @@ where
                         let land_idx = match face.axis {
                             BoundaryAxisSpec::X => {
                                 let r = face.row.min(rows - 1);
-                                if face.column < cols && terrain.cells()[r * cols + face.column].is_some() {
+                                if face.column < cols
+                                    && terrain.cells()[r * cols + face.column].is_some()
+                                {
                                     Some(r * cols + face.column)
                                 } else if face.column > 0
                                     && terrain.cells()[r * cols + (face.column - 1)].is_some()
@@ -1797,7 +1808,8 @@ where
                             }
                             BoundaryAxisSpec::Y => {
                                 let c = face.column.min(cols - 1);
-                                if face.row < rows && terrain.cells()[face.row * cols + c].is_some() {
+                                if face.row < rows && terrain.cells()[face.row * cols + c].is_some()
+                                {
                                     Some(face.row * cols + c)
                                 } else if face.row > 0
                                     && terrain.cells()[(face.row - 1) * cols + c].is_some()

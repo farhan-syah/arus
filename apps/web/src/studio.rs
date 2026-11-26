@@ -903,7 +903,12 @@ pub fn render_studio_page_html_with_seo(_locale: Locale, seo: &StudioSeoMetadata
         .map(|b| format!("<link rel=\"canonical\" href=\"{}/\">", escape_html_attr(b)))
         .unwrap_or_default();
     let og_url_tag = base
-        .map(|b| format!("<meta property=\"og:url\" content=\"{}/\"/>", escape_html_attr(b)))
+        .map(|b| {
+            format!(
+                "<meta property=\"og:url\" content=\"{}/\"/>",
+                escape_html_attr(b)
+            )
+        })
         .unwrap_or_default();
     let og_image_url = base
         .map(|b| format!("{}/assets/og-card.png", escape_html_attr(b)))

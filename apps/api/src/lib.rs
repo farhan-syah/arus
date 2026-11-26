@@ -123,7 +123,10 @@ pub fn router(state: ApiState) -> Router {
         .route("/api/v1/boundaries", get(get_boundaries))
         .route("/api/v1/live/basins", get(list_live_basins))
         .route("/api/v1/live/{basin}/grid", get(get_live_basin_grid))
-        .route("/api/v1/live/{basin}/frames.bin", get(get_live_basin_frames_bin))
+        .route(
+            "/api/v1/live/{basin}/frames.bin",
+            get(get_live_basin_frames_bin),
+        )
         .route("/api/v1/catalog/sources", get(get_catalog_sources))
         .route("/api/v1/published", get(get_published))
         .route("/api/v1/runs", get(list_runs))
@@ -232,7 +235,10 @@ async fn serve_webmanifest(State(state): State<ApiState>) -> Response {
     });
     Response::builder()
         .status(StatusCode::OK)
-        .header(header::CONTENT_TYPE, "application/manifest+json; charset=utf-8")
+        .header(
+            header::CONTENT_TYPE,
+            "application/manifest+json; charset=utf-8",
+        )
         .header(header::CACHE_CONTROL, "public, max-age=3600")
         .body(Body::from(manifest.to_string()))
         .unwrap_or_else(|_| StatusCode::INTERNAL_SERVER_ERROR.into_response())
@@ -242,7 +248,9 @@ async fn serve_og_card_png(State(state): State<ApiState>) -> Response {
     if let Some(dir) = &state.context_dir {
         let candidates = [
             dir.join("og-card.png"),
-            dir.parent().map(|p| p.join("data/og-card.png")).unwrap_or_default(),
+            dir.parent()
+                .map(|p| p.join("data/og-card.png"))
+                .unwrap_or_default(),
         ];
         for path in candidates {
             if let Ok(bytes) = tokio::fs::read(&path).await {
@@ -259,7 +267,10 @@ async fn serve_og_card_png(State(state): State<ApiState>) -> Response {
 }
 
 async fn serve_maplibre_js() -> Response {
-    immutable_asset("application/javascript; charset=utf-8", MAPLIBRE_JS.as_bytes())
+    immutable_asset(
+        "application/javascript; charset=utf-8",
+        MAPLIBRE_JS.as_bytes(),
+    )
 }
 
 async fn serve_maplibre_css() -> Response {
@@ -282,10 +293,7 @@ async fn serve_sim_worker_js(headers: axum::http::HeaderMap) -> Response {
     )
 }
 
-async fn serve_wasm_asset(
-    Path(file): Path<String>,
-    headers: axum::http::HeaderMap,
-) -> Response {
+async fn serve_wasm_asset(Path(file): Path<String>, headers: axum::http::HeaderMap) -> Response {
     let content_type = match file.as_str() {
         "arus_wasm_solver.js" => "application/javascript; charset=utf-8",
         "arus_wasm_solver_bg.wasm" => "application/wasm",
@@ -569,7 +577,14 @@ async fn post_export_mp4(
     }
     let body = axum::body::to_bytes(req.into_body(), 64 * 1024 * 1024)
         .await
-        .map_err(|e| (StatusCode::PAYLOAD_TOO_LARGE, Json(ErrorResponse { error: format!("mp4 body too large: {e}") })))?;
+        .map_err(|e| {
+            (
+                StatusCode::PAYLOAD_TOO_LARGE,
+                Json(ErrorResponse {
+                    error: format!("mp4 body too large: {e}"),
+                }),
+            )
+        })?;
     let webm = body.to_vec();
     let mp4 = tokio::task::spawn_blocking(move || video::transcode_webm_bytes_to_mp4(&webm))
         .await

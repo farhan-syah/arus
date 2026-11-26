@@ -4,6 +4,15 @@ version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 publish.workspace = true
+description = "Dioxus SSR web UI and interactive MapLibre flood studio shell for ARUS."
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+homepage.workspace = true
+readme.workspace = true
+keywords.workspace = true
+categories.workspace = true
+exclude = ["assets/wasm/**"]
 
 [dependencies]
 arus-api-types.workspace = true

@@ -28,26 +28,33 @@ resolver = "3"
 version = "0.1.0"
 edition = "2024"
 rust-version = "1.96"
-publish = false
+publish = true
+license = "MIT OR Apache-2.0"
+authors = ["Farhan Syah"]
+repository = "https://github.com/farhan-syah/arus"
+homepage = "https://arus.mata.ngo"
+readme = "README.md"
+keywords = ["flood", "hydrology", "hydraulics", "simulation", "gis"]
+categories = ["science::geo", "simulation"]
 
 [workspace.dependencies]
-arus-api-types = { path = "crates/api-types" }
-arus-assets = { path = "crates/assets" }
-arus-domain = { path = "crates/domain" }
-arus-evaluation = { path = "crates/evaluation" }
-arus-forecasting = { path = "crates/forecasting" }
-arus-geo = { path = "crates/geo" }
-arus-hydraulics = { path = "crates/hydraulics" }
-arus-hydrology = { path = "crates/hydrology" }
-arus-ingest = { path = "crates/ingest" }
-arus-jobs = { path = "crates/jobs" }
-arus-media = { path = "crates/media" }
-arus-ml = { path = "crates/ml" }
-arus-model-api = { path = "crates/model-api" }
-arus-optimisation = { path = "crates/optimisation" }
-arus-scenarios = { path = "crates/scenarios" }
-arus-storage = { path = "crates/storage" }
-arus-web = { path = "apps/web" }
+arus-api-types = { version = "0.1.0", path = "crates/api-types" }
+arus-assets = { version = "0.1.0", path = "crates/assets" }
+arus-domain = { version = "0.1.0", path = "crates/domain" }
+arus-evaluation = { version = "0.1.0", path = "crates/evaluation" }
+arus-forecasting = { version = "0.1.0", path = "crates/forecasting" }
+arus-geo = { version = "0.1.0", path = "crates/geo" }
+arus-hydraulics = { version = "0.1.0", path = "crates/hydraulics" }
+arus-hydrology = { version = "0.1.0", path = "crates/hydrology" }
+arus-ingest = { version = "0.1.0", path = "crates/ingest" }
+arus-jobs = { version = "0.1.0", path = "crates/jobs" }
+arus-media = { version = "0.1.0", path = "crates/media" }
+arus-ml = { version = "0.1.0", path = "crates/ml" }
+arus-model-api = { version = "0.1.0", path = "crates/model-api" }
+arus-optimisation = { version = "0.1.0", path = "crates/optimisation" }
+arus-scenarios = { version = "0.1.0", path = "crates/scenarios" }
+arus-storage = { version = "0.1.0", path = "crates/storage" }
+arus-web = { version = "0.1.0", path = "apps/web" }
 axum = "0.8"
 clap = { version = "4.6.7", features = ["derive"] }
 dioxus = { version = "0.7", default-features = false, features = ["macro", "html", "signals", "hooks"] }
