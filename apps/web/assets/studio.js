@@ -2777,6 +2777,7 @@ function setSimPhase(phase) {
       setTool('bund');
     }
     if ($('inspector')) $('inspector').classList.add('hidden');
+    $('sim-dir-drawer')?.classList.add('hidden');
   } else if (next === 'results') {
     updateSimResultMeta();
     if (state.profile === 'researcher' && !['inspect', 'xsection'].includes(state.tool)) {
@@ -3021,7 +3022,12 @@ async function runSimulation(compareMode) {
       btn.innerHTML = orig;
     }
     if (state.profile === 'researcher') {
-      setSimPhase(solvedOk ? 'results' : 'draft');
+      if (solvedOk) {
+        setSimPhase('results');
+        await autoSaveCompletedRun();
+      } else {
+        setSimPhase('draft');
+      }
     } else if (wasPlaying && solvedOk) {
       state.playing = true;
     }
@@ -4152,24 +4158,27 @@ function wireUi() {
   $('btn-sim-apply').addEventListener('click', () => applySimModalDraft(false));
   $('btn-sim-apply-run')?.addEventListener('click', () => applySimModalDraft(true));
   $('btn-sim-fork')?.addEventListener('click', () => {
+    state.draftParentRunId = state.activeRunId || null;
+    state.draftParentSeq = state.activeRunSeq || null;
     setSimPhase('draft');
-    showToast('Cloned into new draft — modify parameters or bunds, then click Run Simulation.');
+    const fromTxt = state.draftParentSeq ? ` (from #${state.draftParentSeq})` : '';
+    showToast(`Cloned into new draft${fromTxt} — modify parameters or bunds, then click Run Simulation.`);
   });
   $('btn-sim-new')?.addEventListener('click', () => {
-    state.interventions = [];
-    state.baselineInterventions = [];
-    state.observedGauges = [];
-    state.diffData = null;
-    state.uploadedDem = null;
-    state.lastBundCell = null;
-    state.xsecPts = [];
-    state.selectedCell = null;
-    state.staticVectorsDirty = true;
-    updateInterventionBar();
-    updateFloodPinBar();
-    renderFloodCanvas(false);
-    setSimPhase('draft');
-    showToast('Started a clean simulation draft.');
+    startCleanSimDraft();
+  });
+  $('btn-dir-close')?.addEventListener('click', () => $('sim-dir-drawer')?.classList.add('hidden'));
+  $('btn-dir-new')?.addEventListener('click', () => {
+    $('sim-dir-drawer')?.classList.add('hidden');
+    startCleanSimDraft();
+  });
+  $('btn-dir-save-draft')?.addEventListener('click', () => saveDraftConfigToDir());
+  document.querySelectorAll('[data-dir-filter]').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      state.simDirFilter = btn.dataset.dirFilter || 'all';
+      document.querySelectorAll('[data-dir-filter]').forEach((b) => b.classList.toggle('active', b === btn));
+      renderSimDirList();
+    });
   });
   $('btn-mob-tools')?.addEventListener('click', () => {
     const opening = !document.body.classList.contains('mob-tools-open');
@@ -4454,6 +4463,7 @@ function wireUi() {
     const typing = tag === 'input' || tag === 'select' || tag === 'textarea';
     if (e.key === 'Escape') {
       ['sources-modal', 'layers-modal', 'sim-modal', 'saved-sims-modal', 'app-settings-modal', 'about-modal'].forEach((id) => { const el = $(id); if (el) el.classList.add('hidden'); });
+      $('sim-dir-drawer')?.classList.add('hidden');
       $('alerts-dropdown')?.classList.add('hidden');
       closeRecPreviewModal();
       setPinDropMode(false);
@@ -5299,6 +5309,7 @@ function setUiProfile(profile, persist = false) {
     if (state.tool !== 'inspect') setTool('inspect');
     if (state.layer === 'diff') setLayer('depth');
     if ($('inspector')) $('inspector').classList.add('hidden');
+    $('sim-dir-drawer')?.classList.add('hidden');
     if (map) {
       try { map.setTerrain(null); } catch (_) {}
       map.setMaxZoom(15.5);
@@ -6144,27 +6155,555 @@ async function idbDeleteSaved(id) {
   });
 }
 
+const SIM_DIR_DB_NAME = 'arus-sim-dir-v2';
+const SIM_DIR_META_STORE = 'runs_meta';
+const SIM_DIR_BLOB_STORE = 'runs_blob';
+const SIM_DIR_MAX_UNPINNED = 25;
+
+function openSimDirDb() {
+  return new Promise((resolve, reject) => {
+    if (typeof indexedDB === 'undefined') {
+      reject(new Error('IndexedDB unavailable in this browser'));
+      return;
+    }
+    const req = indexedDB.open(SIM_DIR_DB_NAME, 1);
+    req.onupgradeneeded = () => {
+      const db = req.result;
+      if (!db.objectStoreNames.contains(SIM_DIR_META_STORE)) {
+        db.createObjectStore(SIM_DIR_META_STORE, { keyPath: 'id' });
+      }
+      if (!db.objectStoreNames.contains(SIM_DIR_BLOB_STORE)) {
+        db.createObjectStore(SIM_DIR_BLOB_STORE, { keyPath: 'id' });
+      }
+    };
+    req.onsuccess = () => resolve(req.result);
+    req.onerror = () => reject(req.error || new Error('Failed to open Simulation Directory DB'));
+  });
+}
+
+async function idbAllRunMeta() {
+  const db = await openSimDirDb();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(SIM_DIR_META_STORE, 'readonly');
+    const req = tx.objectStore(SIM_DIR_META_STORE).getAll();
+    req.onsuccess = () => {
+      const items = (req.result || []).sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
+      resolve(items);
+    };
+    req.onerror = () => reject(req.error);
+  });
+}
+
+async function idbPutRun(meta, blob = null) {
+  const db = await openSimDirDb();
+  return new Promise((resolve, reject) => {
+    const stores = blob ? [SIM_DIR_META_STORE, SIM_DIR_BLOB_STORE] : [SIM_DIR_META_STORE];
+    const tx = db.transaction(stores, 'readwrite');
+    tx.objectStore(SIM_DIR_META_STORE).put(meta);
+    if (blob) tx.objectStore(SIM_DIR_BLOB_STORE).put(blob);
+    tx.oncomplete = () => resolve();
+    tx.onerror = () => reject(tx.error);
+    tx.onabort = () => reject(tx.error || new Error('Transaction aborted'));
+  });
+}
+
+async function idbGetRunBlob(id) {
+  const db = await openSimDirDb();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(SIM_DIR_BLOB_STORE, 'readonly');
+    const req = tx.objectStore(SIM_DIR_BLOB_STORE).get(id);
+    req.onsuccess = () => resolve(req.result || null);
+    req.onerror = () => reject(req.error);
+  });
+}
+
+async function idbDeleteRun(id) {
+  const db = await openSimDirDb();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction([SIM_DIR_META_STORE, SIM_DIR_BLOB_STORE], 'readwrite');
+    tx.objectStore(SIM_DIR_META_STORE).delete(id);
+    tx.objectStore(SIM_DIR_BLOB_STORE).delete(id);
+    tx.oncomplete = () => resolve();
+    tx.onerror = () => reject(tx.error);
+    tx.onabort = () => reject(tx.error || new Error('Transaction aborted'));
+  });
+}
+
+async function idbEnforceSimDirLru() {
+  try {
+    const all = await idbAllRunMeta();
+    const unpinned = all.filter((x) => !x.pinned);
+    if (unpinned.length <= SIM_DIR_MAX_UNPINNED) return;
+    const toEvict = unpinned.slice(SIM_DIR_MAX_UNPINNED);
+    for (const old of toEvict) {
+      await idbDeleteRun(old.id);
+    }
+  } catch (_) {}
+}
+
+function startCleanSimDraft() {
+  state.draftParentRunId = null;
+  state.draftParentSeq = null;
+  state.interventions = [];
+  state.baselineInterventions = [];
+  state.observedGauges = [];
+  state.diffData = null;
+  state.uploadedDem = null;
+  state.lastBundCell = null;
+  state.xsecPts = [];
+  state.selectedCell = null;
+  state.staticVectorsDirty = true;
+  updateInterventionBar();
+  updateFloodPinBar();
+  renderFloodCanvas(false);
+  setSimPhase('draft');
+  showToast('Started a clean simulation draft.');
+}
+
+function computeRunSummaryMetrics(grid) {
+  const meta = grid?.metadata;
+  const env = grid?.envelope;
+  if (!meta || !env?.max_depth_m) {
+    return { peakDepthM: 0, floodedPct: 0, floodedKm2: 0, gridDims: '—' };
+  }
+  const cut = state.displayPrefs.depthCutoffM || 0.08;
+  const cellKm2 = (meta.dx_m * meta.dx_m) / 1_000_000;
+  let active = 0;
+  let wet = 0;
+  let peak = 0;
+  for (let i = 0; i < env.max_depth_m.length; i++) {
+    if (!meta.active_mask[i]) continue;
+    active++;
+    const h = env.max_depth_m[i] || 0;
+    if (h > peak) peak = h;
+    if (h >= cut) wet++;
+  }
+  return {
+    peakDepthM: peak,
+    floodedPct: active > 0 ? Math.round((wet / active) * 100) : 0,
+    floodedKm2: wet * cellKm2,
+    gridDims: `${meta.cols}×${meta.rows} · ${Math.round(meta.dx_m)}m`,
+  };
+}
+
+async function autoSaveCompletedRun() {
+  if (!state.grid || !state.lastFramesBuf || !state.frames.length) return;
+  try {
+    const existing = await idbAllRunMeta();
+    const nextSeq = existing.reduce((mx, x) => Math.max(mx, Number(x.seq) || 0), 0) + 1;
+    const locLabel = $('preset-select')?.selectedOptions?.[0]?.textContent?.trim()
+      || `${state.center.lat.toFixed(2)}°, ${state.center.lon.toFixed(2)}°`;
+    const id = `run-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
+    const bufCopy = state.lastFramesBuf.slice(0);
+    const summary = computeRunSummaryMetrics(state.grid);
+    const meta = {
+      id,
+      seq: nextSeq,
+      kind: 'simulation',
+      name: `${locLabel} · #${nextSeq}`,
+      parentRunId: state.draftParentRunId || null,
+      parentSeq: state.draftParentSeq || null,
+      pinned: false,
+      createdAt: Date.now(),
+      sizeBytes: bufCopy.byteLength + JSON.stringify(state.grid).length,
+      config: {
+        center: { lat: state.center.lat, lon: state.center.lon },
+        zoom: map ? map.getZoom() : state.initZoom,
+        simConfig: { ...state.simConfig },
+        interventions: state.interventions.map((x) => ({ ...x })),
+        baselineInterventions: state.baselineInterventions.map((x) => ({ ...x })),
+        antecedentMm: state.antecedentMm,
+        observedGauges: state.observedGauges.map((x) => ({ ...x })),
+        boundaryGeoJson: state.boundaryGeoJson || null,
+        boundaryName: state.activeBoundaryName || null,
+      },
+      summary: {
+        ...summary,
+        engine: state.activeEngine || 'Solved',
+        editCount: state.interventions.length,
+        massOk: state.grid?.budget_assessment?.passed !== false,
+      },
+    };
+    const blob = {
+      id,
+      grid: state.grid,
+      framesBuf: bufCopy,
+      runId: state.runId || id,
+      engine: state.activeEngine || 'Solved',
+    };
+    await idbPutRun(meta, blob);
+    await idbEnforceSimDirLru();
+    state.activeRunId = id;
+    state.activeRunSeq = nextSeq;
+    state.draftParentRunId = null;
+    state.draftParentSeq = null;
+    await refreshSavedCountBadge();
+    if (!$('sim-dir-drawer')?.classList.contains('hidden')) {
+      await renderSimDirList();
+    }
+  } catch (_) {}
+}
+
+async function saveDraftConfigToDir() {
+  try {
+    const existing = await idbAllRunMeta();
+    const nextSeq = existing.reduce((mx, x) => Math.max(mx, Number(x.seq) || 0), 0) + 1;
+    const locLabel = $('preset-select')?.selectedOptions?.[0]?.textContent?.trim()
+      || `${state.center.lat.toFixed(2)}°, ${state.center.lon.toFixed(2)}°`;
+    const id = `cfg-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
+    const meta = {
+      id,
+      seq: nextSeq,
+      kind: 'config',
+      name: `${locLabel} Draft · #${nextSeq}`,
+      parentRunId: state.draftParentRunId || null,
+      parentSeq: state.draftParentSeq || null,
+      pinned: true,
+      createdAt: Date.now(),
+      sizeBytes: 2048,
+      config: {
+        center: { lat: state.center.lat, lon: state.center.lon },
+        zoom: map ? map.getZoom() : state.initZoom,
+        simConfig: { ...state.simConfig },
+        interventions: state.interventions.map((x) => ({ ...x })),
+        baselineInterventions: state.baselineInterventions.map((x) => ({ ...x })),
+        antecedentMm: state.antecedentMm,
+        observedGauges: state.observedGauges.map((x) => ({ ...x })),
+        boundaryGeoJson: state.boundaryGeoJson || null,
+        boundaryName: state.activeBoundaryName || null,
+      },
+      summary: {
+        peakDepthM: 0,
+        floodedPct: 0,
+        floodedKm2: 0,
+        gridDims: 'Draft',
+        engine: 'Config',
+        editCount: state.interventions.length,
+        massOk: true,
+      },
+    };
+    await idbPutRun(meta, null);
+    await refreshSavedCountBadge();
+    await renderSimDirList();
+    showToast(`Saved draft "${meta.name}".`);
+  } catch (err) {
+    showToast(`Save draft failed: ${err && err.message ? err.message : String(err)}`);
+  }
+}
+
+async function openSimDirRun(meta) {
+  if (!meta) return;
+  try {
+    const cfg = meta.config || {};
+    if (cfg.simConfig) Object.assign(state.simConfig, cfg.simConfig);
+    if (cfg.center) state.center = { lat: cfg.center.lat, lon: cfg.center.lon };
+    state.interventions = Array.isArray(cfg.interventions) ? cfg.interventions.map((x) => ({ ...x })) : [];
+    state.baselineInterventions = Array.isArray(cfg.baselineInterventions) ? cfg.baselineInterventions.map((x) => ({ ...x })) : [];
+    if (typeof cfg.antecedentMm === 'number') state.antecedentMm = cfg.antecedentMm;
+    if (Array.isArray(cfg.observedGauges)) state.observedGauges = cfg.observedGauges.map((x) => ({ ...x }));
+    state.diffData = null;
+    if (state.layer === 'diff') setLayer('depth');
+    if (cfg.boundaryGeoJson) {
+      state.activeBoundaryName = cfg.boundaryName || null;
+      await applyBoundaryGeometry(cfg.boundaryGeoJson, false, { fitView: false });
+    } else {
+      clearBoundaryFocus();
+    }
+    updateInterventionBar();
+    updateFloodPinBar();
+    if (map && cfg.center) {
+      map.flyTo({ center: [cfg.center.lon, cfg.center.lat], zoom: cfg.zoom || 12.2, duration: 600 });
+    }
+    if (meta.kind === 'simulation') {
+      const blob = await idbGetRunBlob(meta.id);
+      if (blob?.grid && blob?.framesBuf) {
+        const frames = decodeFramesBin(blob.framesBuf);
+        if (frames.length) {
+          state.frameRasterCache.clear();
+          state.playing = false;
+          state.activeRunId = meta.id;
+          state.activeRunSeq = meta.seq;
+          applyLoadedSimulation(blob.grid, frames, blob.runId || meta.id, `${blob.engine || 'Saved'} · #${meta.seq}`, blob.framesBuf);
+          setSimPhase('results');
+          if (window.innerWidth < 1440) $('sim-dir-drawer')?.classList.add('hidden');
+          await renderSimDirList();
+          showToast(`Opened #${meta.seq} "${meta.name}" instantly.`);
+          return;
+        }
+      }
+    }
+    state.activeRunId = null;
+    state.activeRunSeq = null;
+    state.staticVectorsDirty = true;
+    renderFloodCanvas(false);
+    setSimPhase('draft');
+    if (window.innerWidth < 1440) $('sim-dir-drawer')?.classList.add('hidden');
+    showToast(`Loaded draft "${meta.name}" — click Run Simulation when ready.`);
+  } catch (err) {
+    showToast(`Open failed: ${err && err.message ? err.message : String(err)}`);
+  }
+}
+
+async function forkSimDirRun(meta) {
+  if (!meta) return;
+  const cfg = meta.config || {};
+  if (cfg.simConfig) Object.assign(state.simConfig, cfg.simConfig);
+  if (cfg.center) state.center = { lat: cfg.center.lat, lon: cfg.center.lon };
+  state.interventions = Array.isArray(cfg.interventions) ? cfg.interventions.map((x) => ({ ...x })) : [];
+  state.baselineInterventions = Array.isArray(cfg.baselineInterventions) ? cfg.baselineInterventions.map((x) => ({ ...x })) : [];
+  state.observedGauges = Array.isArray(cfg.observedGauges) ? cfg.observedGauges.map((x) => ({ ...x })) : [];
+  state.activeRunId = null;
+  state.activeRunSeq = null;
+  state.draftParentRunId = meta.id;
+  state.draftParentSeq = meta.seq;
+  state.diffData = null;
+  state.xsecPts = [];
+  state.selectedCell = null;
+  state.lastBundCell = null;
+  state.uploadedDem = null;
+  if (state.layer === 'diff') setLayer('depth');
+  if (cfg.boundaryGeoJson) {
+    state.activeBoundaryName = cfg.boundaryName || null;
+    await applyBoundaryGeometry(cfg.boundaryGeoJson, false, { fitView: false });
+  } else {
+    clearBoundaryFocus();
+  }
+  if (map && cfg.center) {
+    map.flyTo({ center: [cfg.center.lon, cfg.center.lat], zoom: cfg.zoom || 12.2, duration: 600 });
+  }
+  state.staticVectorsDirty = true;
+  updateInterventionBar();
+  updateFloodPinBar();
+  renderFloodCanvas(false);
+  setSimPhase('draft');
+  $('sim-dir-drawer')?.classList.add('hidden');
+  showToast(`Forked #${meta.seq} into new draft — edit and click Run Simulation.`);
+}
+
+async function compareWithSimDirRun(otherMeta) {
+  if (!otherMeta || otherMeta.kind !== 'simulation') return;
+  if (!state.grid?.envelope?.max_depth_m || state.simPhase !== 'results') {
+    showToast('Open a completed run first, then click Compare on another run.');
+    return;
+  }
+  const otherBlob = await idbGetRunBlob(otherMeta.id);
+  const curMeta = state.grid.metadata;
+  const othMeta = otherBlob?.grid?.metadata;
+  const curPeak = state.grid.envelope.max_depth_m;
+  const othPeak = otherBlob?.grid?.envelope?.max_depth_m;
+  if (!othMeta || !othPeak) {
+    showToast('Selected run has no stored depth envelope.');
+    return;
+  }
+  const sameGrid = curMeta.cols === othMeta.cols && curMeta.rows === othMeta.rows
+    && curMeta.wgs84_bounds.every((v, i) => Math.abs(v - othMeta.wgs84_bounds[i]) < 1e-4);
+  if (!sameGrid) {
+    showToast('Cannot diff runs with different basin extents — fork a run to compare on the same grid.');
+    return;
+  }
+  const delta = new Float32Array(curPeak.length);
+  let improved = 0;
+  let worsened = 0;
+  let maxRed = 0;
+  let maxWors = 0;
+  for (let i = 0; i < curPeak.length; i++) {
+    if (!curMeta.active_mask[i]) continue;
+    const d = (curPeak[i] || 0) - (othPeak[i] || 0);
+    delta[i] = d;
+    if (d <= -0.015) {
+      improved++;
+      if (-d > maxRed) maxRed = -d;
+    } else if (d >= 0.015) {
+      worsened++;
+      if (d > maxWors) maxWors = d;
+    }
+  }
+  state.diffData = {
+    delta_max_depth_m: delta,
+    improved_cells: improved,
+    max_reduction_m: maxRed,
+    worsened_cells: worsened,
+    max_worsening_m: maxWors,
+    conservation_valid: true,
+    earthwork: { fill_volume_m3: 0 },
+  };
+  state.frameRasterCache.clear();
+  setLayer('diff');
+  if ($('inspector')) {
+    $('inspector').classList.remove('hidden');
+    $('inspector-svg')?.classList.add('hidden');
+    $('inspector-title').textContent = `Δh Diff: #${state.activeRunSeq || '?'} vs #${otherMeta.seq}`;
+    $('inspector-stats').innerHTML = `
+      <div class="mini-stat"><div class="mini-k">Protected</div><div class="mini-v good">${improved} cells (−${fmtDepth(maxRed, 2)})</div></div>
+      <div class="mini-stat"><div class="mini-k">Worsened</div><div class="mini-v bad">${worsened} cells (+${fmtDepth(maxWors, 2)})</div></div>
+    `;
+  }
+  if (window.innerWidth < 1440) $('sim-dir-drawer')?.classList.add('hidden');
+  showToast(`Client-side Δh Diff computed: #${state.activeRunSeq || '?'} vs #${otherMeta.seq}.`);
+}
+
+async function renderSimDirList() {
+  const listEl = $('sim-dir-list');
+  const sumEl = $('sim-dir-summary');
+  if (!listEl) return;
+  try {
+    const all = await idbAllRunMeta();
+    const filter = state.simDirFilter || 'all';
+    const items = filter === 'pinned' ? all.filter((x) => x.pinned) : all;
+    const totalBytes = all.reduce((acc, x) => acc + (x.sizeBytes || 0), 0);
+    if (sumEl) {
+      sumEl.textContent = `${all.length} run${all.length === 1 ? '' : 's'} (${(totalBytes / 1_048_576).toFixed(1)} MB) · Auto-saved locally`;
+    }
+    listEl.replaceChildren();
+    if (!items.length) {
+      const empty = document.createElement('div');
+      empty.style.cssText = 'font-size:12px;color:var(--ink-3);padding:12px 4px;line-height:1.45';
+      empty.textContent = filter === 'pinned'
+        ? 'No pinned runs yet. Star any run to protect it from auto-cleanup.'
+        : 'No simulations yet. Configure a draft and click Run Simulation — completed runs auto-save here.';
+      listEl.appendChild(empty);
+      return;
+    }
+    for (const meta of items) {
+      const card = document.createElement('div');
+      card.className = `sim-dir-card${meta.id === state.activeRunId ? ' active' : ''}`;
+      card.addEventListener('click', () => openSimDirRun(meta));
+
+      const head = document.createElement('div');
+      head.className = 'sim-dir-head';
+      const tw = document.createElement('div');
+      tw.className = 'sim-dir-title-wrap';
+      const seq = document.createElement('span');
+      seq.className = `sim-dir-seq${meta.kind === 'config' ? ' cfg' : ''}`;
+      seq.textContent = meta.kind === 'config' ? `CFG #${meta.seq}` : `#${meta.seq}`;
+      const nm = document.createElement('span');
+      nm.className = 'sim-dir-name';
+      nm.textContent = meta.name || `Run #${meta.seq}`;
+      nm.title = nm.textContent;
+      tw.append(seq, nm);
+
+      const pinBtn = document.createElement('button');
+      pinBtn.type = 'button';
+      pinBtn.className = `btn btn-xs loc-star-btn${meta.pinned ? ' active' : ''}`;
+      pinBtn.textContent = meta.pinned ? '★' : '☆';
+      pinBtn.title = meta.pinned ? 'Unpin run' : 'Pin run (keep forever)';
+      pinBtn.addEventListener('click', async (ev) => {
+        ev.stopPropagation();
+        meta.pinned = !meta.pinned;
+        await idbPutRun(meta, null);
+        await renderSimDirList();
+      });
+      head.append(tw, pinBtn);
+      card.appendChild(head);
+
+      if (meta.parentSeq) {
+        const fk = document.createElement('div');
+        fk.className = 'sim-dir-fork';
+        fk.textContent = `↳ forked from #${meta.parentSeq}`;
+        card.appendChild(fk);
+      }
+
+      const chips = document.createElement('div');
+      chips.className = 'sim-dir-chips';
+      const s = meta.summary || {};
+      if (meta.kind === 'simulation') {
+        const c1 = document.createElement('span');
+        c1.className = 'sim-dir-chip';
+        c1.textContent = `Peak ${fmtDepth(s.peakDepthM || 0, 2)}`;
+        const c2 = document.createElement('span');
+        c2.className = 'sim-dir-chip';
+        c2.textContent = fmtArea(s.floodedKm2 || 0, 1);
+        chips.append(c1, c2);
+      }
+      if (s.editCount > 0) {
+        const c3 = document.createElement('span');
+        c3.className = 'sim-dir-chip';
+        c3.textContent = `${s.editCount} bund cells`;
+        chips.appendChild(c3);
+      }
+      const cTime = document.createElement('span');
+      cTime.className = 'sim-dir-chip';
+      cTime.textContent = new Date(meta.createdAt || Date.now()).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+      chips.appendChild(cTime);
+      card.appendChild(chips);
+
+      const acts = document.createElement('div');
+      acts.className = 'sim-dir-actions';
+      const forkBtn = document.createElement('button');
+      forkBtn.type = 'button';
+      forkBtn.className = 'btn btn-xs';
+      forkBtn.textContent = 'Fork';
+      forkBtn.addEventListener('click', (ev) => {
+        ev.stopPropagation();
+        forkSimDirRun(meta);
+      });
+      acts.appendChild(forkBtn);
+
+      if (meta.kind === 'simulation' && meta.id !== state.activeRunId && state.simPhase === 'results') {
+        const cmpBtn = document.createElement('button');
+        cmpBtn.type = 'button';
+        cmpBtn.className = 'btn btn-xs';
+        cmpBtn.textContent = 'Compare Δh';
+        cmpBtn.addEventListener('click', (ev) => {
+          ev.stopPropagation();
+          compareWithSimDirRun(meta);
+        });
+        acts.appendChild(cmpBtn);
+      }
+
+      const renBtn = document.createElement('button');
+      renBtn.type = 'button';
+      renBtn.className = 'btn btn-xs';
+      renBtn.textContent = 'Rename';
+      renBtn.addEventListener('click', async (ev) => {
+        ev.stopPropagation();
+        const nextName = window.prompt('Rename simulation:', meta.name || '');
+        if (nextName && nextName.trim()) {
+          meta.name = nextName.trim();
+          await idbPutRun(meta, null);
+          await renderSimDirList();
+        }
+      });
+      acts.appendChild(renBtn);
+
+      const delBtn = document.createElement('button');
+      delBtn.type = 'button';
+      delBtn.className = 'btn btn-xs';
+      delBtn.textContent = 'Delete';
+      delBtn.addEventListener('click', async (ev) => {
+        ev.stopPropagation();
+        await idbDeleteRun(meta.id);
+        if (state.activeRunId === meta.id) {
+          state.activeRunId = null;
+          state.activeRunSeq = null;
+        }
+        await refreshSavedCountBadge();
+        await renderSimDirList();
+      });
+      acts.appendChild(delBtn);
+
+      card.appendChild(acts);
+      listEl.appendChild(card);
+    }
+  } catch (err) {
+    listEl.textContent = `Could not read local runs: ${err && err.message ? err.message : String(err)}`;
+  }
+}
+
 async function refreshSavedCountBadge() {
   try {
-    const items = await idbAllSaved();
+    const items = await idbAllRunMeta();
     const btn = $('btn-saved-sims');
     if (btn) btn.textContent = `Runs (${items.length})`;
   } catch (_) {}
 }
 
 async function openSavedSimsModal() {
-  const modal = $('saved-sims-modal');
-  if (!modal) return;
-  const saveSimBtn = $('btn-save-sim');
-  if (saveSimBtn) {
-    const hasResult = Boolean(state.grid && state.lastFramesBuf && state.frames.length);
-    saveSimBtn.disabled = !hasResult;
-    saveSimBtn.title = hasResult
-      ? 'Save setup plus full flood result so reopening needs zero re-solving'
-      : 'Run a simulation first to save its result';
-  }
-  modal.classList.remove('hidden');
-  await renderSavedSimsList();
+  const dir = $('sim-dir-drawer');
+  if (!dir) return;
+  const opening = dir.classList.contains('hidden');
+  dir.classList.toggle('hidden', !opening);
+  if (opening) await renderSimDirList();
 }
 
 async function saveCurrentToIdb(kind) {

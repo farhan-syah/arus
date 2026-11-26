@@ -309,6 +309,26 @@ fn StudioShell() -> Element {
             }
         }
 
+        // On-Canvas Slide-Out Simulation Directory Drawer (Auto-Saved Immutable Runs)
+        aside { id: "sim-dir-drawer", class: "hud sim-dir-drawer hidden", "aria-label": "Simulation Directory",
+            div { class: "sec-head drawer-top-head",
+                span { class: "sec-title", "Simulation Directory" }
+                div { style: "display:flex;gap:5px;align-items:center",
+                    button { id: "btn-dir-new", class: "btn btn-xs primary", r#type: "button", "+ New" }
+                    button { id: "btn-dir-close", class: "btn btn-xs", r#type: "button", "aria-label": "Close Simulation Directory", "×" }
+                }
+            }
+            div { class: "sim-dir-toolbar",
+                div { class: "seg-group",
+                    button { class: "seg-btn active", "data-dir-filter": "all", "All" }
+                    button { class: "seg-btn", "data-dir-filter": "pinned", "Pinned ★" }
+                }
+                button { id: "btn-dir-save-draft", class: "btn btn-xs", r#type: "button", title: "Save current un-run draft setup", "Save Draft" }
+            }
+            div { id: "sim-dir-list", class: "sim-dir-list" }
+            div { id: "sim-dir-summary", class: "sim-dir-summary", "0 runs · Auto-saved locally" }
+        }
+
         // Top-Right Layer & Legend Card
         aside { class: "hud layer-panel",
             div { class: "sec-head",

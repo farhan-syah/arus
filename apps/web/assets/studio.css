@@ -831,6 +831,7 @@ input[type="range"] {
   top: 14px;
 }
 [data-profile="public"] #drawer,
+[data-profile="public"] #sim-dir-drawer,
 [data-profile="public"] #btn-mob-tools,
 [data-profile="public"] #btn-open-sim,
 [data-profile="public"] #btn-saved-sims,
@@ -980,6 +981,125 @@ input[type="range"] {
 .sim-overlay-note {
   font-size: 11px;
   color: var(--ink-3);
+}
+.sim-dir-drawer {
+  top: 66px;
+  left: 12px;
+  width: 304px;
+  bottom: 68px;
+  z-index: 32;
+  padding: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.sim-dir-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+.sim-dir-list {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding-right: 2px;
+}
+.sim-dir-card {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 9px 10px;
+  border-radius: 9px;
+  background: var(--hud-well);
+  border: 1px solid var(--hud-border);
+  cursor: pointer;
+  transition: border-color 0.14s ease, background 0.14s ease;
+}
+.sim-dir-card:hover {
+  border-color: var(--accent);
+}
+.sim-dir-card.active {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 1px var(--accent);
+}
+.sim-dir-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+}
+.sim-dir-title-wrap {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  flex: 1;
+}
+.sim-dir-seq {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 10.5px;
+  font-weight: 700;
+  padding: 1px 5px;
+  border-radius: 5px;
+  background: rgba(2, 132, 199, 0.14);
+  color: #0369a1;
+  flex-shrink: 0;
+}
+.sim-dir-seq.cfg {
+  background: rgba(100, 116, 139, 0.16);
+  color: var(--ink-2);
+}
+.sim-dir-name {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--ink-1);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.sim-dir-fork {
+  font-size: 10.5px;
+  color: var(--ink-3);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+.sim-dir-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+  font-size: 10.5px;
+  color: var(--ink-2);
+}
+.sim-dir-chip {
+  padding: 1px 6px;
+  border-radius: 5px;
+  background: var(--hud-bg);
+  border: 1px solid var(--hud-border);
+}
+.sim-dir-actions {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  flex-wrap: wrap;
+}
+.sim-dir-summary {
+  font-size: 11px;
+  color: var(--ink-3);
+  padding-top: 6px;
+  border-top: 1px solid var(--hud-border);
+}
+@media (max-width: 768px) {
+  .sim-dir-drawer {
+    top: 98px;
+    left: 8px;
+    right: 8px;
+    width: auto;
+    bottom: 62px;
+    z-index: 36;
+  }
 }
 .saved-sims-list {
   display: flex;
