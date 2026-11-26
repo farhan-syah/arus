@@ -466,9 +466,12 @@ impl SurfaceRunSpec {
         let forcing = ForcingSchedule::new(&domain, &boundaries, intervals)
             .map_err(|error| ModelError::InvalidInput(error.to_string()))?;
 
-        let min_dx = self.terrain.grid().dx_m.min(self.terrain.grid().dy_m);
+        let grid = self.terrain.grid();
+        let min_dx = grid.dx_m.min(grid.dy_m);
+        let domain_area_m2 = (grid.columns * grid.rows) as f64 * grid.dx_m * grid.dy_m;
         let config = SolverConfig {
             max_step: (min_dx / 15.0).clamp(1.0, 10.0),
+            max_cumulative_water_adjustment_m3: (domain_area_m2 * 1e-12).max(1e-9),
             ..SolverConfig::default()
         };
         let engine = SurfaceEngine::new(
