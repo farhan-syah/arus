@@ -113,6 +113,7 @@ const state = {
   liveInterventions: [],
   liveBasinId: null,
   liveOverlays: new Map(),
+  serverAlertPlaces: new Map(),
   catalogBoundaries: [],
   hoveredBoundary: null,
   activeBoundaryName: null,
@@ -2608,6 +2609,12 @@ async function loadAllPrecomputedLiveBasins(primaryBasinId) {
           try {
             const cJson = await cResp.json();
             rainGrid = cJson?.context?.spatial_rain_grid || null;
+            const ap = cJson?.context?.alert_places;
+            if (ap && typeof ap === 'object') {
+              for (const [k, v] of Object.entries(ap)) {
+                if (typeof v === 'string' && v) state.serverAlertPlaces.set(k, v);
+              }
+            }
           } catch (_) {}
         }
         if (frames.length) {
@@ -2635,6 +2642,12 @@ async function tryLoadPrecomputedLive(basinId) {
     if (!frames.length) return false;
     state.liveBasinId = basinId;
     const primaryRain = state.serverContext?.context?.spatial_rain_grid || state.spatialRainGrid || null;
+    const primaryPlaces = state.serverContext?.context?.alert_places;
+    if (primaryPlaces && typeof primaryPlaces === 'object') {
+      for (const [k, v] of Object.entries(primaryPlaces)) {
+        if (typeof v === 'string' && v) state.serverAlertPlaces.set(k, v);
+      }
+    }
     state.liveOverlays.set(basinId, { grid, frames, rainGrid: primaryRain, lastKey: '' });
     // Pre-computed Live caches span 5 days (120 hours) from the latest forecast cycle
     state.spanHours = 120;
@@ -5675,7 +5688,7 @@ function computeAllLiveFloodClusters() {
         }
         const areaKm2 = count * cellAreaKm2;
         const placeKey = `spot:${cLat.toFixed(2)},${cLon.toFixed(2)}`;
-        const cachedPlace = readNominatimCache(placeKey);
+        const cachedPlace = state.serverAlertPlaces.get(placeKey) || readNominatimCache(placeKey);
         clusters.push({
           basinId: src.basinId,
           stateName: formatStateName(src.basinId),
@@ -5696,7 +5709,7 @@ function computeAllLiveFloodClusters() {
 }
 
 function formatClusterLabel(item) {
-  const cached = item.placeName || readNominatimCache(item.placeKey);
+  const cached = item.placeName || state.serverAlertPlaces.get(item.placeKey) || readNominatimCache(item.placeKey);
   if (cached) {
     item.placeName = cached;
     return cached;
@@ -5707,7 +5720,7 @@ function formatClusterLabel(item) {
 let alertGeoQueueRunning = false;
 async function resolveAlertPlaceNames(clusters) {
   if (alertGeoQueueRunning) return;
-  const pending = clusters.filter((c) => !c.placeName && !readNominatimCache(c.placeKey)).slice(0, 12);
+  const pending = clusters.filter((c) => !c.placeName && !state.serverAlertPlaces.has(c.placeKey) && !readNominatimCache(c.placeKey)).slice(0, 12);
   if (!pending.length) return;
   alertGeoQueueRunning = true;
   try {

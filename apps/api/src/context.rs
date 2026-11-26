@@ -102,6 +102,8 @@ pub struct RegionalContext {
     pub mjo: Option<MjoRegime>,
     #[serde(default)]
     pub warnings: Vec<ContextWarning>,
+    #[serde(default)]
+    pub alert_places: std::collections::BTreeMap<String, String>,
 }
 
 /// Envelope returned by `GET /api/v1/context` with freshness metadata.
