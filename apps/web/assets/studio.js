@@ -3342,7 +3342,8 @@ function wireUi() {
       }
     });
   });
-  $('btn-app-settings')?.addEventListener('click', openAppSettingsModal);
+  $('btn-app-settings')?.addEventListener('click', () => openAppSettingsModal(false));
+  $('btn-save-view')?.addEventListener('click', () => openAppSettingsModal(true));
   $('btn-app-settings-close')?.addEventListener('click', () => $('app-settings-modal')?.classList.add('hidden'));
   document.querySelectorAll('[data-settings-tab]').forEach((btn) => {
     btn.addEventListener('click', () => {
@@ -4511,9 +4512,32 @@ function rebuildPresetDropdown() {
   }
 }
 
-function openAppSettingsModal() {
+function openAppSettingsModal(prefillCurrentView = false) {
   editingCustomLocId = null;
   if ($('btn-loc-add')) $('btn-loc-add').textContent = '+ Add Location';
+  // Ensure Manage Locations tab is active
+  document.querySelectorAll('[data-settings-tab]').forEach((b) => {
+    b.classList.toggle('active', b.dataset.settingsTab === 'locations');
+  });
+  $('settings-pane-locations')?.classList.remove('hidden');
+  $('settings-pane-general')?.classList.add('hidden');
+  if (prefillCurrentView && map) {
+    if ($('loc-kind')) {
+      $('loc-kind').value = 'point';
+      $('loc-kind').dispatchEvent(new Event('change'));
+    }
+    const c = map.getCenter();
+    if ($('loc-lat')) $('loc-lat').value = c.lat.toFixed(4);
+    if ($('loc-lon')) $('loc-lon').value = c.lng.toFixed(4);
+    if ($('loc-zoom')) $('loc-zoom').value = map.getZoom().toFixed(1);
+    if ($('loc-pitch')) $('loc-pitch').value = String(Math.round(map.getPitch()));
+    if ($('loc-bearing')) $('loc-bearing').value = String(Math.round(map.getBearing()));
+    const hint = $('coord-search')?.value?.trim() || '';
+    if ($('loc-name')) {
+      $('loc-name').value = hint;
+      setTimeout(() => $('loc-name')?.focus(), 50);
+    }
+  }
   rebuildPresetDropdown();
   renderManageLocationsList();
   $('app-settings-modal')?.classList.remove('hidden');

@@ -42,6 +42,7 @@ fn StudioShell() -> Element {
                         r#type: "text",
                         placeholder: "Search place or lat, lon",
                     }
+                    button { id: "btn-save-view", class: "btn btn-xs", title: "Save current map view as a custom location", "Save View" }
                     div { class: "alerts-wrap",
                         button { id: "btn-alerts", class: "btn btn-xs alert-btn none", title: "Active flood alerts within monitored coverage",
                             svg {
