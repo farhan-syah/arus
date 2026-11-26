@@ -5666,19 +5666,25 @@ function computeAllLiveFloodClusters() {
             peakLat = lat;
             peakLon = lon;
           }
-          const neighbors = [
-            cr > 0 ? idx - cols : -1,
-            cr + 1 < rows ? idx + cols : -1,
-            cc > 0 ? idx - 1 : -1,
-            cc + 1 < cols ? idx + 1 : -1,
-          ];
-          for (const n of neighbors) {
-            if (n >= 0 && !visited[n] && mask[n] && depths[n] >= minDepth) {
-              visited[n] = 1;
-              queue[tail++] = n;
+          // 8-connected BFS so diagonal river corridors stay one unified flood zone
+          for (let dr = -1; dr <= 1; dr++) {
+            const nr = cr + dr;
+            if (nr < 0 || nr >= rows) continue;
+            for (let dc = -1; dc <= 1; dc++) {
+              if (dr === 0 && dc === 0) continue;
+              const nc = cc + dc;
+              if (nc < 0 || nc >= cols) continue;
+              const n = nr * cols + nc;
+              if (!visited[n] && mask[n] && depths[n] >= minDepth) {
+                visited[n] = 1;
+                queue[tail++] = n;
+              }
             }
           }
         }
+
+        // Suppress isolated 1-cell DEM pits (< 0.60 m) from generating alert noise
+        if (count < 2 && peakDepth < 0.60) continue;
 
         const cLat = peakDepth > 0 ? peakLat : sumLat / count;
         const cLon = peakDepth > 0 ? peakLon : sumLon / count;
@@ -5704,8 +5710,33 @@ function computeAllLiveFloodClusters() {
     }
   }
 
-  clusters.sort((a, b) => (severityRank(b.severity) - severityRank(a.severity)) || (b.areaKm2 - a.areaKm2));
-  return clusters;
+  // Merge nearby flood pockets within ~8 km (0.075 deg) in the same basin into one alert zone
+  clusters.sort((a, b) => (severityRank(b.severity) - severityRank(a.severity)) || (b.peakDepthM - a.peakDepthM) || (b.areaKm2 - a.areaKm2));
+  const merged = [];
+  const mergeRadSq = 0.075 * 0.075;
+  for (const c of clusters) {
+    let hit = null;
+    for (const m of merged) {
+      if (m.basinId !== c.basinId) continue;
+      const dLat = m.lat - c.lat;
+      const dLon = m.lon - c.lon;
+      if (dLat * dLat + dLon * dLon <= mergeRadSq) {
+        hit = m;
+        break;
+      }
+    }
+    if (hit) {
+      hit.areaKm2 += c.areaKm2;
+      if (c.peakDepthM > hit.peakDepthM) {
+        hit.peakDepthM = c.peakDepthM;
+        hit.severity = depthToSeverity(hit.peakDepthM);
+      }
+    } else {
+      merged.push({ ...c });
+    }
+  }
+  merged.sort((a, b) => (severityRank(b.severity) - severityRank(a.severity)) || (b.areaKm2 - a.areaKm2));
+  return merged;
 }
 
 function formatClusterLabel(item) {
