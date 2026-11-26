@@ -988,18 +988,23 @@ a.btn {
 
 /* Zoom-aware pulsing flood beacons (State -> District -> Region -> Disappear) */
 .flood-beacon {
-  position: relative;
+  width: 26px;
+  height: 26px;
   display: flex;
   align-items: center;
   justify-content: center;
   cursor: pointer;
   user-select: none;
 }
+.flood-beacon.singular {
+  width: 16px;
+  height: 16px;
+}
 .flood-beacon-core {
   position: relative;
   z-index: 2;
-  min-width: 22px;
-  height: 22px;
+  min-width: 24px;
+  height: 24px;
   padding: 0 5px;
   border-radius: 999px;
   display: flex;
@@ -1019,11 +1024,22 @@ a.btn {
 }
 .flood-beacon-ring {
   position: absolute;
-  inset: -6px;
+  top: 50%;
+  left: 50%;
+  width: 26px;
+  height: 26px;
+  margin-left: -13px;
+  margin-top: -13px;
   border-radius: 999px;
   z-index: 1;
   animation: beacon-pulse 1.9s cubic-bezier(0.2, 0.6, 0.4, 1) infinite;
   pointer-events: none;
+}
+.flood-beacon.singular .flood-beacon-ring {
+  width: 16px;
+  height: 16px;
+  margin-left: -8px;
+  margin-top: -8px;
 }
 .flood-beacon.advisory .flood-beacon-core { background: #0284c7; }
 .flood-beacon.advisory .flood-beacon-ring { background: rgba(2, 132, 199, 0.45); }
