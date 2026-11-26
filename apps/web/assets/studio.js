@@ -4684,64 +4684,46 @@ function downloadBlob(blob, filename) {
   setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
 
+let snapInFlight = false;
 function captureSnapshotPng() {
-  if (!map) return;
+  if (!map || snapInFlight) return;
+  snapInFlight = true;
+  const snapBtn = $('btn-snap');
+  if (snapBtn) snapBtn.disabled = true;
   map.once('render', () => {
-    const src = map.getCanvas();
-    const out = document.createElement('canvas');
-    out.width = src.width;
-    out.height = src.height;
-    const ctx = out.getContext('2d');
-    ctx.fillStyle = '#f8fafc';
-    ctx.fillRect(0, 0, out.width, out.height);
-    ctx.drawImage(src, 0, 0);
+    try {
+      const src = map.getCanvas();
+      const out = document.createElement('canvas');
+      out.width = src.width;
+      out.height = src.height;
+      const ctx = out.getContext('2d');
+      ctx.fillStyle = '#f8fafc';
+      ctx.fillRect(0, 0, out.width, out.height);
+      ctx.drawImage(src, 0, 0);
+      drawRecordingHudOverlay(ctx, out.width, out.height);
 
-    // Top-left alert-ready header banner with location, peak depth, unified MYT timestamp, and official alert note
-    const title = $('po-title')?.textContent?.trim() || 'ARUS Flood Screening';
-    const peak = $('lm-peak')?.textContent?.trim() || '0.00 m';
-    const frameMs = getCurrentFrameEpochMs();
-    const mytStr = fmtMytDisplay(frameMs, true);
-    const scenStr = state.spatialRainGrid ? 'Live NWP' : `${Math.round(state.simConfig.rainfallMmHr || 0)} mm/hr storm`;
-    const pad = 16;
-    ctx.fillStyle = 'rgba(255,255,255,0.94)';
-    ctx.fillRect(pad, pad, Math.min(560, out.width - pad * 2), 58);
-    ctx.fillStyle = '#0f172a';
-    ctx.font = 'bold 16px Inter, sans-serif';
-    ctx.fillText(`${title}  ·  Peak ${peak}`, pad + 12, pad + 24);
-    ctx.fillStyle = '#475569';
-    ctx.font = '12px Inter, sans-serif';
-    ctx.fillText(`${mytStr}  ·  ${scenStr}  ·  ARUS Screening (follow JPS / METMalaysia)`, pad + 12, pad + 45);
-
-    // Top-right depth colorbar + river legend so WhatsApp/Telegram readers can interpret colors
-    const legW = 216;
-    const legH = 66;
-    const legX = out.width - legW - pad;
-    const cutCm = Math.round((state.displayPrefs.depthCutoffM || 0.08) * 100);
-    ctx.fillStyle = 'rgba(255,255,255,0.94)';
-    ctx.fillRect(legX, pad, legW, legH);
-    const grad = ctx.createLinearGradient(legX + 12, 0, legX + legW - 12, 0);
-    grad.addColorStop(0.0, '#67e8f9');
-    grad.addColorStop(0.35, '#0284c7');
-    grad.addColorStop(0.7, '#4f46e5');
-    grad.addColorStop(1.0, '#7c3aed');
-    ctx.fillStyle = grad;
-    ctx.fillRect(legX + 12, pad + 12, legW - 24, 9);
-    ctx.fillStyle = '#334155';
-    ctx.font = '11px Inter, sans-serif';
-    ctx.fillText(`${(cutCm / 100).toFixed(2)} m`, legX + 12, pad + 35);
-    ctx.fillText('0.3 m', legX + 74, pad + 35);
-    ctx.fillText('0.6 m', legX + 122, pad + 35);
-    ctx.fillText('1.2 m+', legX + 168, pad + 35);
-    ctx.fillStyle = '#059669';
-    ctx.fillRect(legX + 12, pad + 48, 14, 3);
-    ctx.fillStyle = '#475569';
-    ctx.fillText(`River channel  (< ${cutCm} cm hidden)`, legX + 32, pad + 54);
-
-    const slug = title.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 32) || 'view';
-    const stamp = fmtMytSlug(frameMs);
-    out.toBlob((blob) => {
-      if (blob) downloadBlob(blob, `arus-${slug}-${stamp}.png`);
-    }, 'image/png');
+      const title = $('po-title')?.textContent?.trim()
+        || $('preset-select')?.selectedOptions?.[0]?.textContent?.trim()
+        || 'view';
+      const frameMs = getCurrentFrameEpochMs();
+      const slug = title.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 32) || 'view';
+      const stamp = fmtMytSlug(frameMs);
+      const filename = `arus-${slug}-${stamp}.png`;
+      out.toBlob((blob) => {
+        snapInFlight = false;
+        if (snapBtn) snapBtn.disabled = false;
+        if (blob) {
+          downloadBlob(blob, filename);
+          showToast(`PNG image downloaded (${filename}).`);
+        } else {
+          showToast('PNG export failed.');
+        }
+      }, 'image/png');
+    } catch (_) {
+      snapInFlight = false;
+      if (snapBtn) snapBtn.disabled = false;
+      showToast('PNG export failed.');
+    }
   });
   map.triggerRepaint();
 }
@@ -4765,6 +4747,7 @@ function openRecPreviewModal(blob, filename) {
   if (dl) {
     dl.href = lastRecBlobUrl;
     dl.download = filename;
+    dl.onclick = () => showToast(`Video downloaded (${filename}).`);
   }
   if (meta) {
     const mb = (blob.size / (1024 * 1024)).toFixed(2);
