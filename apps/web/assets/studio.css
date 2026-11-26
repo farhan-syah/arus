@@ -1068,6 +1068,47 @@ a.btn {
 }
 .beacon-tooltip strong { display: block; font-size: 12px; margin-bottom: 2px; }
 .beacon-tooltip .bt-sub { color: #cbd5e1; font-size: 10.5px; }
+
+.btn-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 5px 8px;
+}
+.settings-tabs {
+  display: flex;
+  gap: 6px;
+  padding: 8px 14px 0;
+}
+.loc-form {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px;
+  border-radius: 8px;
+  background: var(--hud-well);
+  border: 1px solid var(--hud-border);
+}
+.loc-form-row {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+  align-items: center;
+}
+.loc-form-row input[type="number"] {
+  width: 96px;
+}
+.loc-star-btn {
+  font-size: 14px;
+  line-height: 1;
+  padding: 3px 7px;
+  color: var(--ink-3);
+}
+.loc-star-btn.active {
+  color: #d97706;
+  border-color: rgba(217, 119, 6, 0.45);
+  background: rgba(217, 119, 6, 0.12);
+}
 [data-profile="researcher"]:not([data-presentation="true"]) .public-outlook {
   display: none !important;
 }

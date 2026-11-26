@@ -42,7 +42,6 @@ fn StudioShell() -> Element {
                         r#type: "text",
                         placeholder: "Search place or lat, lon",
                     }
-                    button { id: "btn-save-default", class: "btn btn-xs", title: "Save current view as your personal default view", "Set Default" }
                     div { class: "alerts-wrap",
                         button { id: "btn-alerts", class: "btn btn-xs alert-btn none", title: "Active flood alerts within monitored coverage",
                             svg {
@@ -87,6 +86,21 @@ fn StudioShell() -> Element {
                 button { id: "btn-rec", class: "btn", title: "Record video locally in your browser", "Rec" }
                 button { id: "btn-export-asc", class: "btn", ".ASC" }
                 button { id: "btn-export-csv", class: "btn", ".CSV" }
+                button { id: "btn-app-settings", class: "btn btn-icon", title: "Settings & Manage Locations", "aria-label": "Settings",
+                    svg {
+                        width: "15",
+                        height: "15",
+                        view_box: "0 0 24 24",
+                        fill: "none",
+                        stroke: "currentColor",
+                        stroke_width: "2",
+                        stroke_linecap: "round",
+                        stroke_linejoin: "round",
+                        "aria-hidden": "true",
+                        circle { cx: "12", cy: "12", r: "3" }
+                        path { d: "M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z" }
+                    }
+                }
             }
         }
         div { id: "director-caption", class: "hud director-caption hidden" }
@@ -643,6 +657,55 @@ fn StudioShell() -> Element {
                     div { class: "modal-foot-right",
                         button { id: "btn-sim-cancel", class: "btn", "Cancel" }
                         button { id: "btn-sim-apply", class: "btn primary", "Apply & Run" }
+                    }
+                }
+            }
+        }
+        // App Settings & Manage Locations Modal
+        div { id: "app-settings-modal", class: "modal-backdrop hidden", role: "dialog", "aria-modal": "true",
+            div { class: "hud modal-card", style: "max-width:640px;width:min(94vw,640px)",
+                div { class: "inspector-head",
+                    span { class: "inspector-title", "Settings" }
+                    button { id: "btn-app-settings-close", class: "btn btn-xs", "aria-label": "Close", "×" }
+                }
+                div { class: "settings-tabs",
+                    button { class: "seg-btn active", "data-settings-tab": "locations", "Manage Locations" }
+                    button { class: "seg-btn", "data-settings-tab": "general", "General" }
+                }
+                div { id: "settings-pane-locations", class: "modal-body", style: "display:flex;flex-direction:column;gap:12px",
+                    div { class: "loc-form",
+                        div { class: "loc-form-row",
+                            input { id: "loc-name", class: "ctl-select", r#type: "text", placeholder: "Location name (e.g. My Office)", style: "flex:1.4" }
+                            select { id: "loc-kind", class: "ctl-select", style: "flex:0.9",
+                                option { value: "point", selected: true, "Point / View" }
+                                option { value: "boundary", "Boundary Search" }
+                            }
+                        }
+                        div { id: "loc-point-fields", class: "loc-form-row",
+                            input { id: "loc-lat", class: "ctl-select", r#type: "number", step: "0.0001", placeholder: "Lat" }
+                            input { id: "loc-lon", class: "ctl-select", r#type: "number", step: "0.0001", placeholder: "Lon" }
+                            input { id: "loc-zoom", class: "ctl-select", r#type: "number", step: "0.1", min: "4", max: "17", value: "11.5", placeholder: "Zoom" }
+                            input { id: "loc-pitch", class: "ctl-select", r#type: "number", step: "1", min: "0", max: "60", value: "0", placeholder: "Pitch°" }
+                            input { id: "loc-bearing", class: "ctl-select", r#type: "number", step: "1", min: "-180", max: "180", value: "0", placeholder: "Bearing°" }
+                            button { id: "btn-loc-use-view", class: "btn btn-xs", r#type: "button", title: "Fill lat, lon, zoom, pitch, and bearing from current map view", "Use View" }
+                        }
+                        div { id: "loc-boundary-fields", class: "loc-form-row hidden",
+                            input { id: "loc-query", class: "ctl-select", r#type: "text", placeholder: "Place or administrative boundary (e.g. Klang, Selangor)", style: "flex:1" }
+                        }
+                        div { style: "display:flex;justify-content:space-between;align-items:center;gap:8px",
+                            span { style: "font-size:11px;color:var(--ink-3)", "Star (★) any location below to make it your default startup view. Server locations are read-only." }
+                            button { id: "btn-loc-add", class: "btn btn-xs primary", r#type: "button", "+ Add Location" }
+                        }
+                    }
+                    div { id: "loc-list", class: "saved-sims-list" }
+                }
+                div { id: "settings-pane-general", class: "modal-body hidden", style: "display:flex;flex-direction:column;gap:12px",
+                    div { style: "font-size:12.5px;color:var(--ink-2);line-height:1.5",
+                        "Custom locations, default startup view, and display preferences are stored locally in your browser."
+                    }
+                    div { style: "display:flex;gap:8px;flex-wrap:wrap",
+                        button { id: "btn-settings-reset-default", class: "btn", r#type: "button", "Reset Default Startup View" }
+                        button { id: "btn-settings-clear-locs", class: "btn", r#type: "button", "Clear Custom Locations" }
                     }
                 }
             }

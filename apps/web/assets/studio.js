@@ -5,9 +5,10 @@
 const APP_BASE = new URL('.', window.location.href).href.replace(/\/$/, '');
 const apiUrl = (path) => `${APP_BASE}/${String(path).replace(/^\/+/, '')}`;
 
-let PRESETS = [
-  { id: 'default', name: 'Kuala Lumpur, Malaysia', lon: 101.696, lat: 3.149, zoom: 10.2 },
+let SERVER_PRESETS = [
+  { id: 'default', name: 'Kuala Lumpur, Malaysia', lon: 101.696, lat: 3.149, zoom: 10.2, pitch: 0, bearing: 0, isServer: true },
 ];
+let PRESETS = [...SERVER_PRESETS];
 
 const state = {
   basemap: 'topo', // topo | sat | dark
@@ -3096,7 +3097,13 @@ function wireUi() {
     state.boundaryGrid = null;
     state.boundaryCellMask = null;
     state.center = { lon: p.lon, lat: p.lat };
-    map.flyTo({ center: [p.lon, p.lat], zoom: p.zoom, pitch: state.is3D ? 48 : 0, duration: 900 });
+    map.flyTo({
+      center: [p.lon, p.lat],
+      zoom: p.zoom,
+      pitch: Number.isFinite(p.pitch) ? p.pitch : 0,
+      bearing: Number.isFinite(p.bearing) ? p.bearing : 0,
+      duration: 900,
+    });
     if (p.liveBasin && await tryLoadPrecomputedLive(p.liveBasin)) return;
     if (state.profile !== 'researcher') runSimulation(false);
   });
@@ -3326,7 +3333,7 @@ function wireUi() {
     });
   }
 
-  ['sources-modal', 'layers-modal', 'sim-modal', 'saved-sims-modal', 'rec-preview-modal', 'about-modal'].forEach((id) => {
+  ['sources-modal', 'layers-modal', 'sim-modal', 'saved-sims-modal', 'rec-preview-modal', 'app-settings-modal', 'about-modal'].forEach((id) => {
     const el = $(id);
     if (el) el.addEventListener('click', (e) => {
       if (e.target === el) {
@@ -3334,6 +3341,42 @@ function wireUi() {
         else el.classList.add('hidden');
       }
     });
+  });
+  $('btn-app-settings')?.addEventListener('click', openAppSettingsModal);
+  $('btn-app-settings-close')?.addEventListener('click', () => $('app-settings-modal')?.classList.add('hidden'));
+  document.querySelectorAll('[data-settings-tab]').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      const tab = btn.dataset.settingsTab;
+      document.querySelectorAll('[data-settings-tab]').forEach((b) => b.classList.toggle('active', b === btn));
+      $('settings-pane-locations')?.classList.toggle('hidden', tab !== 'locations');
+      $('settings-pane-general')?.classList.toggle('hidden', tab !== 'general');
+    });
+  });
+  $('loc-kind')?.addEventListener('change', () => {
+    const isBoundary = $('loc-kind').value === 'boundary';
+    $('loc-point-fields')?.classList.toggle('hidden', isBoundary);
+    $('loc-boundary-fields')?.classList.toggle('hidden', !isBoundary);
+  });
+  $('btn-loc-use-view')?.addEventListener('click', () => {
+    if (!map) return;
+    const c = map.getCenter();
+    if ($('loc-lat')) $('loc-lat').value = c.lat.toFixed(4);
+    if ($('loc-lon')) $('loc-lon').value = c.lng.toFixed(4);
+    if ($('loc-zoom')) $('loc-zoom').value = map.getZoom().toFixed(1);
+    if ($('loc-pitch')) $('loc-pitch').value = String(Math.round(map.getPitch()));
+    if ($('loc-bearing')) $('loc-bearing').value = String(Math.round(map.getBearing()));
+  });
+  $('btn-loc-add')?.addEventListener('click', addOrUpdateCustomLocation);
+  $('btn-settings-reset-default')?.addEventListener('click', () => {
+    saveUserPrefs({ default_location_id: null, last_center: null });
+    renderManageLocationsList();
+    showToast('Reset default startup view to server default.');
+  });
+  $('btn-settings-clear-locs')?.addEventListener('click', () => {
+    saveCustomLocations([]);
+    rebuildPresetDropdown();
+    renderManageLocationsList();
+    showToast('Cleared all custom locations.');
   });
   $('btn-alerts')?.addEventListener('click', (e) => {
     e.stopPropagation();
@@ -3358,7 +3401,7 @@ function wireUi() {
     const tag = (e.target && e.target.tagName || '').toLowerCase();
     const typing = tag === 'input' || tag === 'select' || tag === 'textarea';
     if (e.key === 'Escape') {
-      ['sources-modal', 'layers-modal', 'sim-modal', 'saved-sims-modal', 'about-modal'].forEach((id) => { const el = $(id); if (el) el.classList.add('hidden'); });
+      ['sources-modal', 'layers-modal', 'sim-modal', 'saved-sims-modal', 'app-settings-modal', 'about-modal'].forEach((id) => { const el = $(id); if (el) el.classList.add('hidden'); });
       $('alerts-dropdown')?.classList.add('hidden');
       closeRecPreviewModal();
       if (state.pickingStressSite) {
@@ -4437,6 +4480,215 @@ function refreshAlertsAndBeacons() {
   }
 }
 
+// ---------- Settings Dialog & Manage Locations ----------
+const CUSTOM_LOCS_KEY = 'arus.customLocations.v1';
+let editingCustomLocId = null;
+
+function loadCustomLocations() {
+  try {
+    const raw = localStorage.getItem(CUSTOM_LOCS_KEY);
+    const parsed = raw ? JSON.parse(raw) : [];
+    return Array.isArray(parsed) ? parsed : [];
+  } catch (_) {
+    return [];
+  }
+}
+
+function saveCustomLocations(list) {
+  try {
+    localStorage.setItem(CUSTOM_LOCS_KEY, JSON.stringify(list));
+  } catch (_) {}
+}
+
+function rebuildPresetDropdown() {
+  const custom = loadCustomLocations().map((c) => ({ ...c, isServer: false }));
+  PRESETS = [...SERVER_PRESETS, ...custom];
+  const sel = $('preset-select');
+  if (sel) {
+    const prev = sel.value;
+    sel.innerHTML = PRESETS.map((p) => `<option value="${p.id}">${p.name}</option>`).join('');
+    if (PRESETS.some((p) => p.id === prev)) sel.value = prev;
+  }
+}
+
+function openAppSettingsModal() {
+  editingCustomLocId = null;
+  if ($('btn-loc-add')) $('btn-loc-add').textContent = '+ Add Location';
+  rebuildPresetDropdown();
+  renderManageLocationsList();
+  $('app-settings-modal')?.classList.remove('hidden');
+}
+
+function addOrUpdateCustomLocation() {
+  const name = $('loc-name')?.value?.trim();
+  const kind = $('loc-kind')?.value || 'point';
+  if (!name) {
+    showToast('Enter a location name.');
+    return;
+  }
+  const list = loadCustomLocations();
+  let entry;
+  if (kind === 'boundary') {
+    const query = $('loc-query')?.value?.trim();
+    if (!query) {
+      showToast('Enter a place or administrative boundary to search.');
+      return;
+    }
+    entry = {
+      id: editingCustomLocId || `custom-${Date.now()}`,
+      name,
+      kind: 'boundary',
+      boundaryQuery: query,
+      lon: map ? Number(map.getCenter().lng.toFixed(4)) : 101.696,
+      lat: map ? Number(map.getCenter().lat.toFixed(4)) : 3.149,
+      zoom: 9.5,
+      pitch: 0,
+      bearing: 0,
+    };
+  } else {
+    const lat = parseFloat($('loc-lat')?.value);
+    const lon = parseFloat($('loc-lon')?.value);
+    const zoom = parseFloat($('loc-zoom')?.value || '11.5');
+    const pitch = parseFloat($('loc-pitch')?.value || '0');
+    const bearing = parseFloat($('loc-bearing')?.value || '0');
+    if (!Number.isFinite(lat) || !Number.isFinite(lon) || lat < -85 || lat > 85 || lon < -180 || lon > 180) {
+      showToast('Enter valid latitude (-85..85) and longitude (-180..180), or click Use View.');
+      return;
+    }
+    entry = {
+      id: editingCustomLocId || `custom-${Date.now()}`,
+      name,
+      kind: 'point',
+      lat: Number(lat.toFixed(5)),
+      lon: Number(lon.toFixed(5)),
+      zoom: Number(Math.min(18, Math.max(3, Number.isFinite(zoom) ? zoom : 11.5)).toFixed(2)),
+      pitch: Number(Math.min(60, Math.max(0, Number.isFinite(pitch) ? pitch : 0)).toFixed(1)),
+      bearing: Number(Math.min(180, Math.max(-180, Number.isFinite(bearing) ? bearing : 0)).toFixed(1)),
+      boundaryQuery: null,
+    };
+  }
+  const idx = list.findIndex((x) => x.id === entry.id);
+  if (idx >= 0) list[idx] = entry;
+  else list.push(entry);
+  saveCustomLocations(list);
+  editingCustomLocId = null;
+  if ($('loc-name')) $('loc-name').value = '';
+  if ($('loc-query')) $('loc-query').value = '';
+  if ($('btn-loc-add')) $('btn-loc-add').textContent = '+ Add Location';
+  rebuildPresetDropdown();
+  renderManageLocationsList();
+  showToast(`Saved location "${name}".`);
+}
+
+function setDefaultLocation(loc) {
+  saveUserPrefs({
+    default_location_id: loc.id,
+    last_center: {
+      lat: loc.lat,
+      lon: loc.lon,
+      zoom: loc.zoom || 10.2,
+      pitch: Number.isFinite(loc.pitch) ? loc.pitch : 0,
+      bearing: Number.isFinite(loc.bearing) ? loc.bearing : 0,
+      label: loc.name,
+      boundaryQuery: loc.boundaryQuery || null,
+    },
+  });
+  renderManageLocationsList();
+  showToast(`Set "${loc.name}" as your default startup view.`);
+}
+
+function renderManageLocationsList() {
+  const listEl = $('loc-list');
+  if (!listEl) return;
+  const prefs = loadUserPrefs();
+  const activeDefId = prefs.default_location_id || (SERVER_PRESETS[0]?.id || 'default');
+  listEl.replaceChildren();
+
+  for (const loc of PRESETS) {
+    const row = document.createElement('div');
+    row.className = 'saved-sim-row';
+
+    const starBtn = document.createElement('button');
+    starBtn.type = 'button';
+    const isDef = loc.id === activeDefId;
+    starBtn.className = `btn btn-xs loc-star-btn${isDef ? ' active' : ''}`;
+    starBtn.textContent = isDef ? '★' : '☆';
+    starBtn.title = isDef ? 'Default startup view' : 'Set as default startup view';
+    starBtn.addEventListener('click', () => setDefaultLocation(loc));
+
+    const info = document.createElement('div');
+    info.className = 'saved-sim-info';
+    info.style.cursor = 'pointer';
+    info.addEventListener('click', () => {
+      const sel = $('preset-select');
+      if (sel) {
+        sel.value = loc.id;
+        sel.dispatchEvent(new Event('change'));
+      }
+      $('app-settings-modal')?.classList.add('hidden');
+    });
+
+    const title = document.createElement('div');
+    title.className = 'saved-sim-title';
+    const badge = document.createElement('span');
+    badge.className = `saved-sim-badge ${loc.isServer ? 'cfg' : 'sim'}`;
+    badge.textContent = loc.isServer ? 'Server' : 'Custom';
+    const nameSpan = document.createElement('span');
+    nameSpan.textContent = loc.name;
+    title.append(badge, nameSpan);
+
+    const meta = document.createElement('div');
+    meta.className = 'saved-sim-meta';
+    meta.textContent = loc.boundaryQuery
+      ? `Boundary: ${loc.boundaryQuery}`
+      : `${Number(loc.lat).toFixed(3)}°, ${Number(loc.lon).toFixed(3)}° · z${Number(loc.zoom).toFixed(1)} · pitch ${Math.round(loc.pitch || 0)}° · bearing ${Math.round(loc.bearing || 0)}°`;
+    info.append(title, meta);
+
+    const actions = document.createElement('div');
+    actions.className = 'saved-sim-actions';
+    if (!loc.isServer) {
+      const editBtn = document.createElement('button');
+      editBtn.type = 'button';
+      editBtn.className = 'btn btn-xs';
+      editBtn.textContent = 'Edit';
+      editBtn.addEventListener('click', () => {
+        editingCustomLocId = loc.id;
+        if ($('loc-name')) $('loc-name').value = loc.name || '';
+        const isB = Boolean(loc.boundaryQuery);
+        if ($('loc-kind')) {
+          $('loc-kind').value = isB ? 'boundary' : 'point';
+          $('loc-kind').dispatchEvent(new Event('change'));
+        }
+        if (isB) {
+          if ($('loc-query')) $('loc-query').value = loc.boundaryQuery || '';
+        } else {
+          if ($('loc-lat')) $('loc-lat').value = String(loc.lat);
+          if ($('loc-lon')) $('loc-lon').value = String(loc.lon);
+          if ($('loc-zoom')) $('loc-zoom').value = String(loc.zoom);
+          if ($('loc-pitch')) $('loc-pitch').value = String(loc.pitch || 0);
+          if ($('loc-bearing')) $('loc-bearing').value = String(loc.bearing || 0);
+        }
+        if ($('btn-loc-add')) $('btn-loc-add').textContent = 'Save Changes';
+      });
+      const delBtn = document.createElement('button');
+      delBtn.type = 'button';
+      delBtn.className = 'btn btn-xs';
+      delBtn.textContent = 'Delete';
+      delBtn.addEventListener('click', () => {
+        const next = loadCustomLocations().filter((x) => x.id !== loc.id);
+        saveCustomLocations(next);
+        if (activeDefId === loc.id) saveUserPrefs({ default_location_id: null, last_center: null });
+        rebuildPresetDropdown();
+        renderManageLocationsList();
+      });
+      actions.append(editBtn, delBtn);
+    }
+
+    row.append(starBtn, info, actions);
+    listEl.appendChild(row);
+  }
+}
+
 // ---------- IndexedDB Saved Configs & Completed Simulations ----------
 const SAVED_DB_NAME = 'arus-saved-sims-v1';
 const SAVED_STORE = 'items';
@@ -5034,8 +5286,9 @@ function applyUserPrefs(qs) {
     if (Number.isFinite(lc.lat) && Number.isFinite(lc.lon)) {
       state.center = { lat: lc.lat, lon: lc.lon };
       if (Number.isFinite(lc.zoom) && !qs.has('zoom')) state.initZoom = lc.zoom;
-      if (lc.label) setCustomPresetLabel(`★ ${lc.label}`);
-      if ($('btn-save-default')) $('btn-save-default').textContent = '★ Default';
+      if (Number.isFinite(lc.pitch) && !qs.has('pitch')) state.initPitch = lc.pitch;
+      if (Number.isFinite(lc.bearing) && !qs.has('bearing')) state.initBearing = lc.bearing;
+      if (lc.label) setCustomPresetLabel(lc.label);
     }
   }
   if ($('btn-play')) $('btn-play').textContent = state.playing ? '❚❚' : '▶';
@@ -5067,19 +5320,19 @@ async function fetchAndApplyServerConfig(qs) {
     state.serverConfig = cfg;
     if (cfg.instance_title) document.title = cfg.instance_title;
     if (Array.isArray(cfg.presets) && cfg.presets.length > 0) {
-      PRESETS = cfg.presets.map((p) => ({
+      SERVER_PRESETS = cfg.presets.map((p) => ({
         id: p.id,
         name: p.name,
         lon: p.lon,
         lat: p.lat,
         zoom: p.zoom,
+        pitch: Number.isFinite(p.pitch) ? p.pitch : 0,
+        bearing: Number.isFinite(p.bearing) ? p.bearing : 0,
         boundaryQuery: p.boundary_query || null,
         liveBasin: p.live_basin || null,
+        isServer: true,
       }));
-      const sel = $('preset-select');
-      if (sel) {
-        sel.innerHTML = PRESETS.map((p) => `<option value="${p.id}">${p.name}</option>`).join('');
-      }
+      rebuildPresetDropdown();
     }
     const defaultProfile = cfg.default_ui_profile || (cfg.mode === 'hosted' ? 'public' : 'researcher');
     setUiProfile(defaultProfile, false);
