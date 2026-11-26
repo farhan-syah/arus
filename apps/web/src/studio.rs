@@ -206,6 +206,10 @@ fn StudioShell() -> Element {
                         span { class: "lm-k", "Flooded Extent" }
                         strong { id: "lm-stagnant", class: "lm-v", "0.0 km²" }
                     }
+                    div { class: "lm-cell lm-cell-wide",
+                        span { class: "lm-k", "Avg Rainfall" }
+                        strong { id: "lm-rain", class: "lm-v", "0.0 mm/hr" }
+                    }
                 }
             }
         }

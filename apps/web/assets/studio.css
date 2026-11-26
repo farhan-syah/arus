@@ -2235,6 +2235,12 @@ body.pin-drop-mode .maplibregl-canvas-container {
   flex-direction: column;
   gap: 1px;
 }
+.lm-cell-wide {
+  grid-column: 1 / -1;
+  flex-direction: row;
+  align-items: center;
+  justify-content: space-between;
+}
 .lm-k { font-size: 10px; color: var(--ink-3); }
 .lm-v { font-family: var(--mono); font-size: 12.5px; font-weight: 600; color: var(--ink-1); }
 /* Clean broadcast / recording presentation mode (hides editor chrome, keeps key viewer info) */

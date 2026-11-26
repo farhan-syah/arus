@@ -2592,15 +2592,23 @@ async function loadAllPrecomputedLiveBasins(primaryBasinId) {
     const others = basins.filter((id) => id && id !== primaryBasinId && !state.liveOverlays.has(id));
     await Promise.all(others.map(async (id) => {
       try {
-        const [gResp, bResp] = await Promise.all([
+        const [gResp, bResp, cResp] = await Promise.all([
           fetch(apiUrl(`api/v1/live/${encodeURIComponent(id)}/grid`)),
           fetch(apiUrl(`api/v1/live/${encodeURIComponent(id)}/frames.bin`)),
+          fetch(apiUrl(`api/v1/live-context?basin=${encodeURIComponent(id)}`)).catch(() => null),
         ]);
         if (!gResp.ok || !bResp.ok) return;
         const grid = await gResp.json();
         const frames = decodeFramesBin(await bResp.arrayBuffer());
+        let rainGrid = null;
+        if (cResp && cResp.ok) {
+          try {
+            const cJson = await cResp.json();
+            rainGrid = cJson?.context?.spatial_rain_grid || null;
+          } catch (_) {}
+        }
         if (frames.length) {
-          state.liveOverlays.set(id, { grid, frames, lastKey: '' });
+          state.liveOverlays.set(id, { grid, frames, rainGrid, lastKey: '' });
         }
       } catch (_) {}
     }));
@@ -2623,7 +2631,8 @@ async function tryLoadPrecomputedLive(basinId) {
     const frames = decodeFramesBin(buf);
     if (!frames.length) return false;
     state.liveBasinId = basinId;
-    state.liveOverlays.set(basinId, { grid, frames, lastKey: '' });
+    const primaryRain = state.serverContext?.context?.spatial_rain_grid || state.spatialRainGrid || null;
+    state.liveOverlays.set(basinId, { grid, frames, rainGrid: primaryRain, lastKey: '' });
     // Pre-computed Live caches span 5 days (120 hours) from the latest forecast cycle
     state.spanHours = 120;
     const cycleMs = Date.parse(state.serverContext?.context?.cycle_iso || '');
@@ -3043,38 +3052,121 @@ async function parseErrorText(resp) {
   return txt || `HTTP ${resp.status}`;
 }
 
-function updateFrameTelemetry() {
-  if (!map) return;
-  const c = map.getCenter();
-  const z = map.getZoom();
-  let rainPart;
-  if (state.spatialRainGrid && Array.isArray(state.spatialRainGrid.hourly_mm) && state.spatialRainGrid.hourly_mm.length > 0 && state.frames.length > 0) {
+function sampleRainGridInBounds(rainGrid, bBounds, vBounds, frameIdx, frameCount, usePeakEnv) {
+  if (!rainGrid || !Array.isArray(rainGrid.hourly_mm) || !rainGrid.hourly_mm.length) return null;
+  const nx = rainGrid.nx || 1;
+  const ny = rainGrid.ny || 1;
+  const nHours = rainGrid.hourly_mm[0]?.length || 0;
+  if (!nHours) return null;
+  const frac = frameCount > 1 ? Math.min(frameIdx, frameCount - 1) / (frameCount - 1) : 0;
+  const hIdx = Math.min(nHours - 1, Math.floor(frac * nHours));
+  const [bMinLon, bMinLat, bMaxLon, bMaxLat] = bBounds;
+  let sum = 0;
+  let cnt = 0;
+  for (let j = 0; j < ny; j++) {
+    const lat = bMaxLat - ((j + 0.5) / ny) * (bMaxLat - bMinLat);
+    if (vBounds && (lat < vBounds.s || lat > vBounds.n)) continue;
+    for (let i = 0; i < nx; i++) {
+      const lon = bMinLon + ((i + 0.5) / nx) * (bMaxLon - bMinLon);
+      if (vBounds && (lon < vBounds.w || lon > vBounds.e)) continue;
+      const arr = rainGrid.hourly_mm[j * nx + i];
+      if (!arr) continue;
+      if (usePeakEnv) {
+        let pSum = 0;
+        for (let k = 0; k < nHours; k++) pSum += (arr[k] || 0);
+        sum += pSum / nHours;
+      } else {
+        sum += (arr[hIdx] || 0);
+      }
+      cnt++;
+    }
+  }
+  return cnt > 0 ? { sum, cnt } : null;
+}
+
+function computeViewportAvgRainMmHr() {
+  const nFrames = state.frames.length;
+  const fIdx = Math.min(state.frameIdx, Math.max(0, nFrames - 1));
+  const usePeakEnv = Boolean(state.envelopeMode);
+  if (state.profile === 'public' && map && state.liveOverlays.size > 0) {
+    const vb = map.getBounds();
+    const vBounds = { w: vb.getWest(), e: vb.getEast(), s: vb.getSouth(), n: vb.getNorth() };
+    let totalSum = 0;
+    let totalCnt = 0;
+    for (const [, ov] of state.liveOverlays.entries()) {
+      const m = ov.grid?.metadata;
+      if (!m || !ov.rainGrid) continue;
+      const [bMinLon, bMinLat, bMaxLon, bMaxLat] = m.wgs84_bounds;
+      if (bMaxLon < vBounds.w || bMinLon > vBounds.e || bMaxLat < vBounds.s || bMinLat > vBounds.n) continue;
+      const res = sampleRainGridInBounds(ov.rainGrid, m.wgs84_bounds, vBounds, fIdx, ov.frames?.length || nFrames, usePeakEnv);
+      if (res) { totalSum += res.sum; totalCnt += res.cnt; }
+    }
+    if (totalCnt > 0) return totalSum / totalCnt;
+    // Zoomed tighter than one NWP sample point: pick nearest point in enclosing basin
+    const ctr = map.getCenter();
+    for (const [, ov] of state.liveOverlays.entries()) {
+      const m = ov.grid?.metadata;
+      if (!m || !ov.rainGrid) continue;
+      const [bMinLon, bMinLat, bMaxLon, bMaxLat] = m.wgs84_bounds;
+      if (ctr.lng < bMinLon || ctr.lng > bMaxLon || ctr.lat < bMinLat || ctr.lat > bMaxLat) continue;
+      const nx = ov.rainGrid.nx || 1;
+      const ny = ov.rainGrid.ny || 1;
+      const i = Math.min(nx - 1, Math.max(0, Math.floor(((ctr.lng - bMinLon) / (bMaxLon - bMinLon)) * nx)));
+      const j = Math.min(ny - 1, Math.max(0, Math.floor(((bMaxLat - ctr.lat) / (bMaxLat - bMinLat)) * ny)));
+      const arr = ov.rainGrid.hourly_mm?.[j * nx + i];
+      if (arr && arr.length) {
+        if (usePeakEnv) return arr.reduce((a, b) => a + (b || 0), 0) / arr.length;
+        const nH = arr.length;
+        const frac = nFrames > 1 ? fIdx / (nFrames - 1) : 0;
+        return arr[Math.min(nH - 1, Math.floor(frac * nH))] || 0;
+      }
+    }
+    return 0;
+  }
+  if (state.spatialRainGrid && Array.isArray(state.spatialRainGrid.hourly_mm) && state.spatialRainGrid.hourly_mm.length > 0 && nFrames > 0) {
     const nHours = state.spatialRainGrid.hourly_mm[0].length;
-    const frac = state.frames.length > 1
-      ? Math.min(state.frameIdx, state.frames.length - 1) / (state.frames.length - 1)
-      : 0;
+    const frac = nFrames > 1 ? fIdx / (nFrames - 1) : 0;
     const hIdx = Math.min(nHours - 1, Math.floor(frac * nHours));
     let sum = 0;
-    for (const pt of state.spatialRainGrid.hourly_mm) sum += (pt[hIdx] || 0);
-    const meanRate = sum / state.spatialRainGrid.hourly_mm.length;
-    rainPart = `${meanRate.toFixed(1)} mm/hr NWP`;
-  } else if (state.hourlyRainMm && state.hourlyRainMm.length > 0 && state.frames.length > 0) {
-    const frac = state.frames.length > 1
-      ? Math.min(state.frameIdx, state.frames.length - 1) / (state.frames.length - 1)
-      : 0;
-    const hIdx = Math.min(
-      state.hourlyRainMm.length - 1,
-      Math.floor(frac * state.hourlyRainMm.length),
-    );
-    const curRate = state.hourlyRainMm[hIdx] || 0;
-    rainPart = `${curRate.toFixed(1)} mm/hr NWP`;
-  } else {
-    rainPart = fmtRain(state.simConfig.rainfallMmHr || 0, 0);
+    for (const pt of state.spatialRainGrid.hourly_mm) {
+      if (usePeakEnv) {
+        let s = 0;
+        for (let k = 0; k < nHours; k++) s += (pt[k] || 0);
+        sum += s / nHours;
+      } else {
+        sum += (pt[hIdx] || 0);
+      }
+    }
+    return sum / state.spatialRainGrid.hourly_mm.length;
   }
+  if (state.hourlyRainMm && state.hourlyRainMm.length > 0 && nFrames > 0) {
+    if (usePeakEnv) return state.hourlyRainMm.reduce((a, b) => a + (b || 0), 0) / state.hourlyRainMm.length;
+    const frac = nFrames > 1 ? fIdx / (nFrames - 1) : 0;
+    return state.hourlyRainMm[Math.min(state.hourlyRainMm.length - 1, Math.floor(frac * state.hourlyRainMm.length))] || 0;
+  }
+  if (state.profile === 'public') return 0;
+  return state.simConfig.rainfallMmHr || 0;
+}
+
+function updateFrameTelemetry() {
+  if (!map) return;
+  const el = $('telemetry');
+  if (!el) return;
+  const isPres = document.documentElement.dataset.presentation === 'true';
+  if (state.profile === 'public' && !isPres) {
+    // Keep Live bottom-left clean while scrubbing; Avg Rainfall is shown in Area Flood Index.
+    el.textContent = 'Hover map to inspect';
+    return;
+  }
+  const c = map.getCenter();
+  const z = map.getZoom();
+  const rainRate = computeViewportAvgRainMmHr();
+  const rainPart = state.profile === 'public'
+    ? `${fmtRain(rainRate, 1)} NWP`
+    : fmtRain(rainRate, 0);
   const wind = state.simConfig.windX || 0;
   const windPart = wind > 0 ? ` · ${fmtSpeed(wind, 0)}` : '';
-  const isPres = document.documentElement.dataset.presentation === 'true';
-  $('telemetry').textContent = isPres
+  el.textContent = isPres
     ? `${c.lat.toFixed(2)}°, ${c.lng.toFixed(2)}° · z${z.toFixed(1)} · ${rainPart}${windPart}`
     : `${c.lat.toFixed(2)}°, ${c.lng.toFixed(2)}° · ${rainPart}${windPart}`;
 }
@@ -3423,6 +3515,8 @@ function updateLiveMetrics() {
   $('lm-pct').textContent = `${floodedPct.toFixed(0)}%`;
   const stagEl = $('lm-stagnant');
   if (stagEl) stagEl.textContent = fmtArea(stagnantKm2, 1);
+  const rainEl = $('lm-rain');
+  if (rainEl) rainEl.textContent = fmtRain(computeViewportAvgRainMmHr(), 1);
   if (state.profile === 'public' && !isPres && !state.directorOutlookSet) {
     const po = $('public-outlook');
     if (po) {
@@ -4806,6 +4900,7 @@ function drawRecordingHudOverlay(ctx, W, H) {
   const peakTxt = $('lm-peak')?.textContent?.trim() || '0.00 m';
   const pctTxt = $('lm-pct')?.textContent?.trim() || '0%';
   const areaTxt = $('lm-stagnant')?.textContent?.trim() || '0.0 km²';
+  const rainTxt = $('lm-rain')?.textContent?.trim() || '0.0 mm/hr';
   const riskTxt = $('lm-badge')?.textContent?.trim() || 'LOW';
   const trendTxt = $('lm-trend')?.textContent?.trim() || 'Current';
   const markerLeftPct = parseFloat($('lm-marker')?.style?.left || '0') || 0;
@@ -4839,9 +4934,9 @@ function drawRecordingHudOverlay(ctx, W, H) {
   ctx.font = `600 ${Math.round(12 * s)}px "JetBrains Mono", monospace`;
   ctx.fillText(stamp, pad + Math.round(12 * s), pad + Math.round(44 * s));
 
-  // 2. Area Flood Index card (matching the live HUD gauge + 2x2 KPIs)
+  // 2. Area Flood Index card (matching the live HUD gauge + 2x2 KPIs + Avg Rainfall bar)
   const afiY = pad + headH + Math.round(10 * s);
-  const afiH = Math.round(166 * s);
+  const afiH = Math.round(202 * s);
   ctx.fillStyle = 'rgba(255, 255, 255, 0.93)';
   ctx.beginPath();
   ctx.roundRect(pad, afiY, cardW, afiH, Math.round(10 * s));
@@ -4937,6 +5032,23 @@ function drawRecordingHudOverlay(ctx, W, H) {
     ctx.font = `700 ${Math.round(12.5 * s)}px "JetBrains Mono", monospace`;
     ctx.fillText(kpis[i][1], cx + Math.round(8 * s), cy + Math.round(33 * s));
   }
+  // Full-width Avg Rainfall bar matching the live Area Flood Index card
+  const rainY = gridY + 2 * (cellH + cellGap);
+  const rainH = Math.round(28 * s);
+  ctx.fillStyle = 'rgba(241, 245, 249, 0.85)';
+  ctx.beginPath();
+  ctx.roundRect(ix, rainY, iw, rainH, Math.round(7 * s));
+  ctx.fill();
+  ctx.strokeStyle = 'rgba(15, 23, 42, 0.08)';
+  ctx.stroke();
+  ctx.fillStyle = '#64748b';
+  ctx.font = `500 ${Math.round(9.5 * s)}px Inter, system-ui, sans-serif`;
+  ctx.fillText('Avg Rainfall', ix + Math.round(8 * s), rainY + Math.round(18 * s));
+  ctx.fillStyle = '#0f172a';
+  ctx.font = `700 ${Math.round(12 * s)}px "JetBrains Mono", monospace`;
+  ctx.textAlign = 'right';
+  ctx.fillText(rainTxt, ix + iw - Math.round(8 * s), rainY + Math.round(18 * s));
+  ctx.textAlign = 'left';
 
   // 3. Top-right depth legend colorbar card
   const legW = Math.round(224 * s);
