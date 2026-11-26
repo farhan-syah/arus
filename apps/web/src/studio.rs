@@ -105,6 +105,10 @@ fn StudioShell() -> Element {
             }
         }
         div { id: "director-caption", class: "hud director-caption hidden" }
+        div { id: "focus-chip", class: "hud focus-chip hidden",
+            span { id: "focus-chip-text", "Focus" }
+            button { id: "btn-focus-clear", class: "btn btn-xs", "aria-label": "Clear boundary focus", "×" }
+        }
         div { id: "sim-progress", class: "hud sim-progress hidden", role: "status", "aria-live": "polite",
             span { class: "sim-spinner" }
             span { id: "sim-progress-text", "Running simulation…" }

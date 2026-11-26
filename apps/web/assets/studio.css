@@ -1109,6 +1109,21 @@ a.btn {
   border-color: rgba(217, 119, 6, 0.45);
   background: rgba(217, 119, 6, 0.12);
 }
+.focus-chip {
+  position: fixed;
+  top: 66px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 35;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 8px 5px 12px;
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--ink-1);
+}
 [data-profile="researcher"]:not([data-presentation="true"]) .public-outlook {
   display: none !important;
 }

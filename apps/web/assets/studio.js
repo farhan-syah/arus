@@ -275,7 +275,18 @@ function initMap() {
 
   map.on('mousemove', (e) => handleHover(e.lngLat.lng, e.lngLat.lat));
   map.on('click', (e) => handleMapClick(e.lngLat.lng, e.lngLat.lat));
-  map.on('moveend', updateFrameTelemetry);
+  map.on('moveend', () => {
+    updateFrameTelemetry();
+    if (state.profile === 'public' && state.boundaryGeoJson && state.boundaryBounds && !state.fixedView) {
+      const c = map.getCenter();
+      const [bMinLon, bMinLat, bMaxLon, bMaxLat] = state.boundaryBounds;
+      const pad = 0.18;
+      if (c.lng < bMinLon - pad || c.lng > bMaxLon + pad || c.lat < bMinLat - pad || c.lat > bMaxLat + pad) {
+        clearBoundaryFocus();
+      }
+    }
+    updateLiveMetrics();
+  });
   map.on('zoomend', () => updateBeaconsForZoom());
 }
 
@@ -626,9 +637,52 @@ function updateDomainOutline(bounds) {
   if (state.boundaryGeoJson) applyRegionBoundary();
 }
 
+function clearBoundaryFocus() {
+  if (!state.boundaryGeoJson) return;
+  state.boundaryGeoJson = null;
+  state.boundaryGrid = null;
+  state.boundaryCellMask = null;
+  state.boundaryBounds = null;
+  const empty = { type: 'FeatureCollection', features: [] };
+  if (map && layersReady) {
+    const bSrc = map.getSource('arus-region-boundary');
+    const mSrc = map.getSource('arus-region-mask');
+    if (bSrc) bSrc.setData(empty);
+    if (mSrc) mSrc.setData(empty);
+  }
+  $('focus-chip')?.classList.add('hidden');
+  renderFloodCanvas(true);
+  updateLiveMetrics();
+}
+
 function applyRegionBoundary() {
   if (!map || !layersReady || !state.boundaryGeoJson) return;
   const geom = state.boundaryGeoJson;
+  // Compute tight bounding box for pan-out auto-clear & show Focus chip
+  let bMinLon = Infinity, bMinLat = Infinity, bMaxLon = -Infinity, bMaxLat = -Infinity;
+  const scanRing = (ring) => {
+    for (const pt of ring) {
+      if (pt[0] < bMinLon) bMinLon = pt[0];
+      if (pt[0] > bMaxLon) bMaxLon = pt[0];
+      if (pt[1] < bMinLat) bMinLat = pt[1];
+      if (pt[1] > bMaxLat) bMaxLat = pt[1];
+    }
+  };
+  if (geom.type === 'Polygon' && Array.isArray(geom.coordinates?.[0])) {
+    scanRing(geom.coordinates[0]);
+  } else if (geom.type === 'MultiPolygon' && Array.isArray(geom.coordinates)) {
+    for (const poly of geom.coordinates) {
+      if (Array.isArray(poly?.[0])) scanRing(poly[0]);
+    }
+  }
+  if (Number.isFinite(bMinLon)) {
+    state.boundaryBounds = [bMinLon, bMinLat, bMaxLon, bMaxLat];
+  }
+  const focusLabel = $('preset-select')?.selectedOptions?.[0]?.textContent?.trim()
+    || $('coord-search')?.value?.trim()
+    || 'Selected Area';
+  if ($('focus-chip-text')) $('focus-chip-text').textContent = `Focus: ${focusLabel}`;
+  $('focus-chip')?.classList.remove('hidden');
   const bSrc = map.getSource('arus-region-boundary');
   const mSrc = map.getSource('arus-region-mask');
   if (bSrc) bSrc.setData({ type: 'Feature', geometry: geom, properties: {} });
@@ -2052,6 +2106,11 @@ async function tryLoadPrecomputedLive(basinId) {
     if (!frames.length) return false;
     state.liveBasinId = basinId;
     state.liveOverlays.set(basinId, { grid, frames, lastKey: '' });
+    // Pre-computed Live caches span 5 days (120 hours) from the latest forecast cycle
+    state.spanHours = 120;
+    const cycleMs = Date.parse(state.serverContext?.context?.cycle_iso || '');
+    if (Number.isFinite(cycleMs)) state.startEpochMs = cycleMs;
+    renderForecastSegments();
     applyLoadedSimulation(grid, frames, grid.run_id || `live-${basinId}`, 'Live · Cached', buf);
     loadAllPrecomputedLiveBasins(basinId);
     return true;
@@ -2546,38 +2605,94 @@ function updateLiveMetrics() {
   card.classList.toggle('hidden', !show);
   if (!show) return;
 
+  const cut = state.displayPrefs.depthCutoffM || 0.06;
+  const idx = Math.min(state.frameIdx, state.frames.length - 1);
+  const usePeakEnv = Boolean(state.envelopeMode && state.grid.envelope?.max_depth_m);
   if (!state.boundaryCellMask || state.boundaryCellMask.length !== state.grid.metadata.cols * state.grid.metadata.rows) {
     rebuildBoundaryCellMask();
   }
-  const meta = state.grid.metadata;
   const mask = state.boundaryCellMask;
-  const cut = state.displayPrefs.depthCutoffM || 0.06;
-  const idx = Math.min(state.frameIdx, state.frames.length - 1);
-  const frame = state.frames[idx];
-  const usePeakEnv = Boolean(state.envelopeMode && state.grid.envelope?.max_depth_m);
-  const depth = usePeakEnv ? state.grid.envelope.max_depth_m : frame.depth;
-  const vx = frame.vx;
-  const vy = frame.vy;
   let totalCells = 0;
   let floodedCells = 0;
   let stagnantCells = 0;
   let sumDepth = 0;
   let peakDepth = 0;
-  for (let i = 0; i < depth.length; i++) {
-    if (!mask[i]) continue;
-    totalCells++;
-    const h = depth[i];
-    if (h > 0) sumDepth += h;
-    if (h >= cut) {
-      floodedCells++;
-      stagnantCells++;
+  let stagnantKm2 = 0;
+  let viewportLabel = null;
+
+  // In Live mode without a locked boundary, compute stats adaptively across the current viewport
+  if (state.profile === 'public' && !state.boundaryGeoJson && map && state.liveOverlays.size > 0) {
+    const vb = map.getBounds();
+    const vMinLon = vb.getWest();
+    const vMaxLon = vb.getEast();
+    const vMinLat = vb.getSouth();
+    const vMaxLat = vb.getNorth();
+    const hitStates = new Set();
+    for (const [basinId, ov] of state.liveOverlays.entries()) {
+      const m = ov.grid?.metadata;
+      const e = ov.grid?.envelope;
+      if (!m || !ov.frames?.length) continue;
+      const [bMinLon, bMinLat, bMaxLon, bMaxLat] = m.wgs84_bounds;
+      if (bMaxLon < vMinLon || bMinLon > vMaxLon || bMaxLat < vMinLat || bMinLat > vMaxLat) continue;
+      const cols = m.cols;
+      const rows = m.rows;
+      const fIdx = Math.min(state.frameIdx, ov.frames.length - 1);
+      const dArr = (state.envelopeMode && e?.max_depth_m) ? e.max_depth_m : ov.frames[fIdx].depth;
+      const aMask = m.active_mask;
+      const cKm2 = (m.dx_m * m.dx_m) / 1_000_000;
+      let basinHits = 0;
+      for (let r = 0; r < rows; r++) {
+        const lat = bMinLat + ((r + 0.5) / rows) * (bMaxLat - bMinLat);
+        if (lat < vMinLat || lat > vMaxLat) continue;
+        for (let c = 0; c < cols; c++) {
+          const lon = bMinLon + ((c + 0.5) / cols) * (bMaxLon - bMinLon);
+          if (lon < vMinLon || lon > vMaxLon) continue;
+          const cellIdx = r * cols + c;
+          if (!aMask[cellIdx]) continue;
+          basinHits++;
+          totalCells++;
+          const h = dArr[cellIdx];
+          if (h > 0) sumDepth += h;
+          if (h >= cut) {
+            floodedCells++;
+            stagnantCells++;
+            stagnantKm2 += cKm2;
+          }
+          if (h > peakDepth) peakDepth = h;
+        }
+      }
+      if (basinHits > 0) hitStates.add(formatStateName(basinId));
     }
-    if (h > peakDepth) peakDepth = h;
+    const statesArr = Array.from(hitStates);
+    if (statesArr.length === 0) {
+      viewportLabel = 'Current View';
+    } else if (statesArr.length === 1) {
+      viewportLabel = map.getZoom() >= 9.8 ? `Local View · ${statesArr[0]}` : statesArr[0];
+    } else if (statesArr.length <= 2) {
+      viewportLabel = statesArr.join(' & ');
+    } else {
+      viewportLabel = `Malaysia (${statesArr.length} states in view)`;
+    }
+  } else {
+    const meta = state.grid.metadata;
+    const frame = state.frames[idx];
+    const depth = usePeakEnv ? state.grid.envelope.max_depth_m : frame.depth;
+    for (let i = 0; i < depth.length; i++) {
+      if (!mask[i]) continue;
+      totalCells++;
+      const h = depth[i];
+      if (h > 0) sumDepth += h;
+      if (h >= cut) {
+        floodedCells++;
+        stagnantCells++;
+      }
+      if (h > peakDepth) peakDepth = h;
+    }
+    const cellKm2 = (meta.dx_m * meta.dx_m) / 1_000_000;
+    stagnantKm2 = stagnantCells * cellKm2;
   }
   const avgDepth = totalCells > 0 ? sumDepth / totalCells : 0;
   const floodedPct = totalCells > 0 ? (floodedCells / totalCells) * 100 : 0;
-  const cellKm2 = (meta.dx_m * meta.dx_m) / 1_000_000;
-  const stagnantKm2 = stagnantCells * cellKm2;
 
   // Area-relative flood severity index in [0, 1] combining mean depth (0..0.45m) and flooded fraction
   const depthScore = Math.min(1, avgDepth / 0.45);
@@ -2636,13 +2751,14 @@ function updateLiveMetrics() {
     const po = $('public-outlook');
     if (po) {
       const sel = $('preset-select');
-      const locName = sel && sel.selectedOptions[0] ? sel.selectedOptions[0].textContent : 'Local Flood Screening';
+      const presetName = sel && sel.selectedOptions[0] ? sel.selectedOptions[0].textContent : 'Local Flood Screening';
+      const locName = viewportLabel || presetName;
       $('po-title').textContent = locName;
       const risk = $('po-risk');
       risk.className = `po-risk ${lvl}`;
       risk.textContent = label;
       const sc = state.simConfig;
-      const hasLiveGrid = Boolean(state.spatialRainGrid);
+      const hasLiveGrid = Boolean(state.spatialRainGrid) || state.activeEngine === 'Live · Cached';
       const modeDesc = hasLiveGrid
         ? 'live NWP regional forecast'
         : (sc.mode === 'stress'
@@ -3342,6 +3458,7 @@ function wireUi() {
       }
     });
   });
+  $('btn-focus-clear')?.addEventListener('click', clearBoundaryFocus);
   $('btn-app-settings')?.addEventListener('click', () => openAppSettingsModal(false));
   $('btn-save-view')?.addEventListener('click', () => openAppSettingsModal(true));
   $('btn-app-settings-close')?.addEventListener('click', () => $('app-settings-modal')?.classList.add('hidden'));
@@ -4309,6 +4426,7 @@ function renderAlertsButtonAndDropdown(clusters) {
     row.append(top, meta);
     row.addEventListener('click', () => {
       $('alerts-dropdown')?.classList.add('hidden');
+      clearBoundaryFocus();
       if (map) {
         map.flyTo({ center: [item.lon, item.lat], zoom: 11.4, pitch: 0, bearing: 0, duration: 900 });
       }
@@ -4470,6 +4588,7 @@ function updateBeaconsForZoom(force = false) {
     el.addEventListener('click', (ev) => {
       ev.stopPropagation();
       hideBeaconTooltip();
+      clearBoundaryFocus();
       map.flyTo({ center: [b.lon, b.lat], zoom: b.targetZoom, pitch: 0, bearing: 0, duration: 850 });
     });
 
