@@ -3066,7 +3066,7 @@ function wireUi() {
   $('btn-storm-test')?.addEventListener('click', () => {
     state.simConfig.mode = 'forecast';
     state.simConfig.rainfallMmHr = 220;
-    state.simConfig.durationS = 1200;
+    state.simConfig.durationS = 600;
     state.spatialRainGrid = null;
     state.spanHours = 0;
     runSimulation(state.interventions.length > 0);
