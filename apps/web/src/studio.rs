@@ -844,19 +844,116 @@ fn StudioShell() -> Element {
     }
 }
 
+/// Deployment-supplied SEO and Open Graph metadata for the ARUS Studio SSR page.
+#[derive(Debug, Clone)]
+pub struct StudioSeoMetadata {
+    pub title: String,
+    pub description: String,
+    pub keywords: String,
+    pub public_base_url: Option<String>,
+}
+
+impl Default for StudioSeoMetadata {
+    fn default() -> Self {
+        Self {
+            title: "ARUS — Flood Simulation Studio".to_owned(),
+            description: "Live 5-day flood outlook and interactive 2D shallow-water flood simulation studio. Explore rainfall scenarios, river basins, and flood interventions.".to_owned(),
+            keywords: "flood map, live flood forecast, 2D shallow water simulation, hydrology, flood risk, ARUS".to_owned(),
+            public_base_url: None,
+        }
+    }
+}
+
+fn escape_html_attr(input: &str) -> String {
+    input
+        .replace('&', "&amp;")
+        .replace('"', "&quot;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+}
+
+fn escape_json_str(input: &str) -> String {
+    input
+        .replace('\\', "\\\\")
+        .replace('"', "\\\"")
+        .replace('<', "\\u003c")
+        .replace('>', "\\u003e")
+}
+
 /// Renders the full-viewport ARUS Flood Simulation Studio HTML document via Dioxus SSR.
 #[must_use]
-pub fn render_studio_page_html(_locale: Locale) -> String {
+pub fn render_studio_page_html(locale: Locale) -> String {
+    render_studio_page_html_with_seo(locale, &StudioSeoMetadata::default())
+}
+
+/// Renders the ARUS Studio SSR page with full SEO, Open Graph, Twitter Card, PWA manifest,
+/// JSON-LD `WebApplication` structured data, and `<noscript>` crawler content.
+#[must_use]
+pub fn render_studio_page_html_with_seo(_locale: Locale, seo: &StudioSeoMetadata) -> String {
     let body = dioxus_ssr::render_element(rsx! { StudioShell {} });
+    let title = escape_html_attr(&seo.title);
+    let desc = escape_html_attr(&seo.description);
+    let keywords = escape_html_attr(&seo.keywords);
+    let base = seo
+        .public_base_url
+        .as_deref()
+        .map(|s| s.trim_end_matches('/'))
+        .filter(|s| !s.is_empty());
+    let canonical_tag = base
+        .map(|b| format!("<link rel=\"canonical\" href=\"{}/\">", escape_html_attr(b)))
+        .unwrap_or_default();
+    let og_url_tag = base
+        .map(|b| format!("<meta property=\"og:url\" content=\"{}/\"/>", escape_html_attr(b)))
+        .unwrap_or_default();
+    let og_image_url = base
+        .map(|b| format!("{}/assets/og-card.png", escape_html_attr(b)))
+        .unwrap_or_else(|| "assets/og-card.png".to_owned());
+    let json_ld_url = base
+        .map(|b| format!(",\"url\":\"{}/\"", escape_json_str(b)))
+        .unwrap_or_default();
+    let json_ld = format!(
+        "{{\"@context\":\"https://schema.org\",\"@type\":\"WebApplication\",\"name\":\"{}\",\"description\":\"{}\"{},\"applicationCategory\":\"UtilitiesApplication\",\"operatingSystem\":\"Any\",\"browserRequirements\":\"Requires WebGL and JavaScript\",\"isAccessibleForFree\":true,\"offers\":{{\"@type\":\"Offer\",\"price\":\"0\",\"priceCurrency\":\"USD\"}},\"codeRepository\":\"https://github.com/farhan-syah/arus\"}}",
+        escape_json_str(&seo.title),
+        escape_json_str(&seo.description),
+        json_ld_url
+    );
+    let favicon = "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%230284c7'/%3E%3Ctext x='16' y='22' text-anchor='middle' fill='white' font-family='sans-serif' font-size='18' font-weight='bold'%3EA%3C/text%3E%3C/svg%3E";
     format!(
         "<!doctype html><html lang=\"en\" data-theme=\"light\"><head>\
          <meta charset=\"utf-8\"/>\
          <meta name=\"viewport\" content=\"width=device-width,initial-scale=1\"/>\
-         <title>ARUS — Flood Simulation Studio</title>\
-         <link rel=\"icon\" href=\"data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%230284c7'/%3E%3Ctext x='16' y='22' text-anchor='middle' fill='white' font-family='sans-serif' font-size='18' font-weight='bold'%3EA%3C/text%3E%3C/svg%3E\"/>\
+         <title>{title}</title>\
+         <meta name=\"description\" content=\"{desc}\"/>\
+         <meta name=\"keywords\" content=\"{keywords}\"/>\
+         <meta name=\"robots\" content=\"index, follow, max-image-preview:large, max-snippet:-1\"/>\
+         <meta name=\"theme-color\" content=\"#0284c7\"/>\
+         {canonical_tag}\
+         <meta property=\"og:type\" content=\"website\"/>\
+         <meta property=\"og:site_name\" content=\"ARUS\"/>\
+         <meta property=\"og:locale\" content=\"en_US\"/>\
+         <meta property=\"og:title\" content=\"{title}\"/>\
+         <meta property=\"og:description\" content=\"{desc}\"/>\
+         {og_url_tag}\
+         <meta property=\"og:image\" content=\"{og_image_url}\"/>\
+         <meta property=\"og:image:width\" content=\"1200\"/>\
+         <meta property=\"og:image:height\" content=\"630\"/>\
+         <meta property=\"og:image:alt\" content=\"{title}\"/>\
+         <meta name=\"twitter:card\" content=\"summary_large_image\"/>\
+         <meta name=\"twitter:title\" content=\"{title}\"/>\
+         <meta name=\"twitter:description\" content=\"{desc}\"/>\
+         <meta name=\"twitter:image\" content=\"{og_image_url}\"/>\
+         <link rel=\"icon\" type=\"image/svg+xml\" href=\"{favicon}\"/>\
+         <link rel=\"apple-touch-icon\" href=\"assets/og-card.png\"/>\
+         <link rel=\"manifest\" href=\"site.webmanifest\"/>\
          <link rel=\"stylesheet\" href=\"assets/maplibre-gl.css\"/>\
          <link rel=\"stylesheet\" href=\"assets/studio.css\"/>\
+         <script type=\"application/ld+json\">{json_ld}</script>\
          <script src=\"assets/maplibre-gl.js\"></script>\
-         </head><body>{body}<script src=\"assets/studio.js\"></script></body></html>"
+         </head><body>{body}\
+         <noscript><main style=\"padding:24px;font-family:sans-serif;max-width:720px;margin:0 auto\">\
+         <h1>{title}</h1><p>{desc}</p>\
+         <p>Enable JavaScript to use the interactive 2D flood map, 5-day forecast scrubber, and simulation workbench.</p>\
+         </main></noscript>\
+         <script src=\"assets/studio.js\"></script></body></html>"
     )
 }

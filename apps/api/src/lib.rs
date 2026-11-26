@@ -14,8 +14,9 @@ use arus_ingest::{AccessClass, Catalog, DataClass};
 use arus_storage::{PublishedPointer, RunIndex, RunRecord, RunStore};
 use arus_web::{
     FONT_INTER_400, FONT_INTER_500, FONT_INTER_600, FONT_JBMONO_400, FONT_JBMONO_500, Locale,
-    MAPLIBRE_CSS, MAPLIBRE_JS, SIM_WORKER_JS, STUDIO_CSS, STUDIO_JS, render_index_page_html,
-    render_run_page_html, render_sources_page_html, render_studio_page_html,
+    MAPLIBRE_CSS, MAPLIBRE_JS, SIM_WORKER_JS, STUDIO_CSS, STUDIO_JS, StudioSeoMetadata,
+    render_index_page_html, render_run_page_html, render_sources_page_html,
+    render_studio_page_html_with_seo,
 };
 use axum::body::Body;
 use axum::extract::{DefaultBodyLimit, Path, Query, State};
@@ -99,6 +100,10 @@ struct LangQuery {
 pub fn router(state: ApiState) -> Router {
     Router::new()
         .route("/", get(render_studio_html))
+        .route("/robots.txt", get(serve_robots_txt))
+        .route("/sitemap.xml", get(serve_sitemap_xml))
+        .route("/site.webmanifest", get(serve_webmanifest))
+        .route("/assets/og-card.png", get(serve_og_card_png))
         .route("/archive", get(render_index_html))
         .route("/sources", get(render_sources_html))
         .route("/assets/maplibre-gl.js", get(serve_maplibre_js))
@@ -152,9 +157,105 @@ pub fn router(state: ApiState) -> Router {
         .with_state(state)
 }
 
-async fn render_studio_html(Query(query): Query<LangQuery>) -> Html<String> {
+async fn render_studio_html(
+    State(state): State<ApiState>,
+    Query(query): Query<LangQuery>,
+) -> Html<String> {
     let locale = parse_locale(query.lang.as_deref());
-    Html(render_studio_page_html(locale))
+    let mut seo = StudioSeoMetadata::default();
+    if !state.config.instance_title.trim().is_empty() {
+        seo.title = state.config.instance_title.clone();
+    }
+    if let Some(desc) = &state.config.meta_description {
+        seo.description = desc.clone();
+    }
+    if let Some(kw) = &state.config.meta_keywords {
+        seo.keywords = kw.clone();
+    }
+    seo.public_base_url = state.config.public_base_url.clone();
+    Html(render_studio_page_html_with_seo(locale, &seo))
+}
+
+async fn serve_robots_txt(State(state): State<ApiState>) -> Response {
+    let sitemap_line = state
+        .config
+        .public_base_url
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(|b| format!("Sitemap: {}/sitemap.xml\n", b.trim_end_matches('/')))
+        .unwrap_or_default();
+    let body = format!("User-agent: *\nAllow: /\nDisallow: /api/\n{sitemap_line}");
+    Response::builder()
+        .status(StatusCode::OK)
+        .header(header::CONTENT_TYPE, "text/plain; charset=utf-8")
+        .header(header::CACHE_CONTROL, "public, max-age=3600")
+        .body(Body::from(body))
+        .unwrap_or_else(|_| StatusCode::INTERNAL_SERVER_ERROR.into_response())
+}
+
+async fn serve_sitemap_xml(State(state): State<ApiState>) -> Response {
+    let base = state
+        .config
+        .public_base_url
+        .as_deref()
+        .map(|s| s.trim().trim_end_matches('/'))
+        .filter(|s| !s.is_empty())
+        .unwrap_or("https://localhost");
+    let xml = format!(
+        "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n\
+         <urlset xmlns=\"http://www.sitemaps.org/schemas/sitemap/0.9\">\n\
+         <url><loc>{base}/</loc><changefreq>hourly</changefreq><priority>1.0</priority></url>\n\
+         <url><loc>{base}/sources</loc><changefreq>daily</changefreq><priority>0.6</priority></url>\n\
+         </urlset>\n"
+    );
+    Response::builder()
+        .status(StatusCode::OK)
+        .header(header::CONTENT_TYPE, "application/xml; charset=utf-8")
+        .header(header::CACHE_CONTROL, "public, max-age=3600")
+        .body(Body::from(xml))
+        .unwrap_or_else(|_| StatusCode::INTERNAL_SERVER_ERROR.into_response())
+}
+
+async fn serve_webmanifest(State(state): State<ApiState>) -> Response {
+    let manifest = serde_json::json!({
+        "name": state.config.instance_title,
+        "short_name": "ARUS",
+        "description": state.config.meta_description.as_deref().unwrap_or("Live flood outlook and 2D shallow-water flood simulation studio."),
+        "start_url": "/",
+        "display": "standalone",
+        "background_color": "#f8fafc",
+        "theme_color": "#0284c7",
+        "icons": [
+            { "src": "/assets/og-card.png", "sizes": "1200x630", "type": "image/png" }
+        ]
+    });
+    Response::builder()
+        .status(StatusCode::OK)
+        .header(header::CONTENT_TYPE, "application/manifest+json; charset=utf-8")
+        .header(header::CACHE_CONTROL, "public, max-age=3600")
+        .body(Body::from(manifest.to_string()))
+        .unwrap_or_else(|_| StatusCode::INTERNAL_SERVER_ERROR.into_response())
+}
+
+async fn serve_og_card_png(State(state): State<ApiState>) -> Response {
+    if let Some(dir) = &state.context_dir {
+        let candidates = [
+            dir.join("og-card.png"),
+            dir.parent().map(|p| p.join("data/og-card.png")).unwrap_or_default(),
+        ];
+        for path in candidates {
+            if let Ok(bytes) = tokio::fs::read(&path).await {
+                return Response::builder()
+                    .status(StatusCode::OK)
+                    .header(header::CONTENT_TYPE, "image/png")
+                    .header(header::CACHE_CONTROL, "public, max-age=86400")
+                    .body(Body::from(bytes))
+                    .unwrap_or_else(|_| StatusCode::INTERNAL_SERVER_ERROR.into_response());
+            }
+        }
+    }
+    StatusCode::NOT_FOUND.into_response()
 }
 
 async fn serve_maplibre_js() -> Response {
