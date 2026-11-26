@@ -45,6 +45,7 @@ jobs:
     needs: validate-version
     if: inputs.publish_crate
     runs-on: ubuntu-latest
+    timeout-minutes: 300
     environment: crates-io
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -86,11 +87,38 @@ jobs:
             local crate="$1"
             if is_published "$crate" "$VERSION"; then
               echo "$crate@$VERSION already published, skipping"
-            else
-              echo "Publishing $crate@$VERSION..."
-              cargo publish -p "$crate" --allow-dirty
-              wait_indexed "$crate"
+              return 0
             fi
+            for attempt in $(seq 1 10); do
+              echo "Publishing $crate@$VERSION (attempt $attempt)..."
+              set +e
+              out=$(cargo publish -p "$crate" --allow-dirty 2>&1)
+              rc=$?
+              set -e
+              echo "$out"
+              if [[ "$rc" -eq 0 ]]; then
+                wait_indexed "$crate"
+                return 0
+              fi
+              if echo "$out" | grep -q "429 Too Many Requests"; then
+                retry_at=$(echo "$out" | sed -n 's/.*Please try again after \([^.]*GMT\).*/\1/p' | head -n 1)
+                wait_s=615
+                if [[ -n "$retry_at" ]]; then
+                  target_ts=$(date -u -d "$retry_at" +%s 2>/dev/null || echo 0)
+                  now_ts=$(date -u +%s)
+                  if (( target_ts > now_ts )); then
+                    wait_s=$(( target_ts - now_ts + 10 ))
+                  fi
+                fi
+                echo "Rate-limited by crates.io for $crate; sleeping ${wait_s}s until ${retry_at:-next window}..."
+                sleep "$wait_s"
+              else
+                echo "::error::Failed to publish $crate@$VERSION"
+                exit "$rc"
+              fi
+            done
+            echo "::error::Exceeded rate-limit retries for $crate@$VERSION"
+            exit 1
           }
 
           for crate in \
