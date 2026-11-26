@@ -268,7 +268,7 @@ fn StudioShell() -> Element {
             div { class: "sec-head",
                 span { class: "sec-title", "Layers" }
                 div { class: "layer-toggles",
-                    button { id: "btn-env", class: "btn btn-xs", "Live" }
+                    button { id: "btn-env", class: "btn btn-xs", "Step" }
                     button { id: "btn-particles", class: "btn btn-xs active", "Flow" }
                 }
             }
@@ -412,20 +412,11 @@ fn StudioShell() -> Element {
                         }
                         div { class: "divider" }
                         div { class: "sec-title", "HUD & Units" }
-                        div { class: "row-2",
-                            div { class: "field",
-                                span { class: "field-label", "Units" }
-                                select { id: "opt-units", class: "ctl-select",
-                                    option { value: "metric", selected: true, "Metric (m, km²)" }
-                                    option { value: "imperial", "Imperial (ft, mi²)" }
-                                }
-                            }
-                            div { class: "field",
-                                span { class: "field-label", "Clock" }
-                                select { id: "opt-clock", class: "ctl-select",
-                                    option { value: "12h", selected: true, "12-hour (AM/PM)" }
-                                    option { value: "24h", "24-hour" }
-                                }
+                        div { class: "field",
+                            span { class: "field-label", "Units" }
+                            select { id: "opt-units", class: "ctl-select",
+                                option { value: "metric", selected: true, "Metric (m, km²)" }
+                                option { value: "imperial", "Imperial (ft, mi²)" }
                             }
                         }
                         label { class: "toggle-row",
@@ -595,10 +586,6 @@ fn StudioShell() -> Element {
                     div { class: "modal-grid-2",
                         div { class: "modal-sec",
                             div { class: "sec-title", "Composable Physics Toggles" }
-                            label { class: "toggle-row",
-                                input { id: "sim-start-dry", r#type: "checkbox" }
-                                span { "Start from 0 (dry basin, ignore antecedent/gauges)" }
-                            }
                             label { class: "toggle-row",
                                 input { id: "sim-enable-evap", r#type: "checkbox", checked: true }
                                 span { "Evaporation (FAO-56 / 4.5 mm/day)" }

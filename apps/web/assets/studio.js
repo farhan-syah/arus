@@ -177,12 +177,12 @@ function getActiveTimeZone() {
   return getBrowserTimeZone();
 }
 
-function getTimePartsInTz(epochMs, tzOverride) {
-  const tz = tzOverride || getActiveTimeZone();
-  const d = new Date(epochMs);
-  let parts;
+const tzFmtCache = new Map();
+function getTzFormatter(tz) {
+  let fmt = tzFmtCache.get(tz);
+  if (fmt) return fmt;
   try {
-    parts = new Intl.DateTimeFormat('en-US', {
+    fmt = new Intl.DateTimeFormat('en-US', {
       timeZone: tz,
       year: 'numeric',
       month: '2-digit',
@@ -193,9 +193,9 @@ function getTimePartsInTz(epochMs, tzOverride) {
       second: '2-digit',
       hourCycle: 'h23',
       timeZoneName: 'short',
-    }).formatToParts(d);
+    });
   } catch (_) {
-    parts = new Intl.DateTimeFormat('en-US', {
+    fmt = tzFmtCache.get('UTC') || new Intl.DateTimeFormat('en-US', {
       timeZone: 'UTC',
       year: 'numeric',
       month: '2-digit',
@@ -206,8 +206,16 @@ function getTimePartsInTz(epochMs, tzOverride) {
       second: '2-digit',
       hourCycle: 'h23',
       timeZoneName: 'short',
-    }).formatToParts(d);
+    });
   }
+  tzFmtCache.set(tz, fmt);
+  return fmt;
+}
+
+function getTimePartsInTz(epochMs, tzOverride) {
+  const tz = tzOverride || getActiveTimeZone();
+  const d = new Date(epochMs);
+  const parts = getTzFormatter(tz).formatToParts(d);
   const mapParts = {};
   for (const p of parts) mapParts[p.type] = p.value;
   const h24 = parseInt(mapParts.hour, 10) % 24;
@@ -388,13 +396,18 @@ class PinDropControl {
         }
       };
 
-      const onUp = (ue) => {
+      const cleanupDrag = () => {
         window.removeEventListener('pointermove', onMove);
         window.removeEventListener('pointerup', onUp);
+        window.removeEventListener('pointercancel', cleanupDrag);
         if (ghost) {
           ghost.remove();
           ghost = null;
         }
+      };
+
+      const onUp = (ue) => {
+        cleanupDrag();
         if (dragging) {
           const rect = this._map.getContainer().getBoundingClientRect();
           if (
@@ -411,6 +424,7 @@ class PinDropControl {
 
       window.addEventListener('pointermove', onMove);
       window.addEventListener('pointerup', onUp);
+      window.addEventListener('pointercancel', cleanupDrag);
     });
 
     container.appendChild(btn);
@@ -482,6 +496,7 @@ class PinDropControl {
   map.on('mousemove', (e) => handleHover(e.lngLat.lng, e.lngLat.lat));
   map.on('click', (e) => handleMapClick(e.lngLat.lng, e.lngLat.lat));
   map.on('moveend', () => {
+    renderSecondaryLiveOverlays(false);
     updateFrameTelemetry();
     updateLiveMetrics();
   });
@@ -524,6 +539,7 @@ function ensureMapLayers() {
       tileSize: 256,
       maxzoom: 12,
     });
+    const beforeFlood = findFloodInsertBeforeId() || beforeLabels;
     map.addLayer(
       {
         id: 'arus-hillshade',
@@ -535,7 +551,7 @@ function ensureMapLayers() {
           'hillshade-highlight-color': isDark ? '#334155' : '#ffffff',
         },
       },
-      beforeLabels,
+      beforeFlood,
     );
     // Keep crisp 2D hillshade relief in Live mode (avoids MapLibre v5 3D terrain-tile
     // seam clipping on wide regional ImageSource overlays, e.g. z=7 lat 2.811°N).
@@ -546,30 +562,6 @@ function ensureMapLayers() {
     }
   }
   const showBox = !isPres && !state.boundaryGeoJson && ['pick', 'bund', 'pond'].includes(state.tool);
-  map.addSource('arus-hover-boundary', { type: 'geojson', data: empty });
-  map.addLayer(
-    {
-      id: 'arus-hover-fill',
-      type: 'fill',
-      source: 'arus-hover-boundary',
-      paint: { 'fill-color': '#0284c7', 'fill-opacity': 0.10 },
-    },
-    beforeLabels,
-  );
-  map.addLayer(
-    {
-      id: 'arus-hover-line',
-      type: 'line',
-      source: 'arus-hover-boundary',
-      paint: {
-        'line-color': '#0284c7',
-        'line-width': 2.0,
-        'line-opacity': 0.65,
-        'line-dasharray': [3, 2],
-      },
-    },
-    beforeLabels,
-  );
   map.addSource('arus-domain-box', { type: 'geojson', data: empty });
   map.addLayer(
     {
@@ -615,12 +607,39 @@ function ensureMapLayers() {
     beforeLabels,
   );
 
-  // High-contrast emerald green original river channel line above flood water
+  // Place hover boundary ABOVE region mask so adjacent states stay bright on hover
+  map.addSource('arus-hover-boundary', { type: 'geojson', data: empty });
+  map.addLayer(
+    {
+      id: 'arus-hover-fill',
+      type: 'fill',
+      source: 'arus-hover-boundary',
+      paint: { 'fill-color': '#0284c7', 'fill-opacity': 0.12 },
+    },
+    beforeLabels,
+  );
+  map.addLayer(
+    {
+      id: 'arus-hover-line',
+      type: 'line',
+      source: 'arus-hover-boundary',
+      paint: {
+        'line-color': '#0284c7',
+        'line-width': 2.0,
+        'line-opacity': 0.72,
+        'line-dasharray': [3, 2],
+      },
+    },
+    beforeLabels,
+  );
+
+  // Emerald river channels above flood water but beneath highway bridges and buildings
   const style = map.getStyle();
   const vecSourceId = style && style.sources
     ? Object.keys(style.sources).find((k) => style.sources[k].type === 'vector')
     : null;
   if (vecSourceId) {
+    const riverAnchor = findFloodInsertBeforeId() || beforeLabels;
     map.addLayer(
       {
         id: 'arus-river-halo',
@@ -634,7 +653,7 @@ function ensureMapLayers() {
         },
         layout: { 'line-cap': 'round', 'line-join': 'round' },
       },
-      beforeLabels,
+      riverAnchor,
     );
     map.addLayer(
       {
@@ -650,7 +669,7 @@ function ensureMapLayers() {
         },
         layout: { 'line-cap': 'round', 'line-join': 'round' },
       },
-      beforeLabels,
+      riverAnchor,
     );
   }
 
@@ -835,6 +854,7 @@ function registerTideMarkerIcons(targetMap) {
   });
 
   layersReady = true;
+  applyPendingFocusIfReady();
 }
 
 function updateDomainOutline(bounds) {
@@ -859,8 +879,27 @@ function updateDomainOutline(bounds) {
   if (state.boundaryGeoJson) applyRegionBoundary();
 }
 
+let pendingFocusApplied = false;
+function applyPendingFocusIfReady() {
+  if (pendingFocusApplied || !map || !layersReady || !state.catalogBoundaries.length || state.boundaryGeoJson) return;
+  const focusParam = new URLSearchParams(window.location.search).get('focus');
+  if (!focusParam) return;
+  const target = focusParam.trim().toLowerCase();
+  const hit = state.catalogBoundaries.find((b) =>
+    b.name.toLowerCase() === target
+    || (b.name === 'Malacca' && target === 'melaka'),
+  );
+  if (hit) {
+    pendingFocusApplied = true;
+    const qsNow = new URLSearchParams(window.location.search);
+    const keepCamera = qsNow.has('lat') && qsNow.has('lon');
+    activateCatalogBoundary(hit, { fitView: !keepCamera });
+  }
+}
+
 function clearBoundaryFocus() {
   if (!state.boundaryGeoJson) return;
+  state.boundaryVersion = (state.boundaryVersion || 0) + 1;
   state.boundaryGeoJson = null;
   state.boundaryGrid = null;
   state.boundaryCellMask = null;
@@ -946,15 +985,7 @@ async function fetchCatalogBoundaries() {
     // Smallest enclosing boundary wins (e.g. Putrajaya < Kuala Lumpur < Selangor)
     items.sort((a, b) => a.area - b.area);
     state.catalogBoundaries = items;
-    const focusParam = new URLSearchParams(window.location.search).get('focus');
-    if (focusParam && !state.boundaryGeoJson) {
-      const target = focusParam.trim().toLowerCase();
-      const hit = items.find((b) =>
-        b.name.toLowerCase() === target
-        || (b.name === 'Malacca' && target === 'melaka'),
-      );
-      if (hit) activateCatalogBoundary(hit);
-    }
+    applyPendingFocusIfReady();
   } catch (_) {}
 }
 
@@ -990,8 +1021,9 @@ function updateHoverBoundary(lon, lat) {
   }
 }
 
-async function activateCatalogBoundary(b) {
+async function activateCatalogBoundary(b, opts = {}) {
   if (!b || !b.geom) return;
+  const fitView = opts.fitView !== false;
   state.hoveredBoundary = null;
   if (map && layersReady) {
     const hSrc = map.getSource('arus-hover-boundary');
@@ -1005,9 +1037,8 @@ async function activateCatalogBoundary(b) {
     || (b.name === 'Malacca' && p.name.toLowerCase() === 'melaka'),
   );
   if (matchedPreset && $('preset-select')) $('preset-select').value = matchedPreset.id;
-  if ($('site-verdict')) $('site-verdict').classList.add('hidden');
-  if (state.verdictMarker) { state.verdictMarker.remove(); state.verdictMarker = null; }
-  applyBoundaryGeometry(b.geom, false);
+  clearLivePin();
+  applyBoundaryGeometry(b.geom, false, { fitView });
   if (matchedPreset?.liveBasin) {
     await tryLoadPrecomputedLive(matchedPreset.liveBasin);
   }
@@ -1107,8 +1138,9 @@ function buildRadiusPolygon(lon, lat, radiusKm = 5.0, shape = 'hex') {
   return { type: 'Polygon', coordinates: [ring] };
 }
 
-async function applyBoundaryGeometry(geom, runSim = true) {
+async function applyBoundaryGeometry(geom, runSim = true, opts = {}) {
   if (!geom || (geom.type !== 'Polygon' && geom.type !== 'MultiPolygon')) return false;
+  state.boundaryVersion = (state.boundaryVersion || 0) + 1;
   state.boundaryGeoJson = geom;
   const [minLon, minLat, maxLon, maxLat] = computeGeomBbox(geom);
   const midLat = (minLat + maxLat) * 0.5;
@@ -1129,23 +1161,31 @@ async function applyBoundaryGeometry(geom, runSim = true) {
   state.boundaryNeedsLandFit = dxM >= 300;
   state.cachedDem = null;
   if (map) { try { map.setTerrain(null); } catch (_) {} }
-  if ($('site-verdict')) $('site-verdict').classList.add('hidden');
+  clearLivePin();
   applyRegionBoundary();
-  map.stop();
-  const vw = window.innerWidth || 1280;
-  const vh = window.innerHeight || 800;
-  map.fitBounds([[minLon, minLat], [maxLon, maxLat]], {
-    padding: {
-      top: Math.min(64, Math.round(vh * 0.12)),
-      bottom: Math.min(78, Math.round(vh * 0.14)),
-      left: Math.min(310, Math.round(vw * 0.24)),
-      right: Math.min(235, Math.round(vw * 0.20)),
-    },
-    pitch: 0,
-    bearing: 0,
-    duration: 0,
-  });
-  if (runSim) await runSimulation(false);
+  if (map && opts.fitView !== false) {
+    map.stop();
+    const vw = window.innerWidth || 1280;
+    const vh = window.innerHeight || 800;
+    map.fitBounds([[minLon, minLat], [maxLon, maxLat]], {
+      padding: {
+        top: Math.min(64, Math.round(vh * 0.12)),
+        bottom: Math.min(78, Math.round(vh * 0.14)),
+        left: Math.min(310, Math.round(vw * 0.24)),
+        right: Math.min(235, Math.round(vw * 0.20)),
+      },
+      pitch: 0,
+      bearing: 0,
+      duration: 0,
+    });
+  }
+  if (runSim) {
+    await runSimulation(false);
+  } else {
+    rebuildBoundaryCellMask();
+    renderFloodCanvas(true);
+    updateLiveMetrics();
+  }
   return true;
 }
 
@@ -1461,14 +1501,19 @@ function updateSmoothWaterImage(meta, env, frame) {
   let url = state.frameRasterCache.get(lastRasterKey);
   if (!url) {
     url = rasterCanvas.toDataURL('image/png');
-    if (state.frameRasterCache.size > 64) state.frameRasterCache.clear();
+    if (state.frameRasterCache.size >= 512) {
+      const oldestKey = state.frameRasterCache.keys().next().value;
+      if (oldestKey !== undefined) state.frameRasterCache.delete(oldestKey);
+    }
     state.frameRasterCache.set(lastRasterKey, url);
   }
   if (map.getSource('arus-water-img')) {
     map.getSource('arus-water-img').updateImage({ url, coordinates: coords });
   } else {
     map.addSource('arus-water-img', { type: 'image', url, coordinates: coords });
-    const anchor = findFloodInsertBeforeId() || (map.getLayer('arus-river-halo') ? 'arus-river-halo' : 'arus-particles-line');
+    const anchor = map.getLayer('arus-river-halo')
+      ? 'arus-river-halo'
+      : (findFloodInsertBeforeId() || 'arus-particles-line');
     map.addLayer(
       {
         id: 'arus-water-smooth',
@@ -1484,7 +1529,12 @@ function updateSmoothWaterImage(meta, env, frame) {
 function renderSecondaryLiveOverlays(forceRaster) {
   if (!map || !layersReady) return;
   const showSecondary = state.profile === 'public' && !state.boundaryGeoJson && state.displayPrefs.showFlood;
-  const anchor = findFloodInsertBeforeId() || (map.getLayer('arus-river-halo') ? 'arus-river-halo' : (map.getLayer('arus-particles-line') ? 'arus-particles-line' : undefined));
+  const anchor = map.getLayer('arus-river-halo') ? 'arus-river-halo' : (findFloodInsertBeforeId() || (map.getLayer('arus-particles-line') ? 'arus-particles-line' : undefined));
+  const vb = map.getBounds();
+  const vMinLon = vb.getWest();
+  const vMaxLon = vb.getEast();
+  const vMinLat = vb.getSouth();
+  const vMaxLat = vb.getNorth();
   for (const [basinId, ov] of state.liveOverlays.entries()) {
     const srcId = `arus-live-img-${basinId}`;
     const layerId = `arus-live-layer-${basinId}`;
@@ -1493,64 +1543,76 @@ function renderSecondaryLiveOverlays(forceRaster) {
       continue;
     }
     const meta = ov.grid.metadata;
+    const [bMinLon, bMinLat, bMaxLon, bMaxLat] = meta.wgs84_bounds;
+    // Skip expensive rasterization for basins completely outside current viewport
+    if (bMaxLon < vMinLon || bMinLon > vMaxLon || bMaxLat < vMinLat || bMinLat > vMaxLat) {
+      continue;
+    }
     const env = ov.grid.envelope;
     const fIdx = Math.min(state.frameIdx, ov.frames.length - 1);
     const frame = ov.frames[fIdx];
-    const key = `${basinId}:${fIdx}:${state.layer}:${state.envelopeMode}:${state.displayPrefs.depthCutoffM}`;
+    const key = `sec:${basinId}:${ov.grid.run_id || ''}:${fIdx}:${state.layer}:${state.envelopeMode}:${state.displayPrefs.depthCutoffM}`;
     if (forceRaster || ov.lastKey !== key || !map.getSource(srcId)) {
       ov.lastKey = key;
-      const W = rasterCanvas.width;
-      const H = rasterCanvas.height;
-      const img = rasterCtx.createImageData(W, H);
-      const data = img.data;
-      const cols = meta.cols;
-      const rows = meta.rows;
-      let speedArr = null;
-      if (state.layer === 'velocity' || state.layer === 'hazard') {
-        speedArr = new Float32Array(cols * rows);
-        for (let i = 0; i < cols * rows; i++) speedArr[i] = Math.hypot(frame.vx[i], frame.vy[i]);
-      }
-      for (let py = 0; py < H; py++) {
-        const fy = (1 - (py + 0.5) / H) * (rows - 1);
-        const rN = Math.min(rows - 1, Math.max(0, Math.round(fy)));
-        for (let px = 0; px < W; px++) {
-          const fx = ((px + 0.5) / W) * (cols - 1);
-          const cN = Math.min(cols - 1, Math.max(0, Math.round(fx)));
-          if (!meta.active_mask[rN * cols + cN]) continue;
-          let rgba = null;
-          if (state.layer === 'depth') {
-            const src = state.envelopeMode ? env.max_depth_m : frame.depth;
-            const h = sampleBilinear(src, meta.active_mask, cols, rows, fx, fy);
-            if (h !== null) rgba = colorForDepth(h);
-          } else if (state.layer === 'velocity') {
-            const src = state.envelopeMode ? env.max_speed_m_s : speedArr;
-            const sp = sampleBilinear(src, meta.active_mask, cols, rows, fx, fy);
-            if (sp !== null) rgba = colorForVelocity(sp);
-          } else if (state.layer === 'hazard') {
-            const h = sampleBilinear(frame.depth, meta.active_mask, cols, rows, fx, fy);
-            const sp = sampleBilinear(speedArr, meta.active_mask, cols, rows, fx, fy);
-            const hr = state.envelopeMode
-              ? sampleBilinear(env.max_hazard_m2_s, meta.active_mask, cols, rows, fx, fy)
-              : (h !== null && sp !== null ? h * (sp + 0.5) : null);
-            if (hr !== null) rgba = colorForHazard(hr);
-          } else if (state.layer === 'arrival') {
-            const onset = env.onset_time_s[rN * cols + cN];
-            const maxT = ov.frames.length ? (ov.frames[ov.frames.length - 1].time_s || 360) : 360;
-            rgba = colorForArrival(onset, maxT);
-          }
-          if (rgba) {
-            const out = (py * W + px) * 4;
-            data[out] = rgba[0];
-            data[out + 1] = rgba[1];
-            data[out + 2] = rgba[2];
-            data[out + 3] = Math.round(rgba[3]);
+      let url = state.frameRasterCache.get(key);
+      if (!url) {
+        const W = rasterCanvas.width;
+        const H = rasterCanvas.height;
+        const img = rasterCtx.createImageData(W, H);
+        const data = img.data;
+        const cols = meta.cols;
+        const rows = meta.rows;
+        let speedArr = null;
+        if (state.layer === 'velocity' || state.layer === 'hazard') {
+          speedArr = new Float32Array(cols * rows);
+          for (let i = 0; i < cols * rows; i++) speedArr[i] = Math.hypot(frame.vx[i], frame.vy[i]);
+        }
+        for (let py = 0; py < H; py++) {
+          const fy = (1 - (py + 0.5) / H) * (rows - 1);
+          const rN = Math.min(rows - 1, Math.max(0, Math.round(fy)));
+          for (let px = 0; px < W; px++) {
+            const fx = ((px + 0.5) / W) * (cols - 1);
+            const cN = Math.min(cols - 1, Math.max(0, Math.round(fx)));
+            if (!meta.active_mask[rN * cols + cN]) continue;
+            let rgba = null;
+            if (state.layer === 'depth') {
+              const src = state.envelopeMode ? env.max_depth_m : frame.depth;
+              const h = sampleBilinear(src, meta.active_mask, cols, rows, fx, fy);
+              if (h !== null) rgba = colorForDepth(h);
+            } else if (state.layer === 'velocity') {
+              const src = state.envelopeMode ? env.max_speed_m_s : speedArr;
+              const sp = sampleBilinear(src, meta.active_mask, cols, rows, fx, fy);
+              if (sp !== null) rgba = colorForVelocity(sp);
+            } else if (state.layer === 'hazard') {
+              const h = sampleBilinear(frame.depth, meta.active_mask, cols, rows, fx, fy);
+              const sp = sampleBilinear(speedArr, meta.active_mask, cols, rows, fx, fy);
+              const hr = state.envelopeMode
+                ? sampleBilinear(env.max_hazard_m2_s, meta.active_mask, cols, rows, fx, fy)
+                : (h !== null && sp !== null ? h * (sp + 0.5) : null);
+              if (hr !== null) rgba = colorForHazard(hr);
+            } else if (state.layer === 'arrival') {
+              const onset = env.onset_time_s[rN * cols + cN];
+              const maxT = ov.frames.length ? (ov.frames[ov.frames.length - 1].time_s || 360) : 360;
+              rgba = colorForArrival(onset, maxT);
+            }
+            if (rgba) {
+              const out = (py * W + px) * 4;
+              data[out] = rgba[0];
+              data[out + 1] = rgba[1];
+              data[out + 2] = rgba[2];
+              data[out + 3] = Math.round(rgba[3]);
+            }
           }
         }
+        rasterCtx.putImageData(img, 0, 0);
+        url = rasterCanvas.toDataURL('image/png');
+        if (state.frameRasterCache.size >= 512) {
+          const oldestKey = state.frameRasterCache.keys().next().value;
+          if (oldestKey !== undefined) state.frameRasterCache.delete(oldestKey);
+        }
+        state.frameRasterCache.set(key, url);
       }
-      rasterCtx.putImageData(img, 0, 0);
-      const url = rasterCanvas.toDataURL('image/png');
-      const [minLon, minLat, maxLon, maxLat] = meta.wgs84_bounds;
-      const coords = [[minLon, maxLat], [maxLon, maxLat], [maxLon, minLat], [minLon, minLat]];
+      const coords = [[bMinLon, bMaxLat], [bMaxLon, bMaxLat], [bMaxLon, bMinLat], [bMinLon, bMinLat]];
       if (map.getSource(srcId)) {
         try { map.getSource(srcId).updateImage({ url, coordinates: coords }); } catch (_) {}
       } else {
@@ -1568,14 +1630,16 @@ function renderSecondaryLiveOverlays(forceRaster) {
         } catch (_) {}
       }
     }
-    if (map.getLayer(layerId)) map.setLayoutProperty(layerId, 'visibility', 'visible');
+    if (map.getLayer(layerId) && map.getLayoutProperty(layerId, 'visibility') !== 'visible') {
+      map.setLayoutProperty(layerId, 'visibility', 'visible');
+    }
   }
 }
 
 function renderFloodCanvas(forceRaster) {
   if (!state.grid || !state.frames.length || !layersReady) return;
   renderSecondaryLiveOverlays(forceRaster);
-  refreshAlertsAndBeacons();
+  if (state.profile === 'public') refreshAlertsAndBeacons();
   const meta = state.grid.metadata;
   const env = state.grid.envelope;
   const cols = meta.cols;
@@ -1585,7 +1649,7 @@ function renderFloodCanvas(forceRaster) {
   const dLat = (maxLat - minLat) / rows;
   const frame = state.frames[Math.min(state.frameIdx, state.frames.length - 1)];
 
-  const rasterKey = `${state.runId}:${state.frameIdx}:${state.layer}:${state.envelopeMode}:${state.displayPrefs.depthCutoffM}`;
+  const rasterKey = `${state.runId}:${state.boundaryVersion || 0}:${state.frameIdx}:${state.layer}:${state.envelopeMode}:${state.displayPrefs.depthCutoffM}`;
   if (forceRaster || rasterKey !== lastRasterKey) {
     lastRasterKey = rasterKey;
     const cachedUrl = state.frameRasterCache.get(rasterKey);
@@ -3717,9 +3781,7 @@ function wireUi() {
     const p = PRESETS.find((x) => x.id === sel.value);
     if (!p) return;
     if ($('coord-search')) $('coord-search').value = '';
-    if ($('site-verdict')) $('site-verdict').classList.add('hidden');
-    state.verdictTarget = null;
-    if (state.verdictMarker) { state.verdictMarker.remove(); state.verdictMarker = null; }
+    clearLivePin();
     state.uploadedDem = null;
     state.cachedDem = null;
     state.interventions = [];
@@ -3730,9 +3792,7 @@ function wireUi() {
       if (state.profile !== 'researcher') await runSimulation(false);
       return;
     }
-    state.boundaryGeoJson = null;
-    state.boundaryGrid = null;
-    state.boundaryCellMask = null;
+    clearBoundaryFocus();
     state.center = { lon: p.lon, lat: p.lat };
     map.flyTo({
       center: [p.lon, p.lat],
@@ -3773,6 +3833,7 @@ function wireUi() {
   const selectSearchHit = async (hit) => {
     if (!hit) return;
     hideSearchDropdown();
+    document.body.classList.remove('mob-menu-open');
     const shouldSim = state.profile !== 'public' && state.serverConfig?.features?.allow_simulation !== false;
     const label = hit.name || hit.display_name?.split(',')[0]?.trim() || searchInput.value.trim();
     if (searchInput) searchInput.value = label;
@@ -3783,6 +3844,13 @@ function wireUi() {
       state.activeBoundaryName = label;
       setCustomPresetLabel(label);
       await applyBoundaryGeometry(geo, shouldSim);
+      if (state.profile === 'public') {
+        const matched = PRESETS.find((p) => p.liveBasin && (
+          p.name.toLowerCase() === label.toLowerCase()
+          || (label.toLowerCase() === 'malacca' && p.name.toLowerCase() === 'melaka')
+        ));
+        if (matched?.liveBasin) await tryLoadPrecomputedLive(matched.liveBasin);
+      }
       return;
     }
     const lat = parseFloat(hit.lat);
@@ -3839,7 +3907,7 @@ function wireUi() {
         subEl.textContent = rest;
         btn.appendChild(subEl);
       }
-      btn.addEventListener('mousedown', (ev) => {
+      btn.addEventListener('click', (ev) => {
         ev.preventDefault();
         selectSearchHit(hit);
       });
@@ -3866,11 +3934,12 @@ function wireUi() {
           url += `&viewbox=${ab[0]},${ab[3]},${ab[2]},${ab[1]}`;
         }
         const resp = await fetch(url);
+        if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
         const data = await resp.json();
         hits = Array.isArray(data) ? data : [];
         if (hits.length) writeNominatimCache(sKey, hits);
       } catch (_) {
-        if (seq === searchSeq) renderSearchDropdown([], 'Search unavailable offline.');
+        if (seq === searchSeq) renderSearchDropdown([], 'Search temporarily unavailable.');
         return;
       }
     }
@@ -3912,8 +3981,8 @@ function wireUi() {
     }
     if (e.key !== 'Enter') return;
     e.preventDefault();
-    if (searchActiveIdx >= 0 && searchHits[searchActiveIdx]) {
-      selectSearchHit(searchHits[searchActiveIdx]);
+    if (!searchDropdown?.classList.contains('hidden') && searchHits.length > 0) {
+      selectSearchHit(searchHits[searchActiveIdx >= 0 ? searchActiveIdx : 0]);
       return;
     }
     const raw = e.target.value.trim();
@@ -3958,13 +4027,15 @@ function wireUi() {
   $('btn-layers-cancel').addEventListener('click', () => $('layers-modal').classList.add('hidden'));
   $('btn-layers-apply').addEventListener('click', applyLayersModalDraft);
   $('btn-layers-reset').addEventListener('click', () => {
-    resetUserPrefs();
     state.displayPrefs = {
       showFlood: true, showRivers: true, showBoundary: true, showMarkers: true,
       showParticles: true, is3D: true, showLabels: true, basemap: 'topo', layer: 'depth',
       depthCutoffM: 0.06, floodOpacity: 0.95, riverOpacity: 0.72,
-      units: 'metric', clock: '12h', timezone: 'local', showMetrics: true, showLegend: true,
+      units: 'metric', clock: state.displayPrefs.clock || '12h',
+      timezone: state.displayPrefs.timezone || 'local',
+      showMetrics: true, showLegend: true,
     };
+    saveUserPrefs({ displayPrefs: state.displayPrefs });
     populateLayersModal();
     applyDisplayPrefsToMap();
     $('layers-modal').classList.add('hidden');
@@ -4047,7 +4118,7 @@ function wireUi() {
     state.stressSite = { lat: state.verdictTarget.lat, lon: state.verdictTarget.lon };
     state.simConfig.mode = 'stress';
     state.simConfig.stressPadM = 0.8;
-    $('site-verdict').classList.add('hidden');
+    clearLivePin();
     openSimModal();
   });
   $('btn-inspector-pin').addEventListener('click', () => {
@@ -4255,6 +4326,7 @@ function wireUi() {
       ['sources-modal', 'layers-modal', 'sim-modal', 'saved-sims-modal', 'app-settings-modal', 'about-modal'].forEach((id) => { const el = $(id); if (el) el.classList.add('hidden'); });
       $('alerts-dropdown')?.classList.add('hidden');
       closeRecPreviewModal();
+      setPinDropMode(false);
       if (state.pickingStressSite) {
         state.pickingStressSite = false;
         document.body.classList.remove('picking-site');
@@ -4291,7 +4363,7 @@ function wireUi() {
 
   $('btn-env').addEventListener('click', () => {
     state.envelopeMode = !state.envelopeMode;
-    $('btn-env').textContent = state.envelopeMode ? 'Peak' : 'Live';
+    $('btn-env').textContent = state.envelopeMode ? 'Peak' : 'Step';
     $('btn-env').classList.toggle('active', state.envelopeMode);
     updateLiveMetrics();
     renderFloodCanvas(true);
@@ -4301,7 +4373,11 @@ function wireUi() {
     state.particlesOn = !state.particlesOn;
     state.displayPrefs.showParticles = state.particlesOn;
     $('btn-particles').classList.toggle('active', state.particlesOn);
+    if (map && layersReady && map.getLayer('arus-particles-line')) {
+      map.setLayoutProperty('arus-particles-line', 'visibility', state.particlesOn && state.displayPrefs.showFlood ? 'visible' : 'none');
+    }
     saveUserPrefs({ displayPrefs: state.displayPrefs });
+    renderFloodCanvas(true);
   });
 
   $('btn-play').addEventListener('click', () => {
@@ -5100,7 +5176,7 @@ function setUiProfile(profile, persist = false) {
     refreshAlertsAndBeacons();
   } else {
     if (map) map.setMaxZoom(17.5);
-    if ($('site-verdict')) $('site-verdict').classList.add('hidden');
+    clearLivePin();
     renderSecondaryLiveOverlays(false);
     clearFloodBeacons();
     // Switching from Live -> Simulate brings t=0 initial state, paused, without auto-solving
@@ -5108,6 +5184,10 @@ function setUiProfile(profile, persist = false) {
       state.playing = false;
       state.envelopeMode = false;
       state.frameIdx = 0;
+      if ($('btn-env')) {
+        $('btn-env').textContent = 'Step';
+        $('btn-env').classList.remove('active');
+      }
       if ($('btn-play')) $('btn-play').textContent = '▶';
       if ($('fb-play')) $('fb-play').textContent = '▶';
       if ($('scrubber')) $('scrubber').value = '0';
@@ -5271,7 +5351,11 @@ function computeAllLiveFloodClusters() {
 }
 
 function formatClusterLabel(item) {
-  if (item.placeName) return item.placeName;
+  const cached = item.placeName || readNominatimCache(item.placeKey);
+  if (cached) {
+    item.placeName = cached;
+    return cached;
+  }
   return `${item.stateName} (${item.lat.toFixed(2)}°N, ${item.lon.toFixed(2)}°E)`;
 }
 
@@ -5535,11 +5619,22 @@ function updateBeaconsForZoom(force = false) {
   }
 }
 
+const clusterMemoCache = new Map();
 function refreshAlertsAndBeacons() {
+  if (state.profile !== 'public') return;
   const key = `${state.liveOverlays.size}:${state.runId}:${state.frameIdx}:${state.envelopeMode}`;
   if (key !== lastAlertsComputeKey) {
     lastAlertsComputeKey = key;
-    cachedFloodClusters = computeAllLiveFloodClusters();
+    let clusters = clusterMemoCache.get(key);
+    if (!clusters) {
+      clusters = computeAllLiveFloodClusters();
+      if (clusterMemoCache.size >= 128) {
+        const oldest = clusterMemoCache.keys().next().value;
+        if (oldest !== undefined) clusterMemoCache.delete(oldest);
+      }
+      clusterMemoCache.set(key, clusters);
+    }
+    cachedFloodClusters = clusters;
     renderAlertsButtonAndDropdown(cachedFloodClusters);
     updateBeaconsForZoom(true);
     resolveAlertPlaceNames(cachedFloodClusters);
@@ -6173,7 +6268,7 @@ function populateLayersModal() {
   $('opt-river-opacity').value = String(rPct);
   $('val-river-opacity').textContent = `${rPct}%`;
   $('opt-units').value = p.units;
-  $('opt-clock').value = p.clock;
+  if ($('opt-clock')) $('opt-clock').value = p.clock;
   $('opt-show-metrics').checked = p.showMetrics;
   $('opt-show-legend').checked = p.showLegend;
 }
@@ -6253,7 +6348,7 @@ function applyLayersModalDraft() {
     floodOpacity: (parseInt($('opt-flood-opacity').value, 10) || 95) / 100,
     riverOpacity: (parseInt($('opt-river-opacity').value, 10) || 72) / 100,
     units: $('opt-units').value,
-    clock: $('opt-clock').value,
+    clock: $('opt-clock')?.value || state.displayPrefs.clock || '12h',
     timezone: state.displayPrefs.timezone || 'local',
     showMetrics: $('opt-show-metrics').checked,
     showLegend: $('opt-show-legend').checked,
@@ -6307,7 +6402,7 @@ function populateSimModal() {
   $('sim-stress-pad').value = String(sc.stressPadM);
   const site = state.stressSite || state.center;
   $('sim-stress-coord').textContent = `${site.lat.toFixed(4)}°, ${site.lon.toFixed(4)}°`;
-  $('sim-start-dry').checked = sc.startDry;
+  if ($('sim-start-dry')) $('sim-start-dry').checked = sc.startDry;
   $('sim-enable-evap').checked = sc.enableEvap;
   $('sim-enable-drain').checked = sc.enableDrain;
   const sdPct = Math.round((Number.isFinite(sc.stormDrainScore) ? sc.stormDrainScore : 0.5) * 100);
@@ -6340,7 +6435,7 @@ function applySimModalDraftAndRun() {
   sc.stressMmDay = parseFloat($('sim-stress-mm-day').value) || 150;
   sc.stressDays = parseInt($('sim-stress-days').value, 10) || 3;
   sc.stressPadM = parseFloat($('sim-stress-pad').value) || 0;
-  sc.startDry = $('sim-start-mode') ? $('sim-start-mode').value === 'dry' : $('sim-start-dry').checked;
+  sc.startDry = $('sim-start-mode') ? $('sim-start-mode').value === 'dry' : Boolean($('sim-start-dry')?.checked);
   if ($('sim-start-dry')) $('sim-start-dry').checked = sc.startDry;
   sc.enableEvap = $('sim-enable-evap').checked;
   sc.enableDrain = $('sim-enable-drain').checked;
@@ -6469,7 +6564,7 @@ function applyUserPrefs(qs) {
   }
   if ($('btn-play')) $('btn-play').textContent = state.playing ? '❚❚' : '▶';
   if ($('btn-env')) {
-    $('btn-env').textContent = state.envelopeMode ? 'Peak' : 'Live';
+    $('btn-env').textContent = state.envelopeMode ? 'Peak' : 'Step';
     $('btn-env').classList.toggle('active', state.envelopeMode);
   }
   if (prefs.profile) setUiProfile(prefs.profile, false);
@@ -6622,6 +6717,7 @@ function applyStartupParams() {
   const basemap = qs.get('basemap');
   if (basemap === 'topo' || basemap === 'sat' || basemap === 'dark') {
     state.basemap = basemap;
+    state.displayPrefs.basemap = basemap;
     document.documentElement.dataset.theme = basemap === 'topo' ? 'light' : 'dark';
     document.querySelectorAll('[data-basemap]').forEach((el) => {
       el.classList.toggle('active', el.dataset.basemap === basemap);
