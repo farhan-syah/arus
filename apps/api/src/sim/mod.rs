@@ -1511,6 +1511,7 @@ where
     let mut interval_loss_grids: Vec<Vec<f64>> = Vec::new();
     let mut manning_per_cell: Option<Vec<f64>> = None;
     let mut use_spatial_grids = false;
+    let mut effective_time_compression = 1.0f64;
 
     let has_spatial = req.spatial_rain_grid.as_ref().is_some_and(|g| {
         g.nx >= 2 && g.ny >= 2 && g.hourly_mm.len() == g.nx * g.ny && !g.hourly_mm[0].is_empty()
@@ -1542,6 +1543,7 @@ where
         let bin_dur_s = req.duration_s / (n_bins as f64);
         let bin_hours = (n_hours as f64) / (n_bins as f64);
         let time_compression = ((n_hours as f64) * 3600.0 / req.duration_s).clamp(1.0, 240.0);
+        effective_time_compression = time_compression;
         // Optional 15-min radar/nowcast blend: convert mm per 15-min step to mm/hr peak-preserving
         // hourly rates for the lead-in hours (0..nowcast_hours).
         let nowcast_hourly_mm: Vec<f64> = req
@@ -1825,8 +1827,12 @@ where
                         0.0
                     };
 
+                    // Keep a physical recession floor on drainage so ponded water recedes on dry days
+                    // instead of accumulating monotonically inside flat valleys.
+                    let drain_mult = (soil_factor + sd_factor)
+                        .max(0.35 * (1.0 - 0.75 * tide_lock));
                     loss_grid[idx] = local_et0_m_s
-                        + eff_drain_m_s * (soil_factor + sd_factor)
+                        + eff_drain_m_s * drain_mult
                         + upland_drain_m_s
                         + sea_outfall_m_s;
                 }
@@ -1958,7 +1964,7 @@ where
             maximum_deficit,
         } => LandSpec::UniformModifiedGreenAmpt {
             suction_m,
-            conductivity_m_per_s,
+            conductivity_m_per_s: conductivity_m_per_s * effective_time_compression,
             maximum_deficit,
         },
     };
