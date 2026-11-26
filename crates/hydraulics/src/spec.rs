@@ -471,6 +471,7 @@ impl SurfaceRunSpec {
         let domain_area_m2 = (grid.columns * grid.rows) as f64 * grid.dx_m * grid.dy_m;
         let config = SolverConfig {
             max_step: (min_dx / 15.0).clamp(1.0, 10.0),
+            momentum_film_depth: 1e-4,
             max_cumulative_water_adjustment_m3: (domain_area_m2 * 1e-12).max(1e-9),
             ..SolverConfig::default()
         };
