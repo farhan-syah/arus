@@ -4248,15 +4248,16 @@ function toggleVideoRecording() {
   const recCtx = recCanvas.getContext('2d');
   const paintComposite = () => {
     if (!map) return;
-    map.triggerRepaint();
     if (recCanvas.width !== mapCanvas.width || recCanvas.height !== mapCanvas.height) {
       recCanvas.width = mapCanvas.width || 1280;
       recCanvas.height = mapCanvas.height || 720;
     }
+    // Runs synchronously inside MapLibre's 'render' event while the WebGL drawing buffer is valid
     recCtx.drawImage(mapCanvas, 0, 0, recCanvas.width, recCanvas.height);
     drawRecordingHudOverlay(recCtx, recCanvas.width, recCanvas.height);
   };
-  paintComposite();
+  map.on('render', paintComposite);
+  map.triggerRepaint();
   const stream = recCanvas.captureStream(24);
   const candidates = [
     'video/mp4;codecs=avc1.42E01E',
@@ -4272,6 +4273,7 @@ function toggleVideoRecording() {
       ? new MediaRecorder(stream, { mimeType: mime, videoBitsPerSecond: 4_500_000 })
       : new MediaRecorder(stream, { videoBitsPerSecond: 4_500_000 });
   } catch (err) {
+    map.off('render', paintComposite);
     stream.getTracks().forEach((t) => t.stop());
     showToast(`Recording unavailable: ${err.message}`);
     return;
@@ -4279,9 +4281,12 @@ function toggleVideoRecording() {
   activeRecorder.ondataavailable = (e) => {
     if (e.data && e.data.size > 0) recordedChunks.push(e.data);
   };
-  // Composite map + broadcast HUD (date/time, KPIs, colorbar, timeline) at ~24 fps
-  activeRecRepaintTimer = setInterval(paintComposite, 42);
+  // Trigger MapLibre repaints at ~24 fps so 'render' composites valid WebGL frames + HUD
+  activeRecRepaintTimer = setInterval(() => {
+    if (map) map.triggerRepaint();
+  }, 42);
   activeRecorder.onstop = async () => {
+    if (map) map.off('render', paintComposite);
     if (activeRecRepaintTimer) { clearInterval(activeRecRepaintTimer); activeRecRepaintTimer = null; }
     stream.getTracks().forEach((t) => t.stop());
     const blob = new Blob(recordedChunks, { type: mime || 'video/webm' });
