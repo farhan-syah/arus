@@ -70,6 +70,21 @@ fn StudioShell() -> Element {
                             div { id: "alerts-dd-list", class: "alerts-dd-list" }
                         }
                     }
+                    button { id: "btn-mobile-menu", class: "btn btn-icon mobile-only", title: "Menu", "aria-label": "Toggle menu",
+                        svg {
+                            width: "16",
+                            height: "16",
+                            view_box: "0 0 24 24",
+                            fill: "none",
+                            stroke: "currentColor",
+                            stroke_width: "2.2",
+                            stroke_linecap: "round",
+                            "aria-hidden": "true",
+                            line { x1: "3", y1: "6", x2: "21", y2: "6" }
+                            line { x1: "3", y1: "12", x2: "21", y2: "12" }
+                            line { x1: "3", y1: "18", x2: "21", y2: "18" }
+                        }
+                    }
                 }
             }
             div { class: "top-actions",
@@ -108,6 +123,13 @@ fn StudioShell() -> Element {
         div { id: "focus-chip", class: "hud focus-chip hidden",
             span { id: "focus-chip-text", "Focus" }
             button { id: "btn-focus-clear", class: "btn btn-xs", "aria-label": "Clear boundary focus", "×" }
+        }
+        div { class: "mobile-dock mobile-only",
+            button { id: "btn-mob-summary", class: "hud mob-pill", title: "Toggle Flood Outlook & Index",
+                span { id: "mob-sum-dot", class: "mob-dot low" }
+                span { id: "mob-sum-text", "Flood Summary ▾" }
+            }
+            button { id: "btn-mob-layers", class: "hud mob-pill", title: "Toggle Map Layers & Legend", "Layers ▾" }
         }
         div { id: "sim-progress", class: "hud sim-progress hidden", role: "status", "aria-live": "polite",
             span { class: "sim-spinner" }

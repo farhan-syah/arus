@@ -264,6 +264,17 @@ function initMap() {
   map.on('load', () => {
     if (!layersReady) ensureMapLayers();
     renderIncidentMarkers();
+    // On narrow portrait mobile screens, fit full configured country/alert bounds so the map
+    // doesn't open in empty sea between Peninsula and Borneo.
+    if (window.innerWidth <= 768 && state.initZoom <= 6.2 && !state.fixedView) {
+      const ab = state.serverConfig?.alert_bounds;
+      if (Array.isArray(ab) && ab.length === 4) {
+        map.fitBounds([[ab[0], ab[1]], [ab[2], ab[3]]], {
+          padding: { top: 76, bottom: 92, left: 10, right: 10 },
+          duration: 0,
+        });
+      }
+    }
     if (state.grid) {
       updateDomainOutline(state.grid.metadata.wgs84_bounds);
       renderFloodCanvas(true);
@@ -1432,7 +1443,10 @@ function renderFloodCanvas(forceRaster) {
   }
   if (forceRaster || state.staticVectorsDirty) {
     state.staticVectorsDirty = false;
-    const ivFeatures = state.interventions.map((iv) => {
+    const activeIvs = state.interventions.length > 0
+      ? state.interventions
+      : (state.profile === 'public' ? (state.liveInterventions || []) : []);
+    const ivFeatures = activeIvs.map((iv) => {
       const lon0 = minLon + iv.col * dLon;
       const lat0 = minLat + iv.row * dLat;
       return {
@@ -2902,6 +2916,10 @@ function updateLiveMetrics() {
   else if (score >= 0.22) { lvl = 'moderate'; label = 'MODERATE'; }
   badge.className = `lm-badge ${lvl}`;
   badge.textContent = label;
+  if ($('mob-sum-dot')) $('mob-sum-dot').className = `mob-dot ${lvl}`;
+  if ($('mob-sum-text')) {
+    $('mob-sum-text').textContent = `${label} · ${fmtDepth(peakDepth, 2)} ▾`;
+  }
   const trendEl = $('lm-trend');
   if (trendEl) {
     if (usePeakEnv) {
@@ -3679,6 +3697,33 @@ function wireUi() {
       }
     });
   });
+  $('btn-mobile-menu')?.addEventListener('click', (e) => {
+    e.stopPropagation();
+    const open = document.body.classList.toggle('mob-menu-open');
+    if (open) {
+      document.body.classList.remove('mob-summary-open', 'mob-layers-open');
+      $('alerts-dropdown')?.classList.add('hidden');
+    }
+  });
+  $('btn-mob-summary')?.addEventListener('click', (e) => {
+    e.stopPropagation();
+    const open = document.body.classList.toggle('mob-summary-open');
+    if (open) {
+      document.body.classList.remove('mob-menu-open', 'mob-layers-open');
+      $('alerts-dropdown')?.classList.add('hidden');
+    }
+  });
+  $('btn-mob-layers')?.addEventListener('click', (e) => {
+    e.stopPropagation();
+    const open = document.body.classList.toggle('mob-layers-open');
+    if (open) {
+      document.body.classList.remove('mob-menu-open', 'mob-summary-open');
+      $('alerts-dropdown')?.classList.add('hidden');
+    }
+  });
+  document.querySelectorAll('.top-actions button').forEach((b) => {
+    b.addEventListener('click', () => document.body.classList.remove('mob-menu-open'));
+  });
   $('btn-focus-clear')?.addEventListener('click', clearBoundaryFocus);
   $('btn-app-settings')?.addEventListener('click', () => openAppSettingsModal(false));
   $('btn-save-view')?.addEventListener('click', () => openAppSettingsModal(true));
@@ -3731,6 +3776,7 @@ function wireUi() {
   });
   $('btn-alerts')?.addEventListener('click', (e) => {
     e.stopPropagation();
+    document.body.classList.remove('mob-menu-open', 'mob-summary-open', 'mob-layers-open');
     $('alerts-dropdown')?.classList.toggle('hidden');
   });
   document.addEventListener('click', (e) => {
@@ -5713,8 +5759,13 @@ async function fetchRegionalContext(qs) {
         if (Array.isArray(ctx.hourly_tide_m) && ctx.hourly_tide_m.length > 0) state.hourlyTideM = ctx.hourly_tide_m;
       }
     }
+    if (ctx && Array.isArray(ctx.interventions) && ctx.interventions.length > 0) {
+      state.liveInterventions = ctx.interventions;
+      state.staticVectorsDirty = true;
+    }
     renderServerContextBox();
     renderIncidentMarkers();
+    if (state.grid) renderFloodCanvas(false);
   } catch (_) { /* optional server context */ }
 }
 
