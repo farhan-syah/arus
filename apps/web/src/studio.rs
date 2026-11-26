@@ -731,8 +731,39 @@ fn StudioShell() -> Element {
                     div { id: "loc-list", class: "saved-sims-list" }
                 }
                 div { id: "settings-pane-general", class: "modal-body hidden", style: "display:flex;flex-direction:column;gap:12px",
+                    div { class: "loc-form", style: "gap:10px",
+                        div { class: "loc-form-row",
+                            label { class: "loc-mini-field", style: "flex:1.4",
+                                span { "Default Timezone" }
+                                select { id: "opt-timezone", class: "ctl-select",
+                                    option { value: "local", selected: true, "Browser Local (Auto)" }
+                                    option { value: "UTC", "UTC (GMT+0)" }
+                                    option { value: "Asia/Kuala_Lumpur", "Malaysia — Asia/Kuala_Lumpur (MYT)" }
+                                    option { value: "Asia/Singapore", "Singapore — Asia/Singapore (SGT)" }
+                                    option { value: "Asia/Jakarta", "Indonesia West — Asia/Jakarta (WIB)" }
+                                    option { value: "Asia/Bangkok", "Thailand — Asia/Bangkok (ICT)" }
+                                    option { value: "Asia/Manila", "Philippines — Asia/Manila (PHT)" }
+                                    option { value: "Asia/Tokyo", "Japan — Asia/Tokyo (JST)" }
+                                    option { value: "Asia/Kolkata", "India — Asia/Kolkata (IST)" }
+                                    option { value: "Australia/Sydney", "Australia — Australia/Sydney (AEST)" }
+                                    option { value: "Europe/London", "UK — Europe/London (GMT/BST)" }
+                                    option { value: "Europe/Berlin", "Central Europe — Europe/Berlin (CET)" }
+                                    option { value: "America/New_York", "US Eastern — America/New_York (ET)" }
+                                    option { value: "America/Chicago", "US Central — America/Chicago (CT)" }
+                                    option { value: "America/Los_Angeles", "US Pacific — America/Los_Angeles (PT)" }
+                                }
+                            }
+                            label { class: "loc-mini-field", style: "flex:0.8",
+                                span { "Clock Format" }
+                                select { id: "opt-settings-clock", class: "ctl-select",
+                                    option { value: "12h", selected: true, "12-hour (AM/PM)" }
+                                    option { value: "24h", "24-hour" }
+                                }
+                            }
+                        }
+                    }
                     div { style: "font-size:12.5px;color:var(--ink-2);line-height:1.5",
-                        "Custom locations, default startup view, and display preferences are stored locally in your browser."
+                        "Timezone, clock format, custom locations, default startup view, and display preferences are stored locally in your browser."
                     }
                     div { style: "display:flex;gap:8px;flex-wrap:wrap",
                         button { id: "btn-settings-reset-default", class: "btn", r#type: "button", "Reset Default Startup View" }

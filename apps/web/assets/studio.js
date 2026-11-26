@@ -84,6 +84,7 @@ const state = {
     riverOpacity: 0.72,
     units: 'metric', // metric | imperial
     clock: '12h',    // 12h | 24h
+    timezone: 'local', // 'local' (browser locale) or IANA zone (e.g. 'UTC', 'Asia/Kuala_Lumpur')
     showMetrics: true,
     showLegend: true,
   },
@@ -151,19 +152,93 @@ function fmtRain(mmHr, decimals = 1) {
   return `${mmHr.toFixed(decimals)} mm/hr`;
 }
 
-function fmtClockTime(epochMs, tzLabel) {
-  const d = new Date(epochMs);
-  const days = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
-  const day = days[d.getUTCDay()];
-  const dd = d.getUTCDate();
-  const h24 = d.getUTCHours();
-  const mm = String(d.getUTCMinutes()).padStart(2, '0');
-  if (state.displayPrefs.clock === '24h') {
-    return `${day} ${dd} · ${String(h24).padStart(2, '0')}:${mm} ${tzLabel}`;
+const TZ_FRIENDLY_SHORT = {
+  'Asia/Kuala_Lumpur': 'MYT',
+  'Asia/Singapore': 'SGT',
+  'Asia/Jakarta': 'WIB',
+  'Asia/Bangkok': 'ICT',
+  'Asia/Manila': 'PHT',
+  'Asia/Tokyo': 'JST',
+  'Asia/Kolkata': 'IST',
+  'UTC': 'UTC',
+};
+
+function getBrowserTimeZone() {
+  try {
+    return Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC';
+  } catch (_) {
+    return 'UTC';
   }
-  const ap = h24 >= 12 ? 'PM' : 'AM';
-  const h12 = h24 % 12 === 0 ? 12 : h24 % 12;
-  return `${day} ${dd} · ${h12}:${mm} ${ap} ${tzLabel}`;
+}
+
+function getActiveTimeZone() {
+  const pref = state.displayPrefs.timezone;
+  if (pref && pref !== 'local') return pref;
+  return getBrowserTimeZone();
+}
+
+function getTimePartsInTz(epochMs, tzOverride) {
+  const tz = tzOverride || getActiveTimeZone();
+  const d = new Date(epochMs);
+  let parts;
+  try {
+    parts = new Intl.DateTimeFormat('en-US', {
+      timeZone: tz,
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+      weekday: 'short',
+      hour: '2-digit',
+      minute: '2-digit',
+      second: '2-digit',
+      hourCycle: 'h23',
+      timeZoneName: 'short',
+    }).formatToParts(d);
+  } catch (_) {
+    parts = new Intl.DateTimeFormat('en-US', {
+      timeZone: 'UTC',
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+      weekday: 'short',
+      hour: '2-digit',
+      minute: '2-digit',
+      second: '2-digit',
+      hourCycle: 'h23',
+      timeZoneName: 'short',
+    }).formatToParts(d);
+  }
+  const mapParts = {};
+  for (const p of parts) mapParts[p.type] = p.value;
+  const h24 = parseInt(mapParts.hour, 10) % 24;
+  const mi = parseInt(mapParts.minute, 10) || 0;
+  const sec = parseInt(mapParts.second, 10) || 0;
+  const tzShort = TZ_FRIENDLY_SHORT[tz] || mapParts.timeZoneName || 'UTC';
+  return {
+    year: mapParts.year,
+    month: mapParts.month,
+    dayNum: parseInt(mapParts.day, 10) || 1,
+    day: mapParts.day,
+    weekday: mapParts.weekday,
+    h24,
+    mi,
+    sec,
+    dayKey: `${mapParts.year}-${mapParts.month}-${mapParts.day}`,
+    tzShort,
+    tz,
+  };
+}
+
+function fmtClockTime(epochMs, tzLabel) {
+  const p = getTimePartsInTz(epochMs);
+  const label = tzLabel || p.tzShort;
+  const mm = String(p.mi).padStart(2, '0');
+  if (state.displayPrefs.clock === '24h') {
+    return `${p.weekday} ${p.dayNum} · ${String(p.h24).padStart(2, '0')}:${mm} ${label}`;
+  }
+  const ap = p.h24 >= 12 ? 'PM' : 'AM';
+  const h12 = p.h24 % 12 === 0 ? 12 : p.h24 % 12;
+  return `${p.weekday} ${p.dayNum} · ${h12}:${mm} ${ap} ${label}`;
 }
 
 // High-resolution offscreen water raster canvas pushed via MapLibre ImageSource
@@ -755,6 +830,15 @@ async function fetchCatalogBoundaries() {
     // Smallest enclosing boundary wins (e.g. Putrajaya < Kuala Lumpur < Selangor)
     items.sort((a, b) => a.area - b.area);
     state.catalogBoundaries = items;
+    const focusParam = new URLSearchParams(window.location.search).get('focus');
+    if (focusParam && !state.boundaryGeoJson) {
+      const target = focusParam.trim().toLowerCase();
+      const hit = items.find((b) =>
+        b.name.toLowerCase() === target
+        || (b.name === 'Malacca' && target === 'melaka'),
+      );
+      if (hit) activateCatalogBoundary(hit);
+    }
   } catch (_) {}
 }
 
@@ -2270,6 +2354,7 @@ async function loadAllPrecomputedLiveBasins(primaryBasinId) {
     }));
     renderSecondaryLiveOverlays(true);
     refreshAlertsAndBeacons();
+    updateLiveMetrics();
   } catch (_) {}
 }
 
@@ -2670,31 +2755,23 @@ function fmtMMSS(sec) {
 }
 
 function fmtCalendarTime(epochMs, tzLabel) {
-  const d = new Date(epochMs);
-  const yyyy = d.getUTCFullYear();
-  const mm = String(d.getUTCMonth() + 1).padStart(2, '0');
-  const dd = String(d.getUTCDate()).padStart(2, '0');
-  const hh = String(d.getUTCHours()).padStart(2, '0');
-  const mi = String(d.getUTCMinutes()).padStart(2, '0');
-  const ss = String(d.getUTCSeconds()).padStart(2, '0');
-  return `${yyyy}-${mm}-${dd} ${hh}:${mi}:${ss} ${tzLabel}`;
+  const p = getTimePartsInTz(epochMs);
+  const label = tzLabel || p.tzShort;
+  return `${p.year}-${p.month}-${p.day} ${String(p.h24).padStart(2, '0')}:${String(p.mi).padStart(2, '0')}:${String(p.sec).padStart(2, '0')} ${label}`;
 }
 
 const DAYS_SHORT = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
 
 function fmtCalloutTime(epochMs, tzLabel) {
-  const d = new Date(epochMs);
-  const dow = DAYS_SHORT[d.getUTCDay()];
-  const day = d.getUTCDate();
-  const h24 = d.getUTCHours();
-  const mi = d.getUTCMinutes();
+  const p = getTimePartsInTz(epochMs);
+  const label = tzLabel || p.tzShort;
   if (state.displayPrefs.clock === '24h') {
-    return `${dow} ${day} · ${String(h24).padStart(2, '0')}:${String(mi).padStart(2, '0')} ${tzLabel}`;
+    return `${p.weekday} ${p.dayNum} · ${String(p.h24).padStart(2, '0')}:${String(p.mi).padStart(2, '0')} ${label}`;
   }
-  const ampm = h24 >= 12 ? 'PM' : 'AM';
-  const h12 = h24 % 12 || 12;
-  const minPart = mi === 0 ? '' : `:${String(mi).padStart(2, '0')}`;
-  return `${dow} ${day} · ${h12}${minPart} ${ampm} ${tzLabel}`;
+  const ampm = p.h24 >= 12 ? 'PM' : 'AM';
+  const h12 = p.h24 % 12 || 12;
+  const minPart = p.mi === 0 ? '' : `:${String(p.mi).padStart(2, '0')}`;
+  return `${p.weekday} ${p.dayNum} · ${h12}${minPart} ${ampm} ${label}`;
 }
 
 function renderForecastSegments() {
@@ -2716,16 +2793,15 @@ function renderForecastSegments() {
   if (state.spanHours >= 24) {
     const days = Math.max(2, Math.min(10, Math.round(state.spanHours / 24)));
     for (let i = 0; i < days; i++) {
-      const d = new Date(startMs + i * 86_400_000);
-      const dowIdx = d.getUTCDay();
-      segs.push(`<div class="fb-seg" data-seg="${i}">${DAYS_SHORT[dowIdx]} ${d.getUTCDate()}</div>`);
+      const p = getTimePartsInTz(startMs + i * 86_400_000);
+      segs.push(`<div class="fb-seg" data-seg="${i}" data-day="${p.dayKey}">${p.weekday} ${p.dayNum}</div>`);
     }
   } else {
     const slots = Math.max(4, Math.min(8, Math.round(state.spanHours / 3) || 4));
     for (let i = 0; i < slots; i++) {
-      const d = new Date(startMs + (spanMs * i) / slots);
-      const hh = String(d.getUTCHours()).padStart(2, '0');
-      const mi = String(d.getUTCMinutes()).padStart(2, '0');
+      const p = getTimePartsInTz(startMs + (spanMs * i) / slots);
+      const hh = String(p.h24).padStart(2, '0');
+      const mi = String(p.mi).padStart(2, '0');
       segs.push(`<div class="fb-seg" data-seg="${i}">${hh}:${mi}</div>`);
     }
   }
@@ -3124,20 +3200,24 @@ function updateLiveHotspots(frameIdx) {
 }
 
 function fmtMytDisplay(epochMs, includeYear = true) {
+  const tz = getActiveTimeZone();
+  const p = getTimePartsInTz(epochMs, tz);
   const d = new Date(epochMs);
-  const datePart = d.toLocaleDateString('en-GB', {
-    day: '2-digit',
-    month: 'short',
-    ...(includeYear ? { year: 'numeric' } : {}),
-    timeZone: 'Asia/Kuala_Lumpur',
-  });
-  const timePart = d.toLocaleTimeString('en-GB', {
-    hour: '2-digit',
-    minute: '2-digit',
-    hour12: false,
-    timeZone: 'Asia/Kuala_Lumpur',
-  });
-  return `${datePart}, ${timePart} MYT`;
+  let datePart;
+  try {
+    datePart = d.toLocaleDateString('en-GB', {
+      day: '2-digit',
+      month: 'short',
+      ...(includeYear ? { year: 'numeric' } : {}),
+      timeZone: tz,
+    });
+  } catch (_) {
+    datePart = `${p.day} ${p.month}${includeYear ? ` ${p.year}` : ''}`;
+  }
+  const timePart = state.displayPrefs.clock === '24h'
+    ? `${String(p.h24).padStart(2, '0')}:${String(p.mi).padStart(2, '0')}`
+    : `${p.h24 % 12 || 12}:${String(p.mi).padStart(2, '0')} ${p.h24 >= 12 ? 'PM' : 'AM'}`;
+  return `${datePart}, ${timePart} ${p.tzShort}`;
 }
 
 function fmtMytSlug(epochMs) {
@@ -3181,20 +3261,20 @@ function updateTimeReadout() {
     const pct = frac * 100;
     $('fb-fill').style.width = `${pct.toFixed(2)}%`;
     const callout = $('fb-callout');
-    callout.textContent = fmtCalloutTime(epochMs, state.tzLabel);
+    callout.textContent = fmtCalloutTime(epochMs);
     callout.style.left = `${Math.max(12, Math.min(88, pct)).toFixed(2)}%`;
     const segNodes = document.querySelectorAll('#fb-segments .fb-seg');
     if (segNodes.length > 0) {
       let activeIdx;
       if (state.spanHours >= 24) {
-        const d0 = new Date(state.startEpochMs);
-        const day0Midnight = Date.UTC(d0.getUTCFullYear(), d0.getUTCMonth(), d0.getUTCDate());
-        const dCur = new Date(epochMs);
-        const curMidnight = Date.UTC(dCur.getUTCFullYear(), dCur.getUTCMonth(), dCur.getUTCDate());
-        activeIdx = Math.max(
-          0,
-          Math.min(segNodes.length - 1, Math.round((curMidnight - day0Midnight) / 86_400_000)),
-        );
+        const curDayKey = getTimePartsInTz(epochMs).dayKey;
+        let matched = -1;
+        segNodes.forEach((n, i) => {
+          if (n.dataset.day === curDayKey) matched = i;
+        });
+        activeIdx = matched >= 0
+          ? matched
+          : Math.min(segNodes.length - 1, Math.floor(frac * segNodes.length));
       } else {
         activeIdx = Math.min(segNodes.length - 1, Math.floor(frac * segNodes.length));
       }
@@ -3564,7 +3644,7 @@ function wireUi() {
       showFlood: true, showRivers: true, showBoundary: true, showMarkers: true,
       showParticles: true, is3D: true, showLabels: true, basemap: 'topo', layer: 'depth',
       depthCutoffM: 0.06, floodOpacity: 0.95, riverOpacity: 0.72,
-      units: 'metric', clock: '12h', showMetrics: true, showLegend: true,
+      units: 'metric', clock: '12h', timezone: 'local', showMetrics: true, showLegend: true,
     };
     populateLayersModal();
     applyDisplayPrefsToMap();
@@ -3770,6 +3850,19 @@ function wireUi() {
   $('btn-app-settings')?.addEventListener('click', () => openAppSettingsModal(false));
   $('btn-save-view')?.addEventListener('click', () => openAppSettingsModal(true));
   $('btn-app-settings-close')?.addEventListener('click', () => $('app-settings-modal')?.classList.add('hidden'));
+  $('opt-timezone')?.addEventListener('change', (e) => {
+    state.displayPrefs.timezone = e.target.value || 'local';
+    saveUserPrefs({ displayPrefs: state.displayPrefs });
+    renderForecastSegments();
+    updateTimeReadout();
+    showToast(`Timezone set to ${state.displayPrefs.timezone === 'local' ? `Browser Local (${getBrowserTimeZone()})` : state.displayPrefs.timezone}.`);
+  });
+  $('opt-settings-clock')?.addEventListener('change', (e) => {
+    state.displayPrefs.clock = e.target.value === '24h' ? '24h' : '12h';
+    if ($('opt-clock')) $('opt-clock').value = state.displayPrefs.clock;
+    saveUserPrefs({ displayPrefs: state.displayPrefs });
+    updateTimeReadout();
+  });
   document.querySelectorAll('[data-settings-tab]').forEach((btn) => {
     btn.addEventListener('click', () => {
       const tab = btn.dataset.settingsTab;
@@ -5269,6 +5362,13 @@ function openAppSettingsModal(prefillCurrentView = false) {
       setTimeout(() => $('loc-name')?.focus(), 50);
     }
   }
+  const tzSel = $('opt-timezone');
+  if (tzSel) {
+    const localOpt = tzSel.querySelector('option[value="local"]');
+    if (localOpt) localOpt.textContent = `Browser Local (${getBrowserTimeZone()})`;
+    tzSel.value = state.displayPrefs.timezone || 'local';
+  }
+  if ($('opt-settings-clock')) $('opt-settings-clock').value = state.displayPrefs.clock || '12h';
   rebuildPresetDropdown();
   renderManageLocationsList();
   $('app-settings-modal')?.classList.remove('hidden');
@@ -5693,6 +5793,9 @@ function buildShareUrl() {
   if (map) qs.set('zoom', map.getZoom().toFixed(2));
   qs.set('basemap', state.basemap);
   qs.set('layer', state.layer);
+  if (state.boundaryGeoJson && state.activeBoundaryName) {
+    qs.set('focus', state.activeBoundaryName);
+  }
   // Live tab shares ONLY the clean map view; Simulate tab shares the full scenario
   if (state.profile === 'researcher') {
     const sc = state.simConfig;
@@ -5826,6 +5929,7 @@ function applyLayersModalDraft() {
     riverOpacity: (parseInt($('opt-river-opacity').value, 10) || 72) / 100,
     units: $('opt-units').value,
     clock: $('opt-clock').value,
+    timezone: state.displayPrefs.timezone || 'local',
     showMetrics: $('opt-show-metrics').checked,
     showLegend: $('opt-show-legend').checked,
   };
