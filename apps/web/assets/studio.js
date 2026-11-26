@@ -320,6 +320,13 @@ function floodOpacityExpr(base) {
   return ['interpolate', ['linear'], ['zoom'], 11, hi, 13.5, lo];
 }
 
+function setPinDropMode(on) {
+  state.pinDropMode = Boolean(on);
+  document.body.classList.toggle('pin-drop-mode', state.pinDropMode);
+  const btn = document.querySelector('.arus-pin-ctrl-btn');
+  if (btn) btn.classList.toggle('active', state.pinDropMode);
+}
+
 function initMap() {
   map = new maplibregl.Map({
     container: 'map',
@@ -333,7 +340,84 @@ function initMap() {
     preserveDrawingBuffer: true,
   });
 
+class PinDropControl {
+  onAdd(mapInstance) {
+    this._map = mapInstance;
+    const container = document.createElement('div');
+    container.className = 'maplibregl-ctrl maplibregl-ctrl-group arus-pin-ctrl';
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'arus-pin-ctrl-btn';
+    btn.title = 'Drag onto map (or click) to drop water-level pin';
+    btn.setAttribute('aria-label', 'Drop water-level pin');
+    btn.innerHTML = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 21s-6-5.3-6-10a6 6 0 1 1 12 0c0 4.7-6 10-6 10z"/><circle cx="12" cy="11" r="2.2"/></svg>';
+
+    btn.addEventListener('pointerdown', (ev) => {
+      if (ev.button !== 0 || window.innerWidth <= 768) return;
+      ev.preventDefault();
+      ev.stopPropagation();
+      const startX = ev.clientX;
+      const startY = ev.clientY;
+      let dragging = false;
+      let ghost = null;
+
+      const onMove = (me) => {
+        const dx = me.clientX - startX;
+        const dy = me.clientY - startY;
+        if (!dragging && Math.hypot(dx, dy) > 5) {
+          dragging = true;
+          setPinDropMode(false);
+          ghost = document.createElement('div');
+          ghost.className = 'arus-pin-ghost';
+          ghost.innerHTML = '<svg width="30" height="36" viewBox="0 0 24 28" fill="#0284c7" stroke="#ffffff" stroke-width="1.8"><path d="M12 26s-9-7.8-9-15a9 9 0 1 1 18 0c0 7.2-9 15-9 15z"/><circle cx="12" cy="11" r="3.2" fill="#ffffff" stroke="none"/></svg>';
+          document.body.appendChild(ghost);
+        }
+        if (ghost) {
+          ghost.style.left = `${me.clientX}px`;
+          ghost.style.top = `${me.clientY}px`;
+        }
+      };
+
+      const onUp = (ue) => {
+        window.removeEventListener('pointermove', onMove);
+        window.removeEventListener('pointerup', onUp);
+        if (ghost) {
+          ghost.remove();
+          ghost = null;
+        }
+        if (dragging) {
+          const rect = this._map.getContainer().getBoundingClientRect();
+          if (
+            ue.clientX >= rect.left && ue.clientX <= rect.right
+            && ue.clientY >= rect.top && ue.clientY <= rect.bottom
+          ) {
+            const lngLat = this._map.unproject([ue.clientX - rect.left, ue.clientY - rect.top]);
+            dropLivePinAt(lngLat.lng, lngLat.lat);
+          }
+        } else {
+          setPinDropMode(!state.pinDropMode);
+        }
+      };
+
+      window.addEventListener('pointermove', onMove);
+      window.addEventListener('pointerup', onUp);
+    });
+
+    container.appendChild(btn);
+    this._container = container;
+    return container;
+  }
+
+  onRemove() {
+    if (this._container && this._container.parentNode) {
+      this._container.parentNode.removeChild(this._container);
+    }
+    this._map = null;
+  }
+}
+
   map.addControl(new maplibregl.ScaleControl({ maxWidth: 110, unit: 'metric' }), 'bottom-left');
+  map.addControl(new PinDropControl(), 'top-right');
   map.addControl(new maplibregl.NavigationControl({ visualizePitch: true }), 'top-right');
 
   let fellBack = false;
@@ -1692,6 +1776,11 @@ function breachBund(lat, lon, radiusCells = 2) {
 }
 
 function handleMapClick(lon, lat) {
+  if (state.pinDropMode) {
+    setPinDropMode(false);
+    dropLivePinAt(lon, lat);
+    return;
+  }
   if (state.profile === 'public' && state.hoveredBoundary) {
     activateCatalogBoundary(state.hoveredBoundary);
     return;
@@ -1715,14 +1804,9 @@ function handleMapClick(lon, lat) {
     runSimulation(false);
     return;
   }
+  if (state.profile === 'public') return;
   const hit = lngLatToCell(lon, lat);
   if (!hit) return;
-
-  if (state.profile === 'public') {
-    state.verdictTarget = { col: hit.col, row: hit.row, lat, lon };
-    renderSiteVerdict();
-    return;
-  }
 
   if (state.tool === 'floodpin') {
     const depthM = parseFloat($('fp-depth')?.value || '0.5') || 0.5;
@@ -1796,24 +1880,25 @@ function fmtSimOffset(sec, totalSec) {
   return `+${fmtMMSS(sec)}`;
 }
 
-function computeRecessionSummary(idx, thresholdM) {
-  if (!state.frames || state.frames.length < 2) return { label: '—', receded: false, endDepth: 0 };
-  const totalSec = Math.max(1, state.frames[state.frames.length - 1].time_s || 1);
+function computeRecessionSummary(idx, thresholdM, framesOverride) {
+  const frames = framesOverride || state.frames;
+  if (!frames || frames.length < 2) return { label: '—', receded: false, endDepth: 0 };
+  const totalSec = Math.max(1, frames[frames.length - 1].time_s || 1);
   let peakIdx = -1;
   let peakVal = 0;
-  for (let i = 0; i < state.frames.length; i++) {
-    const d = state.frames[i].depth[idx] || 0;
+  for (let i = 0; i < frames.length; i++) {
+    const d = frames[i].depth[idx] || 0;
     if (d > peakVal) {
       peakVal = d;
       peakIdx = i;
     }
   }
-  const endDepth = state.frames[state.frames.length - 1].depth[idx] || 0;
+  const endDepth = frames[frames.length - 1].depth[idx] || 0;
   if (peakVal < thresholdM) return { label: 'Dry', receded: true, endDepth };
-  for (let i = Math.max(0, peakIdx); i < state.frames.length; i++) {
-    if ((state.frames[i].depth[idx] || 0) < thresholdM) {
+  for (let i = Math.max(0, peakIdx); i < frames.length; i++) {
+    if ((frames[i].depth[idx] || 0) < thresholdM) {
       return {
-        label: `Recedes ${fmtSimOffset(state.frames[i].time_s, totalSec)}`,
+        label: `Recedes ${fmtSimOffset(frames[i].time_s, totalSec)}`,
         receded: true,
         endDepth,
       };
@@ -1826,33 +1911,97 @@ function computeRecessionSummary(idx, thresholdM) {
   };
 }
 
-function renderSiteVerdict() {
+function lookupPointAcrossBasins(lon, lat) {
+  const tryGrid = (grid, frames, basinId) => {
+    const meta = grid?.metadata;
+    if (!meta || !frames?.length) return null;
+    const [minLon, minLat, maxLon, maxLat] = meta.wgs84_bounds;
+    if (lon < minLon || lon > maxLon || lat < minLat || lat > maxLat) return null;
+    const col = Math.min(meta.cols - 1, Math.max(0, Math.floor(((lon - minLon) / (maxLon - minLon)) * meta.cols)));
+    const row = Math.min(meta.rows - 1, Math.max(0, Math.floor(((lat - minLat) / (maxLat - minLat)) * meta.rows)));
+    const idx = row * meta.cols + col;
+    return { grid, frames, basinId, col, row, idx, active: Boolean(meta.active_mask[idx]) };
+  };
+  let fallback = null;
+  if (state.profile === 'public' && state.liveOverlays.size > 0) {
+    for (const [basinId, ov] of state.liveOverlays.entries()) {
+      const hit = tryGrid(ov.grid, ov.frames, basinId);
+      if (hit && hit.active) return hit;
+      if (hit && !fallback) fallback = hit;
+    }
+  }
+  const primary = tryGrid(state.grid, state.frames, state.liveBasinId);
+  if (primary && primary.active) return primary;
+  return fallback || primary;
+}
+
+function dropLivePinAt(lon, lat) {
+  if (window.innerWidth <= 768) return;
+  state.verdictTarget = { lon, lat };
+  renderSiteVerdict(false);
+}
+
+function clearLivePin() {
+  setPinDropMode(false);
+  state.verdictTarget = null;
+  if ($('site-verdict')) $('site-verdict').classList.add('hidden');
+  if (state.verdictMarker) {
+    state.verdictMarker.remove();
+    state.verdictMarker = null;
+  }
+}
+
+function renderSiteVerdict(isFrameTick = false) {
   const card = $('site-verdict');
-  if (!card || !state.verdictTarget || !state.grid || !state.frames.length) return;
-  const { col, row, lat, lon } = state.verdictTarget;
-  const meta = state.grid.metadata;
-  const env = state.grid.envelope;
-  const idx = row * meta.cols + col;
+  if (!card || !state.verdictTarget) return;
+  const { lat, lon } = state.verdictTarget;
+  const hit = lookupPointAcrossBasins(lon, lat);
   card.classList.remove('hidden');
 
-  if (!meta.active_mask[idx]) {
-    $('sv-title').textContent = `${lat.toFixed(4)}°, ${lon.toFixed(4)}°`;
+  const placePinMarker = (color) => {
+    if (!map || typeof maplibregl === 'undefined') return;
+    if (isFrameTick && state.verdictMarker) return;
+    if (state.verdictMarker) state.verdictMarker.remove();
+    const m = new maplibregl.Marker({ color, draggable: true }).setLngLat([lon, lat]).addTo(map);
+    let lastDragTs = 0;
+    m.on('drag', () => {
+      const now = performance.now();
+      if (now - lastDragTs < 60) return;
+      lastDragTs = now;
+      const p = m.getLngLat();
+      state.verdictTarget = { lon: p.lng, lat: p.lat };
+      renderSiteVerdict(true);
+    });
+    m.on('dragend', () => {
+      const p = m.getLngLat();
+      state.verdictTarget = { lon: p.lng, lat: p.lat };
+      renderSiteVerdict(false);
+    });
+    state.verdictMarker = m;
+  };
+
+  if (!hit || !hit.active) {
+    if (!isFrameTick) $('sv-title').textContent = `${lat.toFixed(4)}°, ${lon.toFixed(4)}°`;
     $('sv-badge').className = 'lm-badge low';
     $('sv-badge').textContent = 'NO DATA';
-    $('sv-summary').textContent = 'This coordinate lies outside the active terrain coverage mask.';
+    $('sv-summary').textContent = 'This coordinate lies outside active live flood coverage.';
     $('sv-stats').innerHTML = '';
+    placePinMarker('#64748b');
     return;
   }
 
+  const { grid, frames, idx } = hit;
+  const env = grid.envelope;
   const ffeM = parseFloat($('sv-ffe-select')?.value || '0') || 0;
+  const fIdx = Math.min(state.frameIdx, frames.length - 1);
+  const rawNowM = frames[fIdx]?.depth?.[idx] || 0;
   const rawPeakM = env.max_depth_m[idx] || 0;
   const cut = state.displayPrefs.depthCutoffM || 0.08;
+  const isNowWet = rawNowM >= cut;
   const isFlooded = rawPeakM >= cut;
-  const peakM = isFlooded ? rawPeakM : 0;
   const netM = isFlooded ? Math.max(0, rawPeakM - ffeM) : 0;
-  const onsetS = env.onset_time_s[idx];
-  const totalSec = Math.max(1, state.frames[state.frames.length - 1].time_s || 1);
-  const recInfo = computeRecessionSummary(idx, env.threshold_m || 0.15);
+  const totalSec = Math.max(1, frames[frames.length - 1].time_s || 1);
+  const recInfo = computeRecessionSummary(idx, env.threshold_m || 0.15, frames);
 
   let lvl = 'low';
   let label = 'DRY';
@@ -1864,54 +2013,52 @@ function renderSiteVerdict() {
   } else if (netM >= 0.15) {
     lvl = 'moderate';
     label = 'WATCH · MOVE CARS';
-    msg = `Reaches ${fmtDepth(netM, 2)} above floor (${fmtDepth(rawPeakM, 2)} ground — car floor height). Move parked vehicles and monitor JPS / METMalaysia alerts. ${recInfo.receded ? recInfo.label : 'Standing water persists'}.`;
+    msg = `Reaches ${fmtDepth(netM, 2)} above floor (${fmtDepth(rawPeakM, 2)} ground — car floor height). Move parked vehicles and monitor official alerts. ${recInfo.receded ? recInfo.label : 'Standing water persists'}.`;
   } else if (netM >= cut) {
     lvl = 'moderate';
     label = 'WATCH';
     msg = `Shallow ponding up to ${fmtDepth(netM, 2)} above floor (${fmtDepth(rawPeakM, 2)} ground). Avoid low driveways and monitor official alerts.`;
   }
 
-  $('sv-title').textContent = `${lat.toFixed(4)}°, ${lon.toFixed(4)}°`;
   $('sv-badge').className = `lm-badge ${lvl}`;
   $('sv-badge').textContent = label;
   $('sv-summary').textContent = msg;
-  // Async reverse-geocode to show nearest street / neighborhood name (XSS-safe textContent)
-  const revKey = `rev:${lat.toFixed(4)},${lon.toFixed(4)}`;
-  const cachedPlace = readNominatimCache(revKey);
-  if (cachedPlace) {
-    $('sv-title').textContent = cachedPlace;
-    $('sv-title').title = `${lat.toFixed(4)}°, ${lon.toFixed(4)}°`;
-  } else {
-    fetch(`https://nominatim.openstreetmap.org/reverse?format=json&zoom=16&lat=${lat.toFixed(5)}&lon=${lon.toFixed(5)}`)
-      .then((r) => (r.ok ? r.json() : null))
-      .then((data) => {
-        const a = data?.address || {};
-        const primary = a.road || a.neighbourhood || a.suburb || a.village || a.town || a.city;
-        const secondary = a.suburb || a.town || a.city || a.state;
-        const place = primary && secondary && primary !== secondary ? `${primary}, ${secondary}` : (primary || secondary);
-        if (place) {
-          writeNominatimCache(revKey, place);
-          if (state.verdictTarget && Math.abs(state.verdictTarget.lat - lat) < 1e-5 && Math.abs(state.verdictTarget.lon - lon) < 1e-5) {
-            $('sv-title').textContent = place;
-            $('sv-title').title = `${lat.toFixed(4)}°, ${lon.toFixed(4)}°`;
+  if (!isFrameTick) {
+    $('sv-title').textContent = `${lat.toFixed(4)}°, ${lon.toFixed(4)}°`;
+    const revKey = `rev:${lat.toFixed(4)},${lon.toFixed(4)}`;
+    const cachedPlace = readNominatimCache(revKey);
+    if (cachedPlace) {
+      $('sv-title').textContent = cachedPlace;
+      $('sv-title').title = `${lat.toFixed(4)}°, ${lon.toFixed(4)}°`;
+    } else {
+      fetch(`https://nominatim.openstreetmap.org/reverse?format=json&zoom=16&lat=${lat.toFixed(5)}&lon=${lon.toFixed(5)}`)
+        .then((r) => (r.ok ? r.json() : null))
+        .then((data) => {
+          const a = data?.address || {};
+          const primary = a.road || a.neighbourhood || a.suburb || a.village || a.town || a.city;
+          const secondary = a.suburb || a.town || a.city || a.state;
+          const place = primary && secondary && primary !== secondary ? `${primary}, ${secondary}` : (primary || secondary);
+          if (place) {
+            writeNominatimCache(revKey, place);
+            if (state.verdictTarget && Math.abs(state.verdictTarget.lat - lat) < 1e-5 && Math.abs(state.verdictTarget.lon - lon) < 1e-5) {
+              $('sv-title').textContent = place;
+              $('sv-title').title = `${lat.toFixed(4)}°, ${lon.toFixed(4)}°`;
+            }
           }
-        }
-      })
-      .catch(() => {});
+        })
+        .catch(() => {});
+    }
   }
-  if (map && typeof maplibregl !== 'undefined') {
-    if (state.verdictMarker) state.verdictMarker.remove();
-    const color = lvl === 'danger' ? '#e11d48' : lvl === 'moderate' ? '#d97706' : '#0284c7';
-    state.verdictMarker = new maplibregl.Marker({ color }).setLngLat([lon, lat]).addTo(map);
-  }
-  const onsetTxt = isFlooded && onsetS >= 0 ? fmtSimOffset(onsetS, totalSec) : 'Never';
+  const color = lvl === 'danger' ? '#e11d48' : lvl === 'moderate' ? '#d97706' : '#0284c7';
+  placePinMarker(color);
+  const nowDisp = isNowWet ? fmtDepth(rawNowM, 2) : (rawNowM > 0.005 ? fmtDepth(rawNowM, 2) : '0.00 m');
   const peakDisp = isFlooded ? fmtDepth(rawPeakM, 2) : `< ${Math.round(cut * 100)} cm`;
   const padBtn = $('btn-sv-raise');
   if (padBtn) padBtn.style.display = state.profile === 'public' ? 'none' : '';
   $('sv-stats').innerHTML = `
-    <div class="mini-stat"><div class="mini-k">Peak Depth</div><div class="mini-v">${peakDisp}</div></div>
+    <div class="mini-stat"><div class="mini-k">Current Depth</div><div class="mini-v">${nowDisp}</div></div>
+    <div class="mini-stat"><div class="mini-k">Peak (5d)</div><div class="mini-v">${peakDisp}</div></div>
     <div class="mini-stat"><div class="mini-k">Above Floor</div><div class="mini-v">${fmtDepth(netM, 2)}</div></div>
-    <div class="mini-stat"><div class="mini-k">Arrival</div><div class="mini-v">${onsetTxt}</div></div>
     <div class="mini-stat"><div class="mini-k">Recession</div><div class="mini-v">${isFlooded ? recInfo.label : 'Dry'}</div></div>
   `;
 }
@@ -3305,6 +3452,7 @@ function updateTimeReadout() {
   }
   updateFrameTelemetry();
   updateLiveMetrics();
+  if (state.verdictTarget) renderSiteVerdict(true);
 }
 
 function updateInterventionBar() {
@@ -3743,8 +3891,8 @@ function wireUi() {
     $('toast-bar').classList.add('hidden');
     runSimulation(state.lastCompareMode);
   });
-  $('btn-sv-close').addEventListener('click', () => $('site-verdict').classList.add('hidden'));
-  $('sv-ffe-select').addEventListener('change', renderSiteVerdict);
+  $('btn-sv-close').addEventListener('click', clearLivePin);
+  $('sv-ffe-select').addEventListener('change', () => renderSiteVerdict(false));
   $('btn-sv-raise').addEventListener('click', () => {
     if (!state.verdictTarget) return;
     state.stressSite = { lat: state.verdictTarget.lat, lon: state.verdictTarget.lon };

@@ -1565,6 +1565,37 @@ input:focus-visible {
   .seg-btn {
     min-height: 36px;
   }
+  .arus-pin-ctrl {
+    display: none !important;
+  }
+}
+.arus-pin-ctrl-btn {
+  display: flex !important;
+  align-items: center;
+  justify-content: center;
+  width: 29px;
+  height: 29px;
+  padding: 0;
+  cursor: grab;
+  color: #1e293b;
+  touch-action: none;
+}
+.arus-pin-ctrl-btn:active {
+  cursor: grabbing;
+}
+.arus-pin-ctrl-btn.active {
+  background: #e0f2fe !important;
+  color: #0284c7 !important;
+}
+body.pin-drop-mode .maplibregl-canvas-container {
+  cursor: crosshair !important;
+}
+.arus-pin-ghost {
+  position: fixed;
+  z-index: 9999;
+  pointer-events: none;
+  transform: translate(-50%, -100%);
+  filter: drop-shadow(0 3px 6px rgba(15, 23, 42, 0.35));
 }
 .modal-wide {
   width: min(680px, calc(100vw - 32px));
