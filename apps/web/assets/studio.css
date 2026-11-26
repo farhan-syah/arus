@@ -352,7 +352,6 @@ button, input, select, textarea {
   font-size: 12px;
   text-align: center;
 }
-.tool-btn[data-tool="inspect"] { grid-column: span 2; }
 
 .divider {
   height: 1px;
@@ -832,12 +831,155 @@ input[type="range"] {
   top: 14px;
 }
 [data-profile="public"] #drawer,
+[data-profile="public"] #btn-mob-tools,
 [data-profile="public"] #btn-open-sim,
 [data-profile="public"] #btn-saved-sims,
 [data-profile="public"] #btn-export-asc,
 [data-profile="public"] #btn-export-csv,
 [data-profile="public"] [data-layer="diff"] {
   display: none !important;
+}
+[data-profile="researcher"][data-sim-phase="draft"] #timeline,
+[data-profile="researcher"][data-sim-phase="draft"] #forecast-bar,
+[data-profile="researcher"][data-sim-phase="draft"] .layer-panel,
+[data-profile="researcher"][data-sim-phase="draft"] .left-stack,
+[data-profile="researcher"][data-sim-phase="draft"] #inspector,
+[data-profile="researcher"][data-sim-phase="draft"] #btn-mob-summary,
+[data-profile="researcher"][data-sim-phase="draft"] #btn-mob-layers,
+[data-profile="researcher"][data-sim-phase="solving"] #timeline,
+[data-profile="researcher"][data-sim-phase="solving"] #forecast-bar,
+[data-profile="researcher"][data-sim-phase="solving"] .layer-panel,
+[data-profile="researcher"][data-sim-phase="solving"] .left-stack,
+[data-profile="researcher"][data-sim-phase="solving"] #inspector,
+[data-profile="researcher"][data-sim-phase="solving"] #btn-mob-summary,
+[data-profile="researcher"][data-sim-phase="solving"] #btn-mob-layers {
+  display: none !important;
+}
+.drawer-top-head {
+  padding-bottom: 6px;
+  border-bottom: 1px solid var(--hud-border);
+}
+.sim-phase-badge {
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  padding: 2px 8px;
+  border-radius: 999px;
+}
+.sim-phase-badge.draft {
+  background: rgba(2, 132, 199, 0.14);
+  color: #0369a1;
+}
+.sim-phase-badge.results {
+  background: rgba(16, 185, 129, 0.16);
+  color: #047857;
+}
+.sim-phase-pane {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.sim-summary-card,
+.sim-result-meta {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 8px 10px;
+  border-radius: 8px;
+  background: var(--hud-well);
+  border: 1px solid var(--hud-border);
+  font-size: 11.5px;
+  color: var(--ink-2);
+  line-height: 1.35;
+}
+.sim-summary-text {
+  min-width: 0;
+  flex: 1;
+}
+.sim-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 95;
+  background: rgba(15, 23, 42, 0.36);
+  backdrop-filter: blur(4px);
+  -webkit-backdrop-filter: blur(4px);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 16px;
+}
+.sim-overlay-card {
+  position: static;
+  width: min(400px, 92vw);
+  padding: 16px 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.sim-overlay-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+.sim-overlay-title-row {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  font-size: 14px;
+  color: var(--ink-1);
+}
+.sim-spinner-lg {
+  width: 16px;
+  height: 16px;
+  border-width: 2.5px;
+}
+.sim-elapsed {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--ink-2);
+}
+.sim-overlay-sub {
+  font-size: 12.5px;
+  color: var(--ink-2);
+}
+.sim-stepper {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 6px;
+}
+.sim-step {
+  font-size: 11.5px;
+  padding: 6px 8px;
+  border-radius: 7px;
+  background: var(--hud-well);
+  border: 1px solid var(--hud-border);
+  color: var(--ink-3);
+  font-weight: 500;
+}
+.sim-step.active {
+  border-color: var(--accent);
+  color: var(--accent);
+  font-weight: 600;
+}
+.sim-step.done {
+  border-color: rgba(16, 185, 129, 0.45);
+  color: #047857;
+}
+.sim-overlay-foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding-top: 4px;
+  border-top: 1px solid var(--hud-border);
+}
+.sim-overlay-note {
+  font-size: 11px;
+  color: var(--ink-3);
 }
 .saved-sims-list {
   display: flex;
@@ -1569,11 +1711,16 @@ input:focus-visible {
     font-size: 11px;
   }
   .drawer {
-    top: 106px;
+    display: none;
+    top: 98px;
     left: 8px;
     right: 8px;
     width: auto;
-    max-height: 45vh;
+    max-height: 54vh;
+    z-index: 30;
+  }
+  body.mob-tools-open .drawer {
+    display: flex;
   }
   .btn,
   .seg-btn {
@@ -1884,7 +2031,8 @@ body.pin-drop-mode .maplibregl-canvas-container {
 }
 [data-profile="researcher"] .left-stack {
   top: auto;
-  bottom: 102px;
+  left: 280px;
+  bottom: 62px;
 }
 .lm-head {
   display: flex;

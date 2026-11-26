@@ -97,15 +97,11 @@ fn StudioShell() -> Element {
                     button { class: "seg-btn", "data-profile": "researcher", title: "What-if simulation studio, interventions, and GIS exports", "Simulate" }
                 }
                 button { id: "btn-open-layers", class: "btn", title: "Map layers, display, and units", "Layers & View" }
-                button { id: "btn-open-sim", class: "btn", title: "Simulation window, initial state, stress-test, and physics", "Settings…" }
-                button { id: "btn-saved-sims", class: "btn", title: "Save or open configs and completed simulations (stored locally in your browser)", "Saved (0)" }
                 button { id: "btn-share", class: "btn", title: "Copy shareable link (Live view or Simulation scenario)", "Share" }
                 button { id: "btn-sources", class: "btn", "Sources" }
                 button { id: "btn-about", class: "btn", title: "About ARUS, disclaimer, self-hosting, and feedback", "About" }
                 button { id: "btn-snap", class: "btn", title: "Save PNG snapshot", "PNG" }
                 button { id: "btn-rec", class: "btn", title: "Record video locally in your browser", "Rec" }
-                button { id: "btn-export-asc", class: "btn", ".ASC" }
-                button { id: "btn-export-csv", class: "btn", ".CSV" }
                 button { id: "btn-app-settings", class: "btn btn-icon", title: "Settings & Manage Locations", "aria-label": "Settings",
                     svg {
                         width: "15",
@@ -129,16 +125,34 @@ fn StudioShell() -> Element {
             button { id: "btn-focus-clear", class: "btn btn-xs", "aria-label": "Clear boundary focus", "×" }
         }
         div { class: "mobile-dock mobile-only",
+            button { id: "btn-mob-tools", class: "hud mob-pill", title: "Toggle Simulation Workbench", "Tools ▾" }
             button { id: "btn-mob-summary", class: "hud mob-pill", title: "Toggle Flood Outlook & Index",
                 span { id: "mob-sum-dot", class: "mob-dot low" }
                 span { id: "mob-sum-text", "Flood Summary ▾" }
             }
             button { id: "btn-mob-layers", class: "hud mob-pill", title: "Toggle Map Layers & Legend", "Layers ▾" }
         }
-        div { id: "sim-progress", class: "hud sim-progress hidden", role: "status", "aria-live": "polite",
-            span { class: "sim-spinner" }
-            span { id: "sim-progress-text", "Running simulation…" }
-            button { id: "btn-sim-abort", class: "btn btn-xs", "Cancel" }
+        div { id: "sim-progress", class: "sim-overlay hidden", role: "dialog", "aria-modal": "true", "aria-live": "polite",
+            div { class: "hud sim-overlay-card",
+                div { class: "sim-overlay-head",
+                    div { class: "sim-overlay-title-row",
+                        span { class: "sim-spinner sim-spinner-lg" }
+                        strong { "Running Simulation" }
+                    }
+                    span { id: "sim-elapsed", class: "sim-elapsed", "00:00.0" }
+                }
+                div { id: "sim-progress-text", class: "sim-overlay-sub", "Preparing scenario…" }
+                div { class: "sim-stepper",
+                    div { id: "sim-step-0", class: "sim-step active", "1. Terrain DEM" }
+                    div { id: "sim-step-1", class: "sim-step", "2. Rainfall & Tide" }
+                    div { id: "sim-step-2", class: "sim-step", "3. 2D Solver" }
+                    div { id: "sim-step-3", class: "sim-step", "4. Rendering" }
+                }
+                div { class: "sim-overlay-foot",
+                    span { class: "sim-overlay-note", "Canvas locked until solve completes." }
+                    button { id: "btn-sim-abort", class: "btn", r#type: "button", "Cancel" }
+                }
+            }
         }
         div { id: "toast-bar", class: "hud toast-bar hidden", role: "alert", "aria-live": "assertive",
             span { id: "toast-text", "" }
@@ -196,69 +210,101 @@ fn StudioShell() -> Element {
             }
         }
 
-        // Left Scenario & Tools Drawer
+        // Left Scenario & Tools Drawer (Phase-Gated: Draft Setup vs Results Inspection)
         aside { id: "drawer", class: "hud drawer",
-            div { class: "sec-head",
-                span { class: "sec-title", "Tools" }
-                label { class: "upload-link", r#for: "file-asc", "Upload .ASC" }
-                input { id: "file-asc", r#type: "file", accept: ".asc,.txt", style: "display:none;" }
-            }
-            div { class: "tool-grid",
-                button { class: "btn tool-btn active", "data-tool": "inspect", "Inspect" }
-                button { class: "btn tool-btn", "data-tool": "xsection", "Profile A–B" }
-                button { class: "btn tool-btn", "data-tool": "pick", "Pick Basin" }
-                button { class: "btn tool-btn", "data-tool": "floodpin", title: "Drop observed ground-report flood depth pin to seed top-level map", "Flood Pin" }
-                button { class: "btn tool-btn", "data-tool": "bund", title: "Click points along a riverbank to draw a continuous levee bund", "Bund Line" }
-                button { class: "btn tool-btn", "data-tool": "pond", "Pond -0.8m" }
+            div { class: "sec-head drawer-top-head",
+                span { id: "sim-phase-badge", class: "sim-phase-badge draft", "Draft Setup" }
+                button { id: "btn-saved-sims", class: "btn btn-xs", title: "Open Simulation Directory (saved runs & configs)", "Runs (0)" }
             }
 
-            div { id: "floodpin-bar", class: "intervention-bar hidden",
-                span { "Pins: " strong { id: "fp-count", "0" } }
-                div { class: "iv-actions",
-                    select { id: "fp-depth", class: "ctl-select ctl-select-xs", title: "Observed water depth for next pin",
-                        option { value: "0.2", "0.2m Ankle" }
-                        option { value: "0.5", selected: true, "0.5m Knee" }
-                        option { value: "1.0", "1.0m Waist" }
-                        option { value: "1.5", "1.5m Chest" }
-                    }
-                    button { id: "btn-fp-clear", class: "btn btn-xs", "Clear" }
+            div { id: "sim-phase-draft", class: "sim-phase-pane",
+                div { class: "sim-summary-card",
+                    div { id: "sim-draft-summary", class: "sim-summary-text", "2d Forecast · Live t=0 · Drain 50%" }
+                    button { id: "btn-open-sim", class: "btn btn-xs", r#type: "button", title: "Configure rainfall, horizon, drainage, and physics", "Parameters…" }
                 }
-            }
-
-            div { id: "intervention-bar", class: "intervention-bar hidden",
-                span { "Edits: " strong { id: "iv-count", "0 cells" } }
-                div { class: "iv-actions",
-                    select { id: "bund-height", class: "ctl-select ctl-select-xs", title: "Bund crest height above terrain",
-                        option { value: "0.8", "+0.8m" }
-                        option { value: "1.5", "+1.5m" }
-                        option { value: "2.0", selected: true, "+2.0m" }
-                        option { value: "2.5", "+2.5m" }
-                    }
-                    button { id: "btn-iv-breach", class: "btn btn-xs", title: "Punch a breach gap in the middle of the bund to compare Intact vs Destroyed", "Breach" }
-                    button { id: "btn-iv-undo", class: "btn btn-xs", "Undo" }
-                    button { id: "btn-iv-clear", class: "btn btn-xs", "Clear" }
-                }
-            }
-
-            div { class: "cta-stack",
-                button { id: "btn-run", class: "btn primary", "Run Simulation" }
-                button { id: "btn-storm-test", class: "btn", title: "Run a 100-yr design thunderstorm (220 mm/hr) to stress-test drainage or levees", "Test 100-yr Storm" }
-                button { id: "btn-compare", class: "btn compare hidden", disabled: true, "Compare vs Baseline" }
-            }
-
-            div { id: "nwp-section", class: "nwp-section",
-                div { class: "divider" }
-
                 div { class: "sec-head",
-                    span { class: "sec-title", "Multi-Model NWP" }
-                    button { id: "btn-nwp", class: "btn btn-xs", "Fetch Live" }
+                    span { class: "sec-title", "Pre-Sim Setup Tools" }
+                    label { class: "upload-link", r#for: "file-asc", "Upload .ASC" }
+                    input { id: "file-asc", r#type: "file", accept: ".asc,.txt", style: "display:none;" }
                 }
-                div { id: "nwp-card", class: "nwp-card hidden",
-                    div { class: "nwp-head",
-                        span { id: "nwp-agree", class: "nwp-badge", "Agreement" }
-                        button { id: "btn-nwp-apply", class: "upload-link", "Apply Peak" }
+                div { class: "tool-grid",
+                    button { class: "btn tool-btn", "data-tool": "pick", "Pick Basin" }
+                    button { class: "btn tool-btn", "data-tool": "floodpin", title: "Drop observed ground-report flood depth pin to seed initial water", "Flood Pin" }
+                    button { class: "btn tool-btn", "data-tool": "bund", title: "Click points along a riverbank to draw a continuous levee bund", "Bund Line" }
+                    button { class: "btn tool-btn", "data-tool": "pond", "Pond -0.8m" }
+                }
+
+                div { id: "floodpin-bar", class: "intervention-bar hidden",
+                    span { "Pins: " strong { id: "fp-count", "0" } }
+                    div { class: "iv-actions",
+                        select { id: "fp-depth", class: "ctl-select ctl-select-xs", title: "Observed water depth for next pin",
+                            option { value: "0.2", "0.2m Ankle" }
+                            option { value: "0.5", selected: true, "0.5m Knee" }
+                            option { value: "1.0", "1.0m Waist" }
+                            option { value: "1.5", "1.5m Chest" }
+                        }
+                        button { id: "btn-fp-clear", class: "btn btn-xs", "Clear" }
                     }
-                    div { id: "nwp-rows", class: "nwp-rows" }
+                }
+
+                div { id: "intervention-bar", class: "intervention-bar hidden",
+                    span { "Edits: " strong { id: "iv-count", "0 cells" } }
+                    div { class: "iv-actions",
+                        select { id: "bund-height", class: "ctl-select ctl-select-xs", title: "Bund crest height above terrain",
+                            option { value: "0.8", "+0.8m" }
+                            option { value: "1.5", "+1.5m" }
+                            option { value: "2.0", selected: true, "+2.0m" }
+                            option { value: "2.5", "+2.5m" }
+                        }
+                        button { id: "btn-iv-breach", class: "btn btn-xs", title: "Punch a breach gap in the middle of the bund to compare Intact vs Destroyed", "Breach" }
+                        button { id: "btn-iv-undo", class: "btn btn-xs", "Undo" }
+                        button { id: "btn-iv-clear", class: "btn btn-xs", "Clear" }
+                    }
+                }
+
+                div { class: "cta-stack",
+                    button { id: "btn-run", class: "btn primary", "Run Simulation" }
+                    button { id: "btn-storm-test", class: "btn", title: "Run a 100-yr design thunderstorm (220 mm/hr) to stress-test drainage or levees", "Test 100-yr Storm" }
+                    button { id: "btn-compare", class: "btn compare hidden", disabled: true, "Compare vs Baseline" }
+                }
+
+                div { id: "nwp-section", class: "nwp-section",
+                    div { class: "divider" }
+
+                    div { class: "sec-head",
+                        span { class: "sec-title", "Multi-Model NWP" }
+                        button { id: "btn-nwp", class: "btn btn-xs", "Fetch Live" }
+                    }
+                    div { id: "nwp-card", class: "nwp-card hidden",
+                        div { class: "nwp-head",
+                            span { id: "nwp-agree", class: "nwp-badge", "Agreement" }
+                            button { id: "btn-nwp-apply", class: "upload-link", "Apply Peak" }
+                        }
+                        div { id: "nwp-rows", class: "nwp-rows" }
+                    }
+                }
+            }
+
+            div { id: "sim-phase-results", class: "sim-phase-pane hidden",
+                div { id: "sim-result-meta", class: "sim-result-meta", "Completed simulation" }
+                div { class: "sec-head",
+                    span { class: "sec-title", "Inspect Results" }
+                }
+                div { class: "tool-grid",
+                    button { class: "btn tool-btn active", "data-tool": "inspect", "Inspect Cell" }
+                    button { class: "btn tool-btn", "data-tool": "xsection", "Profile A–B" }
+                }
+                div { class: "sec-head",
+                    span { class: "sec-title", "GIS Exports" }
+                }
+                div { class: "tool-grid",
+                    button { id: "btn-export-asc", class: "btn", "Export .ASC" }
+                    button { id: "btn-export-csv", class: "btn", "Export .CSV" }
+                }
+                div { class: "divider" }
+                div { class: "cta-stack",
+                    button { id: "btn-sim-fork", class: "btn primary", r#type: "button", title: "Clone this run's parameters and bunds into a new editable draft", "Fork & Edit as New Draft" }
+                    button { id: "btn-sim-new", class: "btn", r#type: "button", title: "Start a clean draft at the current map view", "+ New Clean Draft" }
                 }
             }
         }
@@ -675,7 +721,8 @@ fn StudioShell() -> Element {
                     button { id: "btn-sim-reset", class: "btn", "Reset defaults" }
                     div { class: "modal-foot-right",
                         button { id: "btn-sim-cancel", class: "btn", "Cancel" }
-                        button { id: "btn-sim-apply", class: "btn primary", "Apply & Run" }
+                        button { id: "btn-sim-apply", class: "btn", "Apply to Draft" }
+                        button { id: "btn-sim-apply-run", class: "btn primary", "Apply & Run" }
                     }
                 }
             }

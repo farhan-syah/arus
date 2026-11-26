@@ -1873,20 +1873,26 @@ function handleMapClick(lon, lat) {
     state.center = { lon, lat };
     state.uploadedDem = null;
     state.cachedDem = null;
-    $('coord-search').value = `${lat.toFixed(4)}, ${lon.toFixed(4)}`;
-    setTool('inspect');
-    runSimulation(false);
+    if ($('coord-search')) $('coord-search').value = `${lat.toFixed(4)}, ${lon.toFixed(4)}`;
+    setCustomPresetLabel(`Custom · ${lat.toFixed(4)}, ${lon.toFixed(4)}`);
+    if (map) map.flyTo({ center: [lon, lat], zoom: Math.max(map.getZoom(), 11.5), duration: 700 });
+    updateSimDraftSummary();
+    showToast('Basin center updated in draft — click Run Simulation when ready.');
     return;
   }
   if (state.profile === 'public') return;
-  const hit = lngLatToCell(lon, lat);
-  if (!hit) return;
-
   if (state.tool === 'floodpin') {
     const depthM = parseFloat($('fp-depth')?.value || '0.5') || 0.5;
     state.observedGauges.push({ lat, lon, depth_m: depthM, radius_cells: 3 });
     updateFloodPinBar();
-    showToast(`Added observed ${fmtDepth(depthM, 1)} flood pin (${state.observedGauges.length} total). Click Run Simulation to update top-level map.`);
+    showToast(`Added observed ${fmtDepth(depthM, 1)} flood pin (${state.observedGauges.length} total). Click Run Simulation when ready.`);
+    return;
+  }
+  const hit = lngLatToCell(lon, lat);
+  if (!hit) {
+    if (state.tool === 'bund' || state.tool === 'pond') {
+      showToast('Run a baseline simulation first (or click inside the active basin) before placing bunds/ponds.');
+    }
     return;
   }
 
@@ -2726,15 +2732,93 @@ function showToast(message, canRetry = false) {
   }
 }
 
-function setSimProgress(text) {
-  const pill = $('sim-progress');
-  if (!pill) return;
-  if (!text) {
-    pill.classList.add('hidden');
-  } else {
-    $('sim-progress-text').textContent = text;
-    pill.classList.remove('hidden');
+let simProgressTimer = null;
+let simProgressStartMs = 0;
+
+function updateSimDraftSummary() {
+  const el = $('sim-draft-summary');
+  if (!el) return;
+  const sc = state.simConfig;
+  const modeStr = sc.mode === 'stress'
+    ? `${sc.stressMmDay}mm/d × ${sc.stressDays}d Stress`
+    : (sc.mode === 'physics'
+      ? `${sc.rainfallMmHr}mm/hr · ${sc.durationS}s`
+      : `${sc.horizon || '2d'} Forecast`);
+  const initStr = sc.startDry ? 'Dry t=0' : 'Live t=0';
+  const drainPct = Math.round((Number.isFinite(sc.stormDrainScore) ? sc.stormDrainScore : 0.5) * 100);
+  const demTag = state.uploadedDem ? ' · Custom .ASC' : '';
+  el.textContent = `${modeStr} · ${initStr} · Drain ${drainPct}%${demTag}`;
+}
+
+function updateSimResultMeta() {
+  const el = $('sim-result-meta');
+  if (!el) return;
+  const m = state.grid?.metadata;
+  const gridStr = m ? `${m.cols}×${m.rows} · ${Math.round(m.dx_m)}m` : '—';
+  const eng = state.activeEngine || 'Solved';
+  const massOk = state.grid?.budget_assessment?.passed !== false ? 'Mass OK' : 'Mass Warn';
+  el.textContent = `${eng} · ${gridStr} · ${massOk}`;
+}
+
+function setSimPhase(phase) {
+  const next = (phase === 'solving' || phase === 'results') ? phase : 'draft';
+  state.simPhase = next;
+  document.documentElement.dataset.simPhase = next;
+  const badge = $('sim-phase-badge');
+  if (badge) {
+    badge.className = `sim-phase-badge ${next === 'results' ? 'results' : 'draft'}`;
+    badge.textContent = next === 'results' ? 'Results (Read-Only)' : (next === 'solving' ? 'Solving…' : 'Draft Setup');
   }
+  $('sim-phase-draft')?.classList.toggle('hidden', next === 'results');
+  $('sim-phase-results')?.classList.toggle('hidden', next !== 'results');
+  if (next === 'draft') {
+    updateSimDraftSummary();
+    if (state.profile === 'researcher' && (state.tool === 'inspect' || state.tool === 'xsection')) {
+      setTool('bund');
+    }
+    if ($('inspector')) $('inspector').classList.add('hidden');
+  } else if (next === 'results') {
+    updateSimResultMeta();
+    if (state.profile === 'researcher' && !['inspect', 'xsection'].includes(state.tool)) {
+      setTool('inspect');
+    }
+  }
+}
+
+function setSimProgress(text, stageIdx = -1) {
+  const overlay = $('sim-progress');
+  if (!overlay) return;
+  if (!text) {
+    overlay.classList.add('hidden');
+    if (simProgressTimer) {
+      clearInterval(simProgressTimer);
+      simProgressTimer = null;
+    }
+    return;
+  }
+  if ($('sim-progress-text')) $('sim-progress-text').textContent = text;
+  if (overlay.classList.contains('hidden')) {
+    simProgressStartMs = performance.now();
+    if ($('sim-elapsed')) $('sim-elapsed').textContent = '00:00.0';
+    if (simProgressTimer) clearInterval(simProgressTimer);
+    simProgressTimer = setInterval(() => {
+      const sec = (performance.now() - simProgressStartMs) / 1000;
+      const m = Math.floor(sec / 60);
+      const s = sec - m * 60;
+      if ($('sim-elapsed')) {
+        $('sim-elapsed').textContent = `${String(m).padStart(2, '0')}:${s < 10 ? '0' : ''}${s.toFixed(1)}`;
+      }
+    }, 100);
+  }
+  if (stageIdx >= 0) {
+    for (let i = 0; i < 4; i++) {
+      const stepEl = $(`sim-step-${i}`);
+      if (!stepEl) continue;
+      stepEl.classList.toggle('done', i < stageIdx);
+      stepEl.classList.toggle('active', i === stageIdx);
+    }
+  }
+  overlay.classList.remove('hidden');
 }
 
 async function runSimulation(compareMode) {
@@ -2747,6 +2831,11 @@ async function runSimulation(compareMode) {
   const abort = new AbortController();
   state.activeAbort = abort;
   state.lastCompareMode = Boolean(compareMode);
+  const wasPlaying = state.playing;
+  state.playing = false;
+  if ($('btn-play')) $('btn-play').textContent = '▶';
+  if ($('fb-play')) $('fb-play').textContent = '▶';
+  if (state.profile === 'researcher') setSimPhase('solving');
 
   const btn = compareMode ? $('btn-compare') : $('btn-run');
   const orig = btn ? btn.innerHTML : '';
@@ -2754,11 +2843,13 @@ async function runSimulation(compareMode) {
     btn.disabled = true;
     btn.innerHTML = '<span class="spinner"></span>Solving…';
   }
-  setSimProgress('Sampling terrain DEM…');
+  setSimProgress('Sampling terrain DEM…', 0);
+  let solvedOk = false;
   try {
     const payload = await buildRequestPayload();
     if (abort.signal.aborted) return;
-    setSimProgress(compareMode ? 'Solving Baseline vs Intervention…' : 'Solving 2D shallow water…');
+    setSimProgress('Applying rainfall & tide forcing…', 1);
+    setSimProgress(compareMode ? 'Solving Baseline vs Intervention…' : 'Solving 2D shallow water…', 2);
     if (compareMode) {
       // Cap interactive compare window to 24h (360s, <=240x) so Baseline vs Intervention solves in <2s
       if (payload.spatial_rain_grid && Array.isArray(payload.spatial_rain_grid.hourly_mm)) {
@@ -2902,7 +2993,7 @@ async function runSimulation(compareMode) {
           }
         }
         state.frameRasterCache.clear();
-        setSimProgress('Loading frames…');
+        setSimProgress('Loading frames & rendering…', 3);
         await loadRun(summary.run_id);
         if (!state.fixedView && !state.boundaryGrid) {
           const [minLon, minLat, maxLon, maxLat] = summary.wgs84_bounds;
@@ -2915,9 +3006,10 @@ async function runSimulation(compareMode) {
         }
       }
     }
+    solvedOk = true;
   } catch (err) {
     if (err && err.name === 'AbortError') {
-      showToast('Simulation cancelled.');
+      showToast('Simulation cancelled — draft edits preserved.');
     } else {
       showToast(`Simulation error: ${String(err.message || err).slice(0, 140)}`, true);
     }
@@ -2927,6 +3019,11 @@ async function runSimulation(compareMode) {
     if (btn) {
       btn.disabled = false;
       btn.innerHTML = orig;
+    }
+    if (state.profile === 'researcher') {
+      setSimPhase(solvedOk ? 'results' : 'draft');
+    } else if (wasPlaying && solvedOk) {
+      state.playing = true;
     }
   }
 }
@@ -4052,7 +4149,33 @@ function wireUi() {
       if ($('val-cutoff')) $('val-cutoff').textContent = `${cm} cm`;
     });
   }
-  $('btn-sim-apply').addEventListener('click', applySimModalDraftAndRun);
+  $('btn-sim-apply').addEventListener('click', () => applySimModalDraft(false));
+  $('btn-sim-apply-run')?.addEventListener('click', () => applySimModalDraft(true));
+  $('btn-sim-fork')?.addEventListener('click', () => {
+    setSimPhase('draft');
+    showToast('Cloned into new draft — modify parameters or bunds, then click Run Simulation.');
+  });
+  $('btn-sim-new')?.addEventListener('click', () => {
+    state.interventions = [];
+    state.baselineInterventions = [];
+    state.observedGauges = [];
+    state.diffData = null;
+    state.uploadedDem = null;
+    state.lastBundCell = null;
+    state.xsecPts = [];
+    state.selectedCell = null;
+    state.staticVectorsDirty = true;
+    updateInterventionBar();
+    updateFloodPinBar();
+    renderFloodCanvas(false);
+    setSimPhase('draft');
+    showToast('Started a clean simulation draft.');
+  });
+  $('btn-mob-tools')?.addEventListener('click', () => {
+    const opening = !document.body.classList.contains('mob-tools-open');
+    document.body.classList.remove('mob-summary-open', 'mob-layers-open', 'mob-menu-open');
+    document.body.classList.toggle('mob-tools-open', opening);
+  });
   if ($('sim-storm-drain')) {
     $('sim-storm-drain').addEventListener('input', (e) => {
       updateStormDrainLabel(parseInt(e.target.value, 10) || 0);
@@ -4213,7 +4336,7 @@ function wireUi() {
     e.stopPropagation();
     const open = document.body.classList.toggle('mob-menu-open');
     if (open) {
-      document.body.classList.remove('mob-summary-open', 'mob-layers-open');
+      document.body.classList.remove('mob-summary-open', 'mob-layers-open', 'mob-tools-open');
       $('alerts-dropdown')?.classList.add('hidden');
     }
   });
@@ -4221,7 +4344,7 @@ function wireUi() {
     e.stopPropagation();
     const open = document.body.classList.toggle('mob-summary-open');
     if (open) {
-      document.body.classList.remove('mob-menu-open', 'mob-layers-open');
+      document.body.classList.remove('mob-menu-open', 'mob-layers-open', 'mob-tools-open');
       $('alerts-dropdown')?.classList.add('hidden');
     }
   });
@@ -4229,7 +4352,7 @@ function wireUi() {
     e.stopPropagation();
     const open = document.body.classList.toggle('mob-layers-open');
     if (open) {
-      document.body.classList.remove('mob-menu-open', 'mob-summary-open');
+      document.body.classList.remove('mob-menu-open', 'mob-summary-open', 'mob-tools-open');
       $('alerts-dropdown')?.classList.add('hidden');
     }
   });
@@ -4320,6 +4443,13 @@ function wireUi() {
   refreshSavedCountBadge();
 
   window.addEventListener('keydown', (e) => {
+    if (state.simPhase === 'solving') {
+      if (e.key === 'Escape' && state.activeAbort) {
+        state.activeAbort.abort();
+      }
+      e.preventDefault();
+      return;
+    }
     const tag = (e.target && e.target.tagName || '').toLowerCase();
     const typing = tag === 'input' || tag === 'select' || tag === 'textarea';
     if (e.key === 'Escape') {
@@ -4331,7 +4461,7 @@ function wireUi() {
         state.pickingStressSite = false;
         document.body.classList.remove('picking-site');
         showToast('Site pick cancelled.');
-      } else if (state.tool !== 'inspect') {
+      } else if (state.tool !== 'inspect' && (state.profile !== 'researcher' || state.simPhase === 'results')) {
         setTool('inspect');
       }
       return;
@@ -4442,7 +4572,8 @@ function wireUi() {
     if (state.nwpPeakMmHr !== null) {
       const clamped = Math.min(400, Math.max(40, Math.round(state.nwpPeakMmHr / 10) * 10));
       state.simConfig.rainfallMmHr = clamped;
-      runSimulation(false);
+      updateSimDraftSummary();
+      showToast(`Applied ${clamped} mm/hr NWP peak to draft — click Run Simulation when ready.`);
     }
   });
 
@@ -4526,7 +4657,8 @@ function wireUi() {
       vertical_datum: 'local-uploaded-datum',
       wgs84_bounds: [state.center.lon - d, state.center.lat - d, state.center.lon + d, state.center.lat + d],
     };
-    runSimulation(false);
+    updateSimDraftSummary();
+    showToast(`Loaded "${file.name}" into draft — click Run Simulation when ready.`);
   });
 }
 
@@ -5195,6 +5327,8 @@ function setUiProfile(profile, persist = false) {
       renderFloodCanvas(true);
     }
     refreshSavedCountBadge();
+    const hasCustomSim = Boolean(state.frames.length && state.activeEngine && state.activeEngine !== 'Live · Cached');
+    setSimPhase(hasCustomSim ? 'results' : 'draft');
   }
   updateLiveMetrics();
   if (persist) saveUserPrefs({ profile: state.profile });
@@ -6014,7 +6148,7 @@ async function refreshSavedCountBadge() {
   try {
     const items = await idbAllSaved();
     const btn = $('btn-saved-sims');
-    if (btn) btn.textContent = `Saved (${items.length})`;
+    if (btn) btn.textContent = `Runs (${items.length})`;
   } catch (_) {}
 }
 
@@ -6111,10 +6245,12 @@ async function openSavedItem(id) {
         state.frameRasterCache.clear();
         state.playing = false;
         applyLoadedSimulation(item.result.grid, frames, item.result.runId || item.id, 'Saved · Instant', item.result.framesBuf);
+        if (state.profile === 'researcher') setSimPhase('results');
         showToast(`Loaded "${item.name}" instantly (no re-solve needed).`);
         return;
       }
     }
+    if (state.profile === 'researcher') setSimPhase('draft');
     showToast(`Loaded config "${item.name}". Click Run Simulation when ready.`);
   } catch (err) {
     showToast(`Failed to open saved item: ${err && err.message ? err.message : String(err)}`);
@@ -6428,7 +6564,7 @@ function openSimModal() {
   $('sim-modal').classList.remove('hidden');
 }
 
-function applySimModalDraftAndRun() {
+function applySimModalDraft(shouldRun = false) {
   const sc = state.simConfig;
   sc.horizon = $('sim-horizon').value || '2d';
   sc.rainMult = parseFloat($('sim-rain-mult').value) || 1.0;
@@ -6453,6 +6589,7 @@ function applySimModalDraftAndRun() {
   sc.windX = parseFloat($('sim-wind').value) || 0;
   saveUserPrefs({ simConfig: sc });
   $('sim-modal').classList.add('hidden');
+  updateSimDraftSummary();
 
   let runCompare = false;
   if (sc.mode === 'stress' && sc.stressPadM > 0 && state.grid) {
@@ -6473,7 +6610,11 @@ function applySimModalDraftAndRun() {
       runCompare = true;
     }
   }
-  runSimulation(runCompare);
+  if (shouldRun) {
+    runSimulation(runCompare);
+  } else {
+    showToast('Parameters applied to draft — click Run Simulation when ready.');
+  }
 }
 
 function renderServerContextBox() {
