@@ -17,7 +17,7 @@ use arus_web::{
     MAPLIBRE_CSS, MAPLIBRE_JS, SIM_WORKER_JS, STUDIO_CSS, STUDIO_JS, render_index_page_html,
     render_run_page_html, render_sources_page_html, render_studio_page_html,
 };
-use axum::body::{Body, Bytes};
+use axum::body::Body;
 use axum::extract::{DefaultBodyLimit, Path, Query, State};
 use axum::http::{StatusCode, header};
 use axum::response::{Html, IntoResponse, Response};
@@ -26,7 +26,7 @@ use axum::{Json, Router};
 use serde::{Deserialize, Serialize};
 
 use crate::config::ServerConfig;
-use crate::context::{ContextResponse, load_context_async};
+use crate::context::load_context_async;
 use crate::sim::{
     CompareSimulationsResponse, CreateSimulationRequest, InteractiveStore, JobStore,
     MAX_BODY_BYTES, RunGridResponse, SimulationJobRecord, SimulationSummaryResponse,
@@ -150,22 +150,33 @@ async fn render_studio_html(Query(query): Query<LangQuery>) -> Html<String> {
 }
 
 async fn serve_maplibre_js() -> Response {
-    static_asset("application/javascript; charset=utf-8", MAPLIBRE_JS)
+    immutable_asset("application/javascript; charset=utf-8", MAPLIBRE_JS.as_bytes())
 }
 
 async fn serve_maplibre_css() -> Response {
-    static_asset("text/css; charset=utf-8", MAPLIBRE_CSS)
+    immutable_asset("text/css; charset=utf-8", MAPLIBRE_CSS.as_bytes())
 }
 
-async fn serve_studio_js() -> Response {
-    static_asset("application/javascript; charset=utf-8", STUDIO_JS)
+async fn serve_studio_js(headers: axum::http::HeaderMap) -> Response {
+    revalidated_asset(
+        "application/javascript; charset=utf-8",
+        STUDIO_JS.as_bytes(),
+        &headers,
+    )
 }
 
-async fn serve_sim_worker_js() -> Response {
-    static_asset("application/javascript; charset=utf-8", SIM_WORKER_JS)
+async fn serve_sim_worker_js(headers: axum::http::HeaderMap) -> Response {
+    revalidated_asset(
+        "application/javascript; charset=utf-8",
+        SIM_WORKER_JS.as_bytes(),
+        &headers,
+    )
 }
 
-async fn serve_wasm_asset(Path(file): Path<String>) -> Response {
+async fn serve_wasm_asset(
+    Path(file): Path<String>,
+    headers: axum::http::HeaderMap,
+) -> Response {
     let content_type = match file.as_str() {
         "arus_wasm_solver.js" => "application/javascript; charset=utf-8",
         "arus_wasm_solver_bg.wasm" => "application/wasm",
@@ -176,56 +187,85 @@ async fn serve_wasm_asset(Path(file): Path<String>) -> Response {
         .unwrap_or_else(|| PathBuf::from("apps/web/assets/wasm"));
     let path = base_dir.join(&file);
     match tokio::fs::read(&path).await {
-        Ok(bytes) => Response::builder()
-            .status(StatusCode::OK)
-            .header(header::CONTENT_TYPE, content_type)
-            .header(header::CACHE_CONTROL, "public, max-age=3600")
-            .body(Body::from(bytes))
-            .unwrap_or_else(|_| Response::new(Body::empty())),
+        Ok(bytes) => revalidated_asset(content_type, &bytes, &headers),
         Err(_) => StatusCode::NOT_FOUND.into_response(),
     }
 }
 
-async fn serve_studio_css() -> Response {
-    static_asset("text/css; charset=utf-8", STUDIO_CSS)
+async fn serve_studio_css(headers: axum::http::HeaderMap) -> Response {
+    revalidated_asset("text/css; charset=utf-8", STUDIO_CSS.as_bytes(), &headers)
 }
 
 async fn serve_font_inter_400() -> Response {
-    static_bytes("font/woff2", FONT_INTER_400)
+    immutable_asset("font/woff2", FONT_INTER_400)
 }
 
 async fn serve_font_inter_500() -> Response {
-    static_bytes("font/woff2", FONT_INTER_500)
+    immutable_asset("font/woff2", FONT_INTER_500)
 }
 
 async fn serve_font_inter_600() -> Response {
-    static_bytes("font/woff2", FONT_INTER_600)
+    immutable_asset("font/woff2", FONT_INTER_600)
 }
 
 async fn serve_font_jbmono_400() -> Response {
-    static_bytes("font/woff2", FONT_JBMONO_400)
+    immutable_asset("font/woff2", FONT_JBMONO_400)
 }
 
 async fn serve_font_jbmono_500() -> Response {
-    static_bytes("font/woff2", FONT_JBMONO_500)
+    immutable_asset("font/woff2", FONT_JBMONO_500)
 }
 
-fn static_asset(content_type: &'static str, body: &'static str) -> Response {
+fn fnv1a_etag(bytes: &[u8]) -> String {
+    let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
+    for &b in bytes {
+        hash ^= u64::from(b);
+        hash = hash.wrapping_mul(0x0100_0000_01b3);
+    }
+    format!("\"{hash:016x}-{}\"", bytes.len())
+}
+
+fn revalidated_asset(
+    content_type: &'static str,
+    body: &[u8],
+    req_headers: &axum::http::HeaderMap,
+) -> Response {
+    let etag = fnv1a_etag(body);
+    if req_headers
+        .get(header::IF_NONE_MATCH)
+        .and_then(|v| v.to_str().ok())
+        .is_some_and(|v| v.trim() == etag)
+    {
+        return Response::builder()
+            .status(StatusCode::NOT_MODIFIED)
+            .header(header::ETAG, etag)
+            .header(header::CACHE_CONTROL, "public, max-age=0, must-revalidate")
+            .body(Body::empty())
+            .unwrap_or_else(|_| StatusCode::NOT_MODIFIED.into_response());
+    }
     Response::builder()
         .status(StatusCode::OK)
         .header(header::CONTENT_TYPE, content_type)
-        .header(header::CACHE_CONTROL, "public, max-age=3600")
-        .body(Body::from(body))
+        .header(header::ETAG, etag)
+        .header(header::CACHE_CONTROL, "public, max-age=0, must-revalidate")
+        .body(Body::from(body.to_vec()))
         .unwrap_or_else(|_| Response::new(Body::empty()))
 }
 
-fn static_bytes(content_type: &'static str, body: &'static [u8]) -> Response {
+fn immutable_asset(content_type: &'static str, body: &'static [u8]) -> Response {
     Response::builder()
         .status(StatusCode::OK)
         .header(header::CONTENT_TYPE, content_type)
         .header(header::CACHE_CONTROL, "public, max-age=86400")
         .body(Body::from(body))
         .unwrap_or_else(|_| Response::new(Body::empty()))
+}
+
+fn interactive_limits(cfg: &ServerConfig) -> sim::ExecutionLimits {
+    let mut lim = sim::ExecutionLimits::interactive();
+    lim.max_cells = cfg.limits.max_interactive_cells.min(lim.max_cells);
+    lim.timeout_secs = cfg.limits.sim_timeout_secs.clamp(5, lim.timeout_secs);
+    lim
 }
 
 async fn post_simulation(
@@ -242,9 +282,10 @@ async fn post_simulation(
             "terrain interventions are disabled on this server",
         ));
     }
+    let limits = interactive_limits(&state.config);
     let sim = state
         .interactive
-        .run_simulation(request, None)
+        .run_simulation_with_limits(request, None, limits)
         .await
         .map_err(map_sim_error)?;
     Ok((StatusCode::CREATED, Json(sim.summary.clone())))
@@ -277,14 +318,15 @@ async fn post_compare(
     baseline_req.baseline_interventions.clear();
     let mut int_req = request;
     int_req.baseline_interventions.clear();
+    let limits = interactive_limits(&state.config);
     let baseline = state
         .interactive
-        .run_simulation(baseline_req, None)
+        .run_simulation_with_limits(baseline_req, None, limits)
         .await
         .map_err(map_sim_error)?;
     let intervention = state
         .interactive
-        .run_simulation(int_req, None)
+        .run_simulation_with_limits(int_req, None, limits)
         .await
         .map_err(map_sim_error)?;
 
@@ -408,13 +450,17 @@ async fn export_run_outlooks_csv(
 
 async fn post_export_mp4(
     State(state): State<ApiState>,
-    body: Bytes,
+    req: axum::extract::Request,
 ) -> Result<Response, (StatusCode, Json<ErrorResponse>)> {
+    // Reject disabled MP4 export BEFORE allocating up to 64 MiB of request body
     if !state.config.features.allow_mp4_export {
         return Err(forbidden(
             "server-side MP4 export is disabled on this server",
         ));
     }
+    let body = axum::body::to_bytes(req.into_body(), 64 * 1024 * 1024)
+        .await
+        .map_err(|e| (StatusCode::PAYLOAD_TOO_LARGE, Json(ErrorResponse { error: format!("mp4 body too large: {e}") })))?;
     let webm = body.to_vec();
     let mp4 = tokio::task::spawn_blocking(move || video::transcode_webm_bytes_to_mp4(&webm))
         .await
@@ -489,14 +535,20 @@ const fn data_class_label(class: DataClass) -> &'static str {
 
 async fn get_catalog_sources(
     State(state): State<ApiState>,
-) -> Result<Json<Catalog>, (StatusCode, Json<ErrorResponse>)> {
+) -> Result<Response, (StatusCode, Json<ErrorResponse>)> {
     let Some(path) = state.catalog_path.as_deref() else {
         return Err(not_found(
             "no public source catalog is configured".to_owned(),
         ));
     };
     let catalog = Catalog::load(path).map_err(internal_error)?;
-    Ok(Json(catalog))
+    let body = serde_json::to_vec(&catalog).map_err(internal_error)?;
+    Response::builder()
+        .status(StatusCode::OK)
+        .header(header::CONTENT_TYPE, "application/json")
+        .header(header::CACHE_CONTROL, "public, max-age=300")
+        .body(Body::from(body))
+        .map_err(internal_error)
 }
 
 async fn render_index_html(
@@ -609,14 +661,20 @@ struct ContextQuery {
     basin: Option<String>,
 }
 
-async fn get_config(State(state): State<ApiState>) -> Json<ServerConfig> {
-    Json((*state.config).clone())
+async fn get_config(State(state): State<ApiState>) -> Response {
+    let body = serde_json::to_vec(&*state.config).unwrap_or_default();
+    Response::builder()
+        .status(StatusCode::OK)
+        .header(header::CONTENT_TYPE, "application/json")
+        .header(header::CACHE_CONTROL, "public, max-age=300")
+        .body(Body::from(body))
+        .unwrap_or_else(|_| StatusCode::INTERNAL_SERVER_ERROR.into_response())
 }
 
 async fn get_context(
     State(state): State<ApiState>,
     Query(query): Query<ContextQuery>,
-) -> Result<Json<ContextResponse>, (StatusCode, Json<ErrorResponse>)> {
+) -> Result<Response, (StatusCode, Json<ErrorResponse>)> {
     let Some(dir) = state.context_dir.clone() else {
         return Err(not_found(
             "no regional context directory is configured".to_owned(),
@@ -625,7 +683,13 @@ async fn get_context(
     let resp = load_context_async(dir, query.basin)
         .await
         .map_err(map_sim_error)?;
-    Ok(Json(resp))
+    let body = serde_json::to_vec(&resp).map_err(internal_error)?;
+    Response::builder()
+        .status(StatusCode::OK)
+        .header(header::CONTENT_TYPE, "application/json")
+        .header(header::CACHE_CONTROL, "public, max-age=60")
+        .body(Body::from(body))
+        .map_err(internal_error)
 }
 
 async fn post_job(

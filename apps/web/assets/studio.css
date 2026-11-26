@@ -803,6 +803,9 @@ input[type="range"] {
 [data-profile="researcher"]:not([data-presentation="true"]) .public-outlook {
   display: none !important;
 }
+body.has-forecast-bar .status-pill {
+  max-width: calc(100vw - 656px);
+}
 body.has-forecast-bar .inspector {
   bottom: 94px;
 }

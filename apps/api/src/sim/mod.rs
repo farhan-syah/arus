@@ -42,7 +42,14 @@ pub const MAX_CONCURRENT_SIMS: usize = 2;
 /// Maximum wall-clock duration per interactive simulation before cancellation.
 pub const SIM_TIMEOUT_SECS: u64 = 45;
 /// Maximum interactive runs kept in the bounded in-memory LRU cache.
-pub const MAX_CACHED_RUNS: usize = 16;
+pub const MAX_CACHED_RUNS: usize = 48;
+/// Maximum queued interactive simulation waiters before returning HTTP 503.
+pub const MAX_QUEUED_SIMS: usize = 6;
+/// Hard upper bounds on user-supplied simulation arrays to prevent DoS hangs.
+pub const MAX_INTERVENTIONS: usize = 2048;
+pub const MAX_OBSERVED_GAUGES: usize = 64;
+pub const MAX_HOURLY_TIDE: usize = 240;
+pub const MAX_NOWCAST_BINS: usize = 64;
 /// Maximum 2D grid cells permitted in an async high-resolution basin job (`512x512`).
 pub const MAX_JOB_CELLS: usize = 262_144;
 /// Maximum solver steps permitted in an async high-resolution basin job.
@@ -747,7 +754,17 @@ impl InteractiveStore {
         request: CreateSimulationRequest,
         fixed_id: Option<String>,
     ) -> Result<Arc<CachedSimulation>, (u16, String)> {
-        let limits = ExecutionLimits::interactive();
+        self.run_simulation_with_limits(request, fixed_id, ExecutionLimits::interactive())
+            .await
+    }
+
+    /// Executes one bounded interactive simulation honoring caller-configured server limits.
+    pub async fn run_simulation_with_limits(
+        &self,
+        request: CreateSimulationRequest,
+        fixed_id: Option<String>,
+        limits: ExecutionLimits,
+    ) -> Result<Arc<CachedSimulation>, (u16, String)> {
         validate_request(&request, limits)?;
         let content_hash = if fixed_id.is_none() && request.ascii_dem.is_none() {
             let h = compute_request_hash(&request);
@@ -758,12 +775,24 @@ impl InteractiveStore {
         } else {
             None
         };
-        let permit = self
-            .semaphore
-            .clone()
-            .acquire_owned()
-            .await
-            .map_err(|_| (503, "simulation worker pool unavailable".to_owned()))?;
+        let permit = match self.semaphore.clone().try_acquire_owned() {
+            Ok(p) => p,
+            Err(_) => {
+                // Bounded wait: fail fast with 503 instead of piling up unbounded 4 MiB requests
+                tokio::time::timeout(
+                    Duration::from_secs(3),
+                    self.semaphore.clone().acquire_owned(),
+                )
+                .await
+                .map_err(|_| {
+                    (
+                        503,
+                        "simulation worker pool is busy; retry in a few seconds".to_owned(),
+                    )
+                })?
+                .map_err(|_| (503, "simulation worker pool unavailable".to_owned()))?
+            }
+        };
 
         let run_id = fixed_id.unwrap_or_else(|| self.allocate_run_id());
         let token = CancellationToken::new();
@@ -784,7 +813,7 @@ impl InteractiveStore {
                 cancel_handle.cancel();
                 return Err((
                     408,
-                    format!("simulation exceeded {SIM_TIMEOUT_SECS}s wall-clock limit"),
+                    format!("simulation exceeded {}s wall-clock limit", limits.timeout_secs),
                 ));
             }
         };
@@ -918,6 +947,32 @@ fn validate_request(
         && !elevation_m.is_finite()
     {
         return Err((422, "OpenStage elevation_m must be finite".to_owned()));
+    }
+    if req.interventions.len() > MAX_INTERVENTIONS
+        || req.baseline_interventions.len() > MAX_INTERVENTIONS
+    {
+        return Err((
+            422,
+            format!("interventions cannot exceed {MAX_INTERVENTIONS} cells"),
+        ));
+    }
+    if req.observed_gauges.len() > MAX_OBSERVED_GAUGES {
+        return Err((
+            422,
+            format!("observed_gauges cannot exceed {MAX_OBSERVED_GAUGES} entries"),
+        ));
+    }
+    if req.hourly_tide_m.len() > MAX_HOURLY_TIDE {
+        return Err((
+            422,
+            format!("hourly_tide_m cannot exceed {MAX_HOURLY_TIDE} hours"),
+        ));
+    }
+    if req.nowcast_15min_mm.len() > MAX_NOWCAST_BINS {
+        return Err((
+            422,
+            format!("nowcast_15min_mm cannot exceed {MAX_NOWCAST_BINS} bins"),
+        ));
     }
     if req.interventions.iter().any(|iv| !iv.delta_m.is_finite()) {
         return Err((422, "interventions[*].delta_m must be finite".to_owned()));

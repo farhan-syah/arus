@@ -292,18 +292,27 @@ function ensureMapLayers() {
 
   const isPres = document.documentElement.dataset.presentation === 'true';
   if (!map.getSource('arus-terrarium-dem')) {
+    // Separate hillshade and 3D terrain DEM sources capped at maxzoom 12 to eliminate
+    // MapLibre shared-source warnings and excessive aborted high-zoom S3 tile fetches.
     map.addSource('arus-terrarium-dem', {
       type: 'raster-dem',
       tiles: ['https://s3.amazonaws.com/elevation-tiles-prod/terrarium/{z}/{x}/{y}.png'],
       encoding: 'terrarium',
       tileSize: 256,
-      maxzoom: 15,
+      maxzoom: 12,
+    });
+    map.addSource('arus-terrarium-hillshade', {
+      type: 'raster-dem',
+      tiles: ['https://s3.amazonaws.com/elevation-tiles-prod/terrarium/{z}/{x}/{y}.png'],
+      encoding: 'terrarium',
+      tileSize: 256,
+      maxzoom: 12,
     });
     map.addLayer(
       {
         id: 'arus-hillshade',
         type: 'hillshade',
-        source: 'arus-terrarium-dem',
+        source: 'arus-terrarium-hillshade',
         paint: {
           'hillshade-exaggeration': isDark ? 0.25 : 0.32,
           'hillshade-shadow-color': isDark ? '#020617' : '#334155',
@@ -692,19 +701,64 @@ async function applyBoundaryGeometry(geom, runSim = true) {
   const dxM = Math.max(45.0, Math.min(2400.0, Math.max(spanXm / cols, spanYm / rows)));
   state.center = { lat: midLat, lon: midLon };
   state.boundaryGrid = { cols, rows, dxM };
+  state.boundaryNeedsLandFit = dxM >= 300;
   state.cachedDem = null;
   if (map) { try { map.setTerrain(null); } catch (_) {} }
   if ($('site-verdict')) $('site-verdict').classList.add('hidden');
   applyRegionBoundary();
   map.stop();
+  const vw = window.innerWidth || 1280;
+  const vh = window.innerHeight || 800;
   map.fitBounds([[minLon, minLat], [maxLon, maxLat]], {
-    padding: { top: 64, bottom: 78, left: 310, right: 235 },
+    padding: {
+      top: Math.min(64, Math.round(vh * 0.12)),
+      bottom: Math.min(78, Math.round(vh * 0.14)),
+      left: Math.min(310, Math.round(vw * 0.24)),
+      right: Math.min(235, Math.round(vw * 0.20)),
+    },
     pitch: 0,
     bearing: 0,
     duration: 0,
   });
   if (runSim) await runSimulation(false);
   return true;
+}
+
+const NOMINATIM_CACHE_KEY = 'arus.nominatim.cache.v1';
+const NOMINATIM_TTL_MS = 7 * 24 * 3600 * 1000;
+const NOMINATIM_MAX_ITEM_BYTES = 32 * 1024;
+const NOMINATIM_MAX_TOTAL_BYTES = 512 * 1024;
+const nominatimMemCache = new Map();
+
+function readNominatimCache(cacheKey) {
+  const mem = nominatimMemCache.get(cacheKey);
+  if (mem && Date.now() - mem.ts < NOMINATIM_TTL_MS) return mem.val;
+  try {
+    const store = JSON.parse(window.localStorage.getItem(NOMINATIM_CACHE_KEY) || '{}');
+    const entry = store[cacheKey];
+    if (entry && Date.now() - entry.ts < NOMINATIM_TTL_MS) {
+      nominatimMemCache.set(cacheKey, entry);
+      return entry.val;
+    }
+  } catch (_) {}
+  return null;
+}
+
+function writeNominatimCache(cacheKey, val) {
+  const entry = { ts: Date.now(), val };
+  nominatimMemCache.set(cacheKey, entry);
+  try {
+    const encoded = JSON.stringify(entry);
+    if (encoded.length > NOMINATIM_MAX_ITEM_BYTES) return;
+    const store = JSON.parse(window.localStorage.getItem(NOMINATIM_CACHE_KEY) || '{}');
+    store[cacheKey] = entry;
+    let keys = Object.keys(store);
+    while (JSON.stringify(store).length > NOMINATIM_MAX_TOTAL_BYTES && keys.length > 1) {
+      keys.sort((a, b) => (store[a]?.ts || 0) - (store[b]?.ts || 0));
+      delete store[keys.shift()];
+    }
+    window.localStorage.setItem(NOMINATIM_CACHE_KEY, JSON.stringify(store));
+  } catch (_) {}
 }
 
 async function setCustomBoundary(lon, lat, radiusKm = 5.0, shape = 'hex', runSim = false) {
@@ -714,12 +768,17 @@ async function setCustomBoundary(lon, lat, radiusKm = 5.0, shape = 'hex', runSim
 
 async function loadBoundaryByQuery(query, opts = {}) {
   if (!query) return false;
+  const cacheKey = `poly:${query.toLowerCase().trim()}`;
   try {
-    const resp = await fetch(
-      `https://nominatim.openstreetmap.org/search?format=json&polygon_geojson=1&limit=1&q=${encodeURIComponent(query)}`,
-    );
-    const hits = await resp.json();
-    const hit = hits?.[0];
+    let hit = readNominatimCache(cacheKey);
+    if (!hit) {
+      const resp = await fetch(
+        `https://nominatim.openstreetmap.org/search?format=json&polygon_geojson=1&polygon_threshold=0.005&limit=1&q=${encodeURIComponent(query)}`,
+      );
+      const hits = await resp.json();
+      hit = hits?.[0] || null;
+      if (hit) writeNominatimCache(cacheKey, hit);
+    }
     const geom = hit?.geojson;
     if (geom && (geom.type === 'Polygon' || geom.type === 'MultiPolygon')) {
       return applyBoundaryGeometry(geom, opts.runSim !== false);
@@ -1373,6 +1432,30 @@ function renderSiteVerdict() {
   $('sv-badge').className = `lm-badge ${lvl}`;
   $('sv-badge').textContent = label;
   $('sv-summary').textContent = msg;
+  // Async reverse-geocode to show nearest street / neighborhood name (XSS-safe textContent)
+  const revKey = `rev:${lat.toFixed(4)},${lon.toFixed(4)}`;
+  const cachedPlace = readNominatimCache(revKey);
+  if (cachedPlace) {
+    $('sv-title').textContent = cachedPlace;
+    $('sv-title').title = `${lat.toFixed(4)}°, ${lon.toFixed(4)}°`;
+  } else {
+    fetch(`https://nominatim.openstreetmap.org/reverse?format=json&zoom=16&lat=${lat.toFixed(5)}&lon=${lon.toFixed(5)}`)
+      .then((r) => (r.ok ? r.json() : null))
+      .then((data) => {
+        const a = data?.address || {};
+        const primary = a.road || a.neighbourhood || a.suburb || a.village || a.town || a.city;
+        const secondary = a.suburb || a.town || a.city || a.state;
+        const place = primary && secondary && primary !== secondary ? `${primary}, ${secondary}` : (primary || secondary);
+        if (place) {
+          writeNominatimCache(revKey, place);
+          if (state.verdictTarget && Math.abs(state.verdictTarget.lat - lat) < 1e-5 && Math.abs(state.verdictTarget.lon - lon) < 1e-5) {
+            $('sv-title').textContent = place;
+            $('sv-title').title = `${lat.toFixed(4)}°, ${lon.toFixed(4)}°`;
+          }
+        }
+      })
+      .catch(() => {});
+  }
   if (map && typeof maplibregl !== 'undefined') {
     if (state.verdictMarker) state.verdictMarker.remove();
     const color = lvl === 'danger' ? '#e11d48' : lvl === 'moderate' ? '#d97706' : '#0284c7';
@@ -1671,6 +1754,39 @@ async function fetchTerrariumElevations(centerLon, centerLat, cols, rows, dxM) {
     }
   }
   state.cachedDem = { key, elevations, landMask, maskW, maskH };
+  // One-shot land-clipped framing for coastal regional boundaries (removes empty sea wedge)
+  if (state.boundaryNeedsLandFit && state.boundaryGeoJson && map && !state.fixedView) {
+    state.boundaryNeedsLandFit = false;
+    let lMinLon = Infinity, lMaxLon = -Infinity, lMinLat = Infinity, lMaxLat = -Infinity;
+    for (let r = 0; r < rows; r++) {
+      const lat = minLat + ((r + 0.5) / rows) * (maxLat - minLat);
+      for (let c = 0; c < cols; c++) {
+        if (elevations[r * cols + c] === null) continue;
+        const lon = minLon + ((c + 0.5) / cols) * (maxLon - minLon);
+        if (!pointInGeom(lon, lat, state.boundaryGeoJson)) continue;
+        if (lon < lMinLon) lMinLon = lon;
+        if (lon > lMaxLon) lMaxLon = lon;
+        if (lat < lMinLat) lMinLat = lat;
+        if (lat > lMaxLat) lMaxLat = lat;
+      }
+    }
+    if (Number.isFinite(lMinLon) && lMaxLon > lMinLon && lMaxLat > lMinLat) {
+      const vw = window.innerWidth || 1280;
+      const vh = window.innerHeight || 800;
+      map.stop();
+      map.fitBounds([[lMinLon, lMinLat], [lMaxLon, lMaxLat]], {
+        padding: {
+          top: Math.min(64, Math.round(vh * 0.12)),
+          bottom: Math.min(78, Math.round(vh * 0.14)),
+          left: Math.min(310, Math.round(vw * 0.24)),
+          right: Math.min(235, Math.round(vw * 0.20)),
+        },
+        pitch: 0,
+        bearing: 0,
+        duration: 0,
+      });
+    }
+  }
   return elevations;
 }
 
@@ -1908,6 +2024,10 @@ async function runSimulation(compareMode) {
           payload.duration_s = 360;
         }
       }
+      if (Array.isArray(payload.hourly_rain_mm) && payload.hourly_rain_mm.length > 24 && payload.duration_s > 600) {
+        payload.hourly_rain_mm = payload.hourly_rain_mm.slice(0, 24);
+        payload.duration_s = 360;
+      }
       const resp = await fetch(apiUrl('api/v1/compare'), {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
@@ -1973,7 +2093,8 @@ async function runSimulation(compareMode) {
           });
         }
       } else {
-        const useAsyncJob = payload.duration_s > 900 || payload.cols * payload.rows > 8192;
+        const allowAsyncJobs = state.serverConfig?.features?.allow_async_jobs !== false;
+        const useAsyncJob = allowAsyncJobs && (payload.duration_s > 900 || payload.cols * payload.rows > 8192);
         let summary = null;
         if (!useAsyncJob) {
           const resp = await fetch(apiUrl('api/v1/simulations'), {
@@ -1982,7 +2103,7 @@ async function runSimulation(compareMode) {
             body: JSON.stringify(payload),
             signal: abort.signal,
           });
-          if (resp.status === 408) {
+          if (resp.status === 408 && allowAsyncJobs) {
             setSimProgress('Long run queued as async basin job…');
           } else if (!resp.ok) {
             throw new Error(await parseErrorText(resp));
@@ -1990,7 +2111,7 @@ async function runSimulation(compareMode) {
             summary = await resp.json();
           }
         }
-        if (!summary) {
+        if (!summary && allowAsyncJobs) {
           const jobResp = await fetch(apiUrl('api/v1/jobs'), {
             method: 'POST',
             headers: { 'content-type': 'application/json' },
@@ -2102,7 +2223,10 @@ function updateFrameTelemetry() {
   }
   const wind = state.simConfig.windX || 0;
   const windPart = wind > 0 ? ` · ${fmtSpeed(wind, 0)}` : '';
-  $('telemetry').textContent = `${c.lat.toFixed(2)}°, ${c.lng.toFixed(2)}° · z${z.toFixed(1)} · ${rainPart}${windPart}`;
+  const isPres = document.documentElement.dataset.presentation === 'true';
+  $('telemetry').textContent = isPres
+    ? `${c.lat.toFixed(2)}°, ${c.lng.toFixed(2)}° · z${z.toFixed(1)} · ${rainPart}${windPart}`
+    : `${c.lat.toFixed(2)}°, ${c.lng.toFixed(2)}° · ${rainPart}${windPart}`;
 }
 
 function updateHonestyPill() {
@@ -2359,7 +2483,10 @@ function updateLiveMetrics() {
       $('po-summary').textContent =
         `Peak depth ${fmtDepth(peakDepth, 2)} across ${floodedPct.toFixed(0)}% of area (${modeDesc}).${actionHint}`;
       $('po-hotspots').innerHTML = '';
-      if (state.serverConfig?.disclaimer) $('po-foot').textContent = state.serverConfig.disclaimer;
+      if (state.serverConfig?.disclaimer) {
+        const staleTag = state.serverContext?.is_stale ? ' [Feed stale >12h]' : '';
+        $('po-foot').textContent = `${state.serverConfig.disclaimer}${staleTag}`;
+      }
       po.classList.remove('hidden');
     }
   }
@@ -2691,27 +2818,69 @@ async function fetchLiveMultiModelNwp() {
 async function openSourcesModal() {
   $('sources-modal').classList.remove('hidden');
   const grid = $('sources-grid');
-  grid.innerHTML = 'Loading catalog…';
+  grid.textContent = 'Loading catalog…';
   const fmtTag = (t) => String(t || '').replace(/_/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase());
+  const safeHref = (u) => {
+    try {
+      const parsed = new URL(String(u));
+      return (parsed.protocol === 'https:' || parsed.protocol === 'http:') ? parsed.href : null;
+    } catch (_) { return null; }
+  };
   try {
     const resp = await fetch(apiUrl('api/v1/catalog/sources'));
     if (!resp.ok) throw new Error('Catalog not configured');
     const data = await resp.json();
+    grid.textContent = '';
     const ctx = state.serverContext?.context;
-    const activeBanner = ctx ? `
-      <div class="src-card" style="grid-column:1/-1;border-color:var(--accent);background:var(--hud-well)">
-        <strong>Active Live Run · Basin: ${ctx.basin_id}</strong>
-        <div style="color:var(--ink-2)">Forecast cycle: ${fmtMytDisplay(Date.parse(ctx.cycle_iso), true)} · Terrain: Terrarium 30m DEM</div>
-      </div>` : '';
-    grid.innerHTML = activeBanner + data.sources.map((s) => `
-      <div class="src-card">
-        <strong>${s.title}</strong>
-        <div><span class="src-badge ${s.access === 'public' ? 'pub' : ''}">${fmtTag(s.access)}</span> <span class="src-badge">${fmtTag(s.data_class)}</span></div>
-        <div style="color:var(--ink-3)">${s.provider} · ${s.license.name}</div>
-      </div>
-    `).join('');
+    if (ctx) {
+      const banner = document.createElement('div');
+      banner.className = 'src-card';
+      banner.style.cssText = 'grid-column:1/-1;border-color:var(--accent);background:var(--hud-well)';
+      const bTitle = document.createElement('strong');
+      bTitle.textContent = `Active Live Run · Basin: ${ctx.basin_id}${state.serverContext.is_stale ? ' (STALE >12h)' : ''}`;
+      const bSub = document.createElement('div');
+      bSub.style.color = 'var(--ink-2)';
+      bSub.textContent = `Forecast cycle: ${fmtMytDisplay(Date.parse(ctx.cycle_iso), true)} · Terrain: Terrarium 30m DEM`;
+      banner.append(bTitle, bSub);
+      grid.appendChild(banner);
+    }
+    for (const s of (data.sources || [])) {
+      const card = document.createElement('div');
+      card.className = 'src-card';
+      const title = document.createElement('strong');
+      title.textContent = s.title || s.id || 'Source';
+      const badges = document.createElement('div');
+      const b1 = document.createElement('span');
+      b1.className = `src-badge ${s.access === 'public' ? 'pub' : ''}`;
+      b1.textContent = fmtTag(s.access);
+      const b2 = document.createElement('span');
+      b2.className = 'src-badge';
+      b2.textContent = fmtTag(s.data_class);
+      badges.append(b1, document.createTextNode(' '), b2);
+      if (s.license?.noncommercial_only) {
+        const b3 = document.createElement('span');
+        b3.className = 'src-badge';
+        b3.textContent = 'Noncommercial';
+        badges.append(document.createTextNode(' '), b3);
+      }
+      const meta = document.createElement('div');
+      meta.style.color = 'var(--ink-3)';
+      meta.textContent = `${s.provider || ''} · ${s.license?.name || ''}`;
+      card.append(title, badges, meta);
+      const docUrl = safeHref(s.documentation_urls?.[0]);
+      if (docUrl) {
+        const link = document.createElement('a');
+        link.href = docUrl;
+        link.target = '_blank';
+        link.rel = 'noopener noreferrer';
+        link.style.cssText = 'font-size:11px;color:var(--accent);text-decoration:none;margin-top:2px;display:inline-block';
+        link.textContent = 'Official docs ↗';
+        card.appendChild(link);
+      }
+      grid.appendChild(card);
+    }
   } catch (e) {
-    grid.innerHTML = `<div style="color:var(--danger)">${e.message}</div>`;
+    grid.textContent = String(e.message || e);
   }
 }
 
@@ -2767,10 +2936,15 @@ function wireUi() {
       return;
     }
     try {
-      const resp = await fetch(`https://nominatim.openstreetmap.org/search?format=json&polygon_geojson=1&limit=1&q=${encodeURIComponent(raw)}`);
-      const hits = await resp.json();
-      if (hits && hits.length > 0) {
-        const hit = hits[0];
+      const sKey = `search:${raw.toLowerCase().trim()}`;
+      let hit = readNominatimCache(sKey);
+      if (!hit) {
+        const resp = await fetch(`https://nominatim.openstreetmap.org/search?format=json&polygon_geojson=1&polygon_threshold=0.005&limit=1&q=${encodeURIComponent(raw)}`);
+        const hits = await resp.json();
+        hit = hits?.[0] || null;
+        if (hit) writeNominatimCache(sKey, hit);
+      }
+      if (hit) {
         const geo = hit.geojson;
         const isAdminPoly = (hit.class === 'boundary' || hit.type === 'administrative')
           && geo && (geo.type === 'Polygon' || geo.type === 'MultiPolygon');
@@ -2854,7 +3028,7 @@ function wireUi() {
         state.stormDrainGrid = arr.map((v) => Math.min(1, Math.max(0, Number(v) || 0)));
         updateStormDrainGridStatus();
       } catch (err) {
-        setStatus(`Drain grid error: ${err.message}`);
+        showToast(`Drain grid error: ${err.message}`);
       }
       e.target.value = '';
     });
@@ -2870,7 +3044,7 @@ function wireUi() {
       mode: 'forecast', horizon: '5d', rainMult: 1.0, stressMmDay: 150, stressDays: 3, stressPadM: 0,
       rainfallMmHr: 280, durationS: 360, hyetograph: 'peak-storm', soil: 'impervious',
       boundary: 'transmissive', manningN: 0.035, windX: 0, startDry: false,
-      enableEvap: true, enableDrain: true, tideMode: 'live', compute: 'server',
+      enableEvap: true, enableDrain: true, tideMode: 'live', compute: 'auto', stormDrainScore: 0.5,
     };
     populateSimModal();
   });
@@ -3005,7 +3179,7 @@ function wireUi() {
     state.envelopeMode = !state.envelopeMode;
     $('btn-env').textContent = state.envelopeMode ? 'Peak' : 'Live';
     $('btn-env').classList.toggle('active', state.envelopeMode);
-    updateLiveMeter();
+    updateLiveMetrics();
     renderFloodCanvas(true);
   });
 
@@ -3232,6 +3406,8 @@ function captureSnapshotPng() {
   map.triggerRepaint();
 }
 
+let activeRecRepaintTimer = null;
+
 function toggleVideoRecording() {
   const btn = $('btn-rec');
   if (activeRecorder && activeRecorder.state === 'recording') {
@@ -3240,20 +3416,54 @@ function toggleVideoRecording() {
     btn.textContent = 'Rec';
     return;
   }
-  if (!map || typeof MediaRecorder === 'undefined') return;
+  if (!map || typeof MediaRecorder === 'undefined') {
+    showToast('Browser video recording is not supported in this browser.');
+    return;
+  }
   const stream = map.getCanvas().captureStream(30);
-  const mime = MediaRecorder.isTypeSupported('video/webm;codecs=vp9')
-    ? 'video/webm;codecs=vp9'
-    : 'video/webm';
+  const candidates = [
+    'video/mp4;codecs=avc1.42E01E',
+    'video/mp4',
+    'video/webm;codecs=vp9',
+    'video/webm',
+  ];
+  const mime = candidates.find((m) => MediaRecorder.isTypeSupported(m)) || '';
+  const isNativeMp4 = mime.startsWith('video/mp4');
   recordedChunks = [];
-  activeRecorder = new MediaRecorder(stream, { mimeType: mime, videoBitsPerSecond: 4_000_000 });
+  try {
+    activeRecorder = mime
+      ? new MediaRecorder(stream, { mimeType: mime, videoBitsPerSecond: 4_000_000 })
+      : new MediaRecorder(stream, { videoBitsPerSecond: 4_000_000 });
+  } catch (err) {
+    stream.getTracks().forEach((t) => t.stop());
+    showToast(`Recording unavailable: ${err.message}`);
+    return;
+  }
   activeRecorder.ondataavailable = (e) => {
     if (e.data && e.data.size > 0) recordedChunks.push(e.data);
   };
+  // Keep WebGL canvas emitting frames even if user pauses playback while recording
+  activeRecRepaintTimer = setInterval(() => {
+    if (map) map.triggerRepaint();
+  }, 100);
   activeRecorder.onstop = async () => {
-    const blob = new Blob(recordedChunks, { type: mime });
+    if (activeRecRepaintTimer) { clearInterval(activeRecRepaintTimer); activeRecRepaintTimer = null; }
+    stream.getTracks().forEach((t) => t.stop());
+    const blob = new Blob(recordedChunks, { type: mime || 'video/webm' });
     recordedChunks = [];
-    const baseName = `arus-${state.runId || 'recording'}`;
+    if (!blob.size) {
+      showToast('Recording was empty; try recording for at least 2 seconds.');
+      return;
+    }
+    const title = $('po-title')?.textContent?.trim() || 'recording';
+    const slug = title.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 28) || 'recording';
+    const baseName = `arus-${slug}-${fmtMytSlug(getCurrentFrameEpochMs())}`;
+    if (isNativeMp4 || state.serverConfig?.features?.allow_mp4_export === false) {
+      const ext = isNativeMp4 ? 'mp4' : 'webm';
+      downloadBlob(blob, `${baseName}.${ext}`);
+      showToast(`Saved ${baseName}.${ext} (recorded locally in browser).`);
+      return;
+    }
     btn.disabled = true;
     btn.textContent = 'MP4…';
     try {
@@ -3275,7 +3485,7 @@ function toggleVideoRecording() {
       btn.textContent = 'Rec';
     }
   };
-  activeRecorder.start();
+  activeRecorder.start(250);
   btn.classList.add('recording');
   btn.textContent = 'Stop';
 }
@@ -3885,7 +4095,7 @@ async function fetchAndApplyServerConfig(qs) {
       hide($('file-asc'));
       document.querySelectorAll('label[for="file-asc"]').forEach(hide);
     }
-    if (f.allow_mp4_export === false) {
+    if (f.allow_mp4_export === false && typeof MediaRecorder === 'undefined') {
       hide($('btn-rec'));
     }
     if (f.allow_direct_nwp_fetch === false) {
