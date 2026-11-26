@@ -1709,6 +1709,16 @@ async function buildRequestPayload() {
     durationS = Math.min(3600, Math.max(360, Math.round((nHours * 3600) / 200)));
   }
 
+  const nRainHours = Math.max(
+    hourlyRain.length,
+    spatialGrid?.hourly_mm?.[0]?.length || 0,
+  );
+  if (nRainHours > 0) {
+    // Keep time compression <= 220x (safely under backend 240x CFL/compression guard)
+    const minDurForHours = Math.ceil((nRainHours * 3600) / 220);
+    durationS = Math.max(durationS, minDurForHours);
+  }
+
   const evapDay = sc.enableEvap ? (state.evapMmDay > 0 ? state.evapMmDay : 4.5) : 0;
   const drainHr = sc.enableDrain ? (state.drainageMmHr > 0 ? state.drainageMmHr : 3.0) : 0;
 
@@ -1942,7 +1952,7 @@ async function runSimulation(compareMode) {
       if (browserRes) {
         state.frameRasterCache.clear();
         applyLoadedSimulation(browserRes.grid, browserRes.frames, browserRes.grid.run_id, browserRes.engine);
-        if (!state.fixedView) {
+        if (!state.fixedView && !state.boundaryGrid) {
           const [minLon, minLat, maxLon, maxLat] = browserRes.grid.metadata.wgs84_bounds;
           map.flyTo({
             center: [(minLon + maxLon) * 0.5, (minLat + maxLat) * 0.5],
@@ -2015,7 +2025,7 @@ async function runSimulation(compareMode) {
         state.frameRasterCache.clear();
         setSimProgress('Loading frames…');
         await loadRun(summary.run_id);
-        if (!state.fixedView) {
+        if (!state.fixedView && !state.boundaryGrid) {
           const [minLon, minLat, maxLon, maxLat] = summary.wgs84_bounds;
           map.flyTo({
             center: [(minLon + maxLon) * 0.5, (minLat + maxLat) * 0.5],
@@ -2228,9 +2238,7 @@ function updateLiveMetrics() {
   const card = $('live-metrics');
   if (!card || !state.grid || !state.frames.length) return;
   const isPres = document.documentElement.dataset.presentation === 'true';
-  const show = isPres
-    ? true
-    : (state.displayPrefs.showMetrics && (state.profile === 'public' || !$('public-outlook').classList.contains('hidden')));
+  const show = isPres ? true : Boolean(state.displayPrefs.showMetrics);
   card.classList.toggle('hidden', !show);
   if (!show) return;
 
@@ -2722,7 +2730,7 @@ function wireUi() {
           && geo && (geo.type === 'Polygon' || geo.type === 'MultiPolygon');
         if (isAdminPoly) {
           setCustomPresetLabel(raw);
-          await loadBoundaryByQuery(raw, true);
+          await applyBoundaryGeometry(geo, true);
           return;
         }
         const lat = parseFloat(hit.lat);
@@ -3119,21 +3127,53 @@ function captureSnapshotPng() {
     ctx.fillStyle = '#f8fafc';
     ctx.fillRect(0, 0, out.width, out.height);
     ctx.drawImage(src, 0, 0);
-    // Stamp compact alert-ready header bar onto the exported PNG
-    const title = $('po-title')?.textContent || 'ARUS Flood Screening';
-    const peak = $('lm-peak')?.textContent || '0.00 m';
-    const timeTxt = $('time-readout')?.textContent || '';
+
+    // Top-left alert-ready header banner with location, peak depth, date/MYT, and official alert note
+    const title = $('po-title')?.textContent?.trim() || 'ARUS Flood Screening';
+    const peak = $('lm-peak')?.textContent?.trim() || '0.00 m';
+    const now = new Date();
+    const dateStr = now.toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric', timeZone: 'Asia/Kuala_Lumpur' });
+    const timeStr = now.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit', hour12: false, timeZone: 'Asia/Kuala_Lumpur' });
+    const readout = $('time-readout')?.textContent?.trim() || `${dateStr} · ${timeStr} MYT`;
     const pad = 16;
-    ctx.fillStyle = 'rgba(255,255,255,0.92)';
-    ctx.fillRect(pad, pad, Math.min(520, out.width - pad * 2), 54);
+    ctx.fillStyle = 'rgba(255,255,255,0.94)';
+    ctx.fillRect(pad, pad, Math.min(560, out.width - pad * 2), 58);
     ctx.fillStyle = '#0f172a';
     ctx.font = 'bold 16px Inter, sans-serif';
     ctx.fillText(`${title}  ·  Peak ${peak}`, pad + 12, pad + 24);
     ctx.fillStyle = '#475569';
     ctx.font = '12px Inter, sans-serif';
-    ctx.fillText(`${timeTxt}  ·  ARUS Screening (follow official JPS / METMalaysia alerts)`, pad + 12, pad + 44);
+    ctx.fillText(`${dateStr} · ${readout}  ·  ARUS Screening (follow JPS / METMalaysia)`, pad + 12, pad + 45);
+
+    // Top-right depth colorbar + river legend so WhatsApp/Telegram readers can interpret colors
+    const legW = 216;
+    const legH = 66;
+    const legX = out.width - legW - pad;
+    const cutCm = Math.round((state.displayPrefs.depthCutoffM || 0.08) * 100);
+    ctx.fillStyle = 'rgba(255,255,255,0.94)';
+    ctx.fillRect(legX, pad, legW, legH);
+    const grad = ctx.createLinearGradient(legX + 12, 0, legX + legW - 12, 0);
+    grad.addColorStop(0.0, '#67e8f9');
+    grad.addColorStop(0.35, '#0284c7');
+    grad.addColorStop(0.7, '#4f46e5');
+    grad.addColorStop(1.0, '#7c3aed');
+    ctx.fillStyle = grad;
+    ctx.fillRect(legX + 12, pad + 12, legW - 24, 9);
+    ctx.fillStyle = '#334155';
+    ctx.font = '11px Inter, sans-serif';
+    ctx.fillText(`${(cutCm / 100).toFixed(2)} m`, legX + 12, pad + 35);
+    ctx.fillText('0.3 m', legX + 74, pad + 35);
+    ctx.fillText('0.6 m', legX + 122, pad + 35);
+    ctx.fillText('1.2 m+', legX + 168, pad + 35);
+    ctx.fillStyle = '#059669';
+    ctx.fillRect(legX + 12, pad + 48, 14, 3);
+    ctx.fillStyle = '#475569';
+    ctx.fillText(`River channel  (< ${cutCm} cm hidden)`, legX + 32, pad + 54);
+
+    const slug = title.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 32) || 'view';
+    const stamp = `${now.getFullYear()}${String(now.getMonth() + 1).padStart(2, '0')}${String(now.getDate()).padStart(2, '0')}-${timeStr.replace(':', '')}myt`;
     out.toBlob((blob) => {
-      if (blob) downloadBlob(blob, `arus-${state.runId || 'view'}.png`);
+      if (blob) downloadBlob(blob, `arus-${slug}-${stamp}.png`);
     }, 'image/png');
   });
   map.triggerRepaint();
@@ -3736,6 +3776,13 @@ async function fetchRegionalContext(qs) {
         if (ctx.spatial_rain_grid) {
           state.spatialRainGrid = ctx.spatial_rain_grid;
           if (!qs.has('rain')) state.simConfig.rainfallMmHr = 0;
+          const nHrs = ctx.spatial_rain_grid.hourly_mm?.[0]?.length || 0;
+          if (nHrs > 0 && !qs.has('span_hours')) {
+            state.spanHours = nHrs;
+            const parsedStart = Date.parse(ctx.cycle_iso);
+            if (Number.isFinite(parsedStart)) state.startEpochMs = parsedStart;
+            state.tzLabel = 'MYT';
+          }
         }
         if (Array.isArray(ctx.hourly_tide_m) && ctx.hourly_tide_m.length > 0) state.hourlyTideM = ctx.hourly_tide_m;
       }

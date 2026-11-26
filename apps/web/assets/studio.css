@@ -1210,6 +1210,10 @@ input:focus-visible {
   gap: 7px;
   pointer-events: auto;
 }
+[data-profile="researcher"] .left-stack {
+  top: auto;
+  bottom: 92px;
+}
 .lm-head {
   display: flex;
   justify-content: space-between;
