@@ -37,6 +37,8 @@ pub enum ExecutionMode {
 #[serde(deny_unknown_fields)]
 pub struct FeatureFlags {
     #[serde(default = "default_true")]
+    pub allow_simulation: bool,
+    #[serde(default = "default_true")]
     pub allow_interventions: bool,
     #[serde(default = "default_true")]
     pub allow_byod_dem_upload: bool,
@@ -57,6 +59,7 @@ const fn default_true() -> bool {
 impl Default for FeatureFlags {
     fn default() -> Self {
         Self {
+            allow_simulation: true,
             allow_interventions: true,
             allow_byod_dem_upload: true,
             allow_mp4_export: true,
@@ -71,6 +74,7 @@ impl FeatureFlags {
     /// Conservative defaults for public-facing hosted deployments.
     pub const fn hosted_default() -> Self {
         Self {
+            allow_simulation: true,
             allow_interventions: true,
             allow_byod_dem_upload: false,
             allow_mp4_export: false,

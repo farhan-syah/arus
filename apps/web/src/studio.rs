@@ -88,7 +88,7 @@ fn StudioShell() -> Element {
                 }
             }
             div { class: "top-actions",
-                div { class: "seg-group",
+                div { id: "profile-tabs", class: "seg-group",
                     button { class: "seg-btn active", "data-profile": "public", title: "Current active flood view (t = 0) and forecast", "Live" }
                     button { class: "seg-btn", "data-profile": "researcher", title: "What-if simulation studio, interventions, and GIS exports", "Simulate" }
                 }

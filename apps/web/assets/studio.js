@@ -4762,7 +4762,8 @@ function resetUserPrefs() {
 
 function setUiProfile(profile, persist = false) {
   const prev = state.profile;
-  state.profile = profile === 'public' ? 'public' : 'researcher';
+  const simAllowed = state.serverConfig?.features?.allow_simulation !== false;
+  state.profile = (profile === 'public' || !simAllowed) ? 'public' : 'researcher';
   document.documentElement.dataset.profile = state.profile;
   document.querySelectorAll('[data-profile]').forEach((el) => {
     el.classList.toggle('active', el.dataset.profile === state.profile);
@@ -6190,6 +6191,12 @@ async function fetchAndApplyServerConfig(qs) {
     setUiProfile(defaultProfile, false);
     const f = cfg.features || {};
     const hide = (el) => { if (el) el.style.display = 'none'; };
+    if (f.allow_simulation === false) {
+      hide($('profile-tabs'));
+      hide($('btn-open-sim'));
+      hide($('btn-saved-sims'));
+      setUiProfile('public', false);
+    }
     if (f.allow_interventions === false) {
       document.querySelectorAll('[data-tool="bund"], [data-tool="pond"]').forEach(hide);
       hide($('btn-compare'));
