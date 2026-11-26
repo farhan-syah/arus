@@ -618,6 +618,7 @@ pub fn render_studio_page_html(_locale: Locale) -> String {
          <meta charset=\"utf-8\"/>\
          <meta name=\"viewport\" content=\"width=device-width,initial-scale=1\"/>\
          <title>ARUS — Flood Simulation Studio</title>\
+         <link rel=\"icon\" href=\"data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%230284c7'/%3E%3Ctext x='16' y='22' text-anchor='middle' fill='white' font-family='sans-serif' font-size='18' font-weight='bold'%3EA%3C/text%3E%3C/svg%3E\"/>\
          <link rel=\"stylesheet\" href=\"assets/maplibre-gl.css\"/>\
          <link rel=\"stylesheet\" href=\"assets/studio.css\"/>\
          <script src=\"assets/maplibre-gl.js\"></script>\

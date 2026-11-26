@@ -116,7 +116,7 @@ button, input, select, textarea {
 }
 
 /* MapLibre native controls */
-.maplibregl-ctrl-top-right { top: 300px !important; right: 12px !important; }
+.maplibregl-ctrl-top-right { top: 348px !important; right: 12px !important; }
 .maplibregl-ctrl-bottom-left { bottom: 62px !important; left: 12px !important; }
 .maplibregl-ctrl-bottom-right { display: none !important; }
 .maplibregl-ctrl-group {
@@ -361,9 +361,10 @@ button, input, select, textarea {
 
 .intervention-bar {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   justify-content: space-between;
-  gap: 6px;
+  gap: 5px;
   padding: 6px 8px;
   border-radius: 8px;
   background: rgba(13, 148, 136, 0.10);

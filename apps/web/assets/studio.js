@@ -1373,6 +1373,11 @@ function renderSiteVerdict() {
   $('sv-badge').className = `lm-badge ${lvl}`;
   $('sv-badge').textContent = label;
   $('sv-summary').textContent = msg;
+  if (map && typeof maplibregl !== 'undefined') {
+    if (state.verdictMarker) state.verdictMarker.remove();
+    const color = lvl === 'danger' ? '#e11d48' : lvl === 'moderate' ? '#d97706' : '#0284c7';
+    state.verdictMarker = new maplibregl.Marker({ color }).setLngLat([lon, lat]).addTo(map);
+  }
   const onsetTxt = isFlooded && onsetS >= 0 ? fmtSimOffset(onsetS, totalSec) : 'Never';
   const peakDisp = isFlooded ? fmtDepth(rawPeakM, 2) : `< ${Math.round(cut * 100)} cm`;
   const padBtn = $('btn-sv-raise');
@@ -2448,7 +2453,15 @@ function updateTimeReadout() {
     const ts = fmtCalendarTime(state.startEpochMs + cur * 1000, state.tzLabel);
     $('time-readout').textContent = `${ts} (+${fmtMMSS(cur)})`;
   } else {
-    $('time-readout').textContent = `${fmtMMSS(cur)} / ${fmtMMSS(tot)}`;
+    const baseMs = state.serverContext?.context?.cycle_iso
+      ? Date.parse(state.serverContext.context.cycle_iso)
+      : Date.now();
+    const wall = Number.isFinite(baseMs)
+      ? new Date(baseMs + cur * 1000).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+      : '';
+    $('time-readout').textContent = wall
+      ? `${wall} · ${fmtMMSS(cur)} / ${fmtMMSS(tot)}`
+      : `${fmtMMSS(cur)} / ${fmtMMSS(tot)}`;
   }
 
   if (state.spanHours > 0) {
@@ -2483,7 +2496,18 @@ function updateTimeReadout() {
 
 function updateInterventionBar() {
   const count = state.interventions.length;
-  $('iv-count').textContent = `${count} cells`;
+  const dx = state.grid?.metadata?.dx_m || 30;
+  const cellArea = dx * dx;
+  let fillM3 = 0;
+  let cutM3 = 0;
+  for (const iv of state.interventions) {
+    if (iv.delta_m > 0) fillM3 += iv.delta_m * cellArea;
+    else if (iv.delta_m < 0) cutM3 += Math.abs(iv.delta_m) * cellArea;
+  }
+  const volParts = [];
+  if (fillM3 > 0) volParts.push(`+${Math.round(fillM3).toLocaleString()} m³ fill`);
+  if (cutM3 > 0) volParts.push(`-${Math.round(cutM3).toLocaleString()} m³ cut`);
+  $('iv-count').textContent = volParts.length ? `${count} cells (${volParts.join(', ')})` : `${count} cells`;
   $('intervention-bar').classList.toggle('hidden', count === 0);
   $('btn-compare').classList.toggle('hidden', count === 0);
   $('btn-compare').disabled = count === 0;
@@ -2657,6 +2681,9 @@ function wireUi() {
     const p = PRESETS.find((x) => x.id === sel.value);
     if (!p) return;
     if ($('coord-search')) $('coord-search').value = '';
+    if ($('site-verdict')) $('site-verdict').classList.add('hidden');
+    state.verdictTarget = null;
+    if (state.verdictMarker) { state.verdictMarker.remove(); state.verdictMarker = null; }
     state.boundaryGeoJson = null;
     state.boundaryGrid = null;
     state.boundaryCellMask = null;
@@ -2941,7 +2968,7 @@ function wireUi() {
   });
 
   $('btn-speed').addEventListener('click', () => {
-    state.speed = state.speed === 1 ? 2 : state.speed === 2 ? 5 : 1;
+    state.speed = state.speed === 0.5 ? 1 : state.speed === 1 ? 2 : state.speed === 2 ? 5 : 0.5;
     $('btn-speed').textContent = `${state.speed}x`;
   });
 
@@ -2993,10 +3020,54 @@ function wireUi() {
   });
 
   $('btn-export-asc').addEventListener('click', () => {
-    if (state.runId) window.open(apiUrl(`api/v1/runs/${state.runId}/export/max-depth.asc`), '_blank');
+    if (!state.grid) return;
+    if (state.runId && !state.runId.startsWith('local-')) {
+      window.open(apiUrl(`api/v1/runs/${state.runId}/export/max-depth.asc`), '_blank');
+      return;
+    }
+    const m = state.grid.metadata;
+    const maxD = state.grid.envelope?.max_depth_m || state.frames[state.frames.length - 1]?.depth || [];
+    const lines = [
+      `ncols ${m.cols}`,
+      `nrows ${m.rows}`,
+      `xllcorner ${m.wgs84_bounds[0].toFixed(6)}`,
+      `yllcorner ${m.wgs84_bounds[1].toFixed(6)}`,
+      `cellsize ${((m.wgs84_bounds[2] - m.wgs84_bounds[0]) / m.cols).toFixed(8)}`,
+      'NODATA_value -9999',
+    ];
+    for (let r = m.rows - 1; r >= 0; r--) {
+      const row = [];
+      for (let c = 0; c < m.cols; c++) {
+        const i = r * m.cols + c;
+        row.push(m.active_mask[i] ? (maxD[i] || 0).toFixed(4) : '-9999');
+      }
+      lines.push(row.join(' '));
+    }
+    downloadBlob(new Blob([lines.join('\n')], { type: 'text/plain;charset=utf-8' }), `arus-${state.runId || 'max-depth'}.asc`);
   });
   $('btn-export-csv').addEventListener('click', () => {
-    if (state.runId) window.open(apiUrl(`api/v1/runs/${state.runId}/export/outlooks.csv`), '_blank');
+    if (!state.grid || !state.frames.length) return;
+    if (state.runId && !state.runId.startsWith('local-')) {
+      window.open(apiUrl(`api/v1/runs/${state.runId}/export/outlooks.csv`), '_blank');
+      return;
+    }
+    const m = state.grid.metadata;
+    const cut = state.displayPrefs.depthCutoffM || 0.08;
+    const cellKm2 = (m.dx_m * m.dx_m) / 1_000_000;
+    const rows = ['time_s,flooded_cells,flooded_area_km2,avg_depth_m,peak_depth_m'];
+    for (const f of state.frames) {
+      let n = 0, flooded = 0, sum = 0, peak = 0;
+      for (let i = 0; i < f.depth.length; i++) {
+        if (!m.active_mask[i]) continue;
+        n++;
+        const h = f.depth[i] || 0;
+        sum += h;
+        if (h >= cut) flooded++;
+        if (h > peak) peak = h;
+      }
+      rows.push(`${f.time_s.toFixed(1)},${flooded},${(flooded * cellKm2).toFixed(4)},${(n ? sum / n : 0).toFixed(4)},${peak.toFixed(4)}`);
+    }
+    downloadBlob(new Blob([rows.join('\n')], { type: 'text/csv;charset=utf-8' }), `arus-${state.runId || 'outlooks'}.csv`);
   });
   $('btn-snap').addEventListener('click', captureSnapshotPng);
   $('btn-rec').addEventListener('click', toggleVideoRecording);
@@ -3039,9 +3110,33 @@ function downloadBlob(blob, filename) {
 
 function captureSnapshotPng() {
   if (!map) return;
-  map.getCanvas().toBlob((blob) => {
-    if (blob) downloadBlob(blob, `arus-${state.runId || 'view'}.png`);
-  }, 'image/png');
+  map.once('render', () => {
+    const src = map.getCanvas();
+    const out = document.createElement('canvas');
+    out.width = src.width;
+    out.height = src.height;
+    const ctx = out.getContext('2d');
+    ctx.fillStyle = '#f8fafc';
+    ctx.fillRect(0, 0, out.width, out.height);
+    ctx.drawImage(src, 0, 0);
+    // Stamp compact alert-ready header bar onto the exported PNG
+    const title = $('po-title')?.textContent || 'ARUS Flood Screening';
+    const peak = $('lm-peak')?.textContent || '0.00 m';
+    const timeTxt = $('time-readout')?.textContent || '';
+    const pad = 16;
+    ctx.fillStyle = 'rgba(255,255,255,0.92)';
+    ctx.fillRect(pad, pad, Math.min(520, out.width - pad * 2), 54);
+    ctx.fillStyle = '#0f172a';
+    ctx.font = 'bold 16px Inter, sans-serif';
+    ctx.fillText(`${title}  ·  Peak ${peak}`, pad + 12, pad + 24);
+    ctx.fillStyle = '#475569';
+    ctx.font = '12px Inter, sans-serif';
+    ctx.fillText(`${timeTxt}  ·  ARUS Screening (follow official JPS / METMalaysia alerts)`, pad + 12, pad + 44);
+    out.toBlob((blob) => {
+      if (blob) downloadBlob(blob, `arus-${state.runId || 'view'}.png`);
+    }, 'image/png');
+  });
+  map.triggerRepaint();
 }
 
 function toggleVideoRecording() {
