@@ -387,12 +387,24 @@ fn interactive_limits(cfg: &ServerConfig) -> sim::ExecutionLimits {
 
 async fn post_simulation(
     State(state): State<ApiState>,
+    headers: axum::http::HeaderMap,
     Json(request): Json<CreateSimulationRequest>,
 ) -> Result<(StatusCode, Json<SimulationSummaryResponse>), (StatusCode, Json<ErrorResponse>)> {
     if !state.config.features.allow_simulation {
-        return Err(forbidden(
-            "Interactive simulation is disabled on this server",
-        ));
+        let internal_ok = std::env::var("ARUS_INTERNAL_TOKEN")
+            .ok()
+            .filter(|t| !t.is_empty())
+            .is_some_and(|expected| {
+                headers
+                    .get("x-arus-internal-token")
+                    .and_then(|v| v.to_str().ok())
+                    .is_some_and(|got| got == expected)
+            });
+        if !internal_ok {
+            return Err(forbidden(
+                "Interactive simulation is disabled on this server",
+            ));
+        }
     }
     if request.ascii_dem.is_some() && !state.config.features.allow_byod_dem_upload {
         return Err(forbidden(
