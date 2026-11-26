@@ -677,11 +677,14 @@ async function applyBoundaryGeometry(geom, runSim = true) {
   const midLon = (minLon + maxLon) * 0.5;
   const mPerDegLat = 111320.0;
   const mPerDegLon = Math.max(10000.0, 111320.0 * Math.cos((midLat * Math.PI) / 180));
-  const spanXm = (maxLon - minLon) * mPerDegLon * 1.06;
-  const spanYm = (maxLat - minLat) * mPerDegLat * 1.06;
+  // Buffer the physics mesh by +28% (+14% per side) so cross-border upstream catchments
+  // (e.g. Sg. Bernam headwaters in Perak, Sg. Langat in Negeri Sembilan) route naturally
+  // into the selected administrative region while visual output stays clipped to the border.
+  const spanXm = (maxLon - minLon) * mPerDegLon * 1.28;
+  const spanYm = (maxLat - minLat) * mPerDegLat * 1.28;
   const aspect = Math.max(0.4, Math.min(2.5, spanXm / Math.max(1, spanYm)));
-  const rows = Math.max(28, Math.min(56, Math.round(Math.sqrt(2000 / aspect))));
-  const cols = Math.max(28, Math.min(56, Math.round(rows * aspect)));
+  const rows = Math.max(32, Math.min(72, Math.round(Math.sqrt(3600 / aspect))));
+  const cols = Math.max(32, Math.min(72, Math.round(rows * aspect)));
   const dxM = Math.max(45.0, Math.min(2400.0, Math.max(spanXm / cols, spanYm / rows)));
   state.center = { lat: midLat, lon: midLon };
   state.boundaryGrid = { cols, rows, dxM };
