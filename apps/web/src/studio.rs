@@ -694,8 +694,11 @@ fn StudioShell() -> Element {
                             input { id: "loc-query", class: "ctl-select", r#type: "text", placeholder: "Place or administrative boundary (e.g. Klang, Selangor)", style: "flex:1" }
                         }
                         div { style: "display:flex;justify-content:space-between;align-items:center;gap:8px",
-                            span { style: "font-size:11px;color:var(--ink-3)", "Star (★) any location below to make it your default startup view. Server locations are read-only." }
-                            button { id: "btn-loc-add", class: "btn btn-xs primary", r#type: "button", "+ Add Location" }
+                            span { style: "font-size:11px;color:var(--ink-3)", "Click any row to view/edit details. Star (★) sets your default view." }
+                            div { style: "display:flex;gap:6px;flex-shrink:0",
+                                button { id: "btn-loc-new", class: "btn btn-xs", r#type: "button", "+ New" }
+                                button { id: "btn-loc-add", class: "btn btn-xs primary", r#type: "button", "+ Add Location" }
+                            }
                         }
                     }
                     div { id: "loc-list", class: "saved-sims-list" }

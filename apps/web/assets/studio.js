@@ -3368,6 +3368,18 @@ function wireUi() {
     if ($('loc-bearing')) $('loc-bearing').value = String(Math.round(map.getBearing()));
   });
   $('btn-loc-add')?.addEventListener('click', addOrUpdateCustomLocation);
+  $('btn-loc-new')?.addEventListener('click', () => {
+    editingCustomLocId = null;
+    if ($('loc-name')) $('loc-name').value = '';
+    if ($('loc-query')) $('loc-query').value = '';
+    if ($('loc-lat')) $('loc-lat').value = '';
+    if ($('loc-lon')) $('loc-lon').value = '';
+    if ($('loc-zoom')) $('loc-zoom').value = '11.5';
+    if ($('loc-pitch')) $('loc-pitch').value = '0';
+    if ($('loc-bearing')) $('loc-bearing').value = '0';
+    setLocFormDisabled(false);
+    $('loc-name')?.focus();
+  });
   $('btn-settings-reset-default')?.addEventListener('click', () => {
     saveUserPrefs({ default_location_id: null, last_center: null });
     renderManageLocationsList();
@@ -4512,8 +4524,41 @@ function rebuildPresetDropdown() {
   }
 }
 
+function setLocFormDisabled(disabled) {
+  ['loc-name', 'loc-kind', 'loc-lat', 'loc-lon', 'loc-zoom', 'loc-pitch', 'loc-bearing', 'loc-query', 'btn-loc-use-view'].forEach((id) => {
+    const el = $(id);
+    if (el) el.disabled = disabled;
+  });
+  const addBtn = $('btn-loc-add');
+  if (addBtn) {
+    addBtn.disabled = disabled;
+    addBtn.textContent = disabled ? 'Server (Read-Only)' : (editingCustomLocId ? 'Save Changes' : '+ Add Location');
+  }
+}
+
+function populateLocationForm(loc) {
+  editingCustomLocId = loc.isServer ? null : loc.id;
+  if ($('loc-name')) $('loc-name').value = loc.name || '';
+  const isB = Boolean(loc.boundaryQuery);
+  if ($('loc-kind')) {
+    $('loc-kind').value = isB ? 'boundary' : 'point';
+    $('loc-kind').dispatchEvent(new Event('change'));
+  }
+  if (isB) {
+    if ($('loc-query')) $('loc-query').value = loc.boundaryQuery || '';
+  } else {
+    if ($('loc-lat')) $('loc-lat').value = String(loc.lat ?? '');
+    if ($('loc-lon')) $('loc-lon').value = String(loc.lon ?? '');
+    if ($('loc-zoom')) $('loc-zoom').value = String(loc.zoom ?? 11.5);
+    if ($('loc-pitch')) $('loc-pitch').value = String(loc.pitch ?? 0);
+    if ($('loc-bearing')) $('loc-bearing').value = String(loc.bearing ?? 0);
+  }
+  setLocFormDisabled(Boolean(loc.isServer));
+}
+
 function openAppSettingsModal(prefillCurrentView = false) {
   editingCustomLocId = null;
+  setLocFormDisabled(false);
   if ($('btn-loc-add')) $('btn-loc-add').textContent = '+ Add Location';
   // Ensure Manage Locations tab is active
   document.querySelectorAll('[data-settings-tab]').forEach((b) => {
@@ -4643,13 +4688,9 @@ function renderManageLocationsList() {
     const info = document.createElement('div');
     info.className = 'saved-sim-info';
     info.style.cursor = 'pointer';
+    info.title = loc.isServer ? 'Click to view details (read-only)' : 'Click to edit details';
     info.addEventListener('click', () => {
-      const sel = $('preset-select');
-      if (sel) {
-        sel.value = loc.id;
-        sel.dispatchEvent(new Event('change'));
-      }
-      $('app-settings-modal')?.classList.add('hidden');
+      populateLocationForm(loc);
     });
 
     const title = document.createElement('div');
@@ -4675,33 +4716,23 @@ function renderManageLocationsList() {
       editBtn.type = 'button';
       editBtn.className = 'btn btn-xs';
       editBtn.textContent = 'Edit';
-      editBtn.addEventListener('click', () => {
-        editingCustomLocId = loc.id;
-        if ($('loc-name')) $('loc-name').value = loc.name || '';
-        const isB = Boolean(loc.boundaryQuery);
-        if ($('loc-kind')) {
-          $('loc-kind').value = isB ? 'boundary' : 'point';
-          $('loc-kind').dispatchEvent(new Event('change'));
-        }
-        if (isB) {
-          if ($('loc-query')) $('loc-query').value = loc.boundaryQuery || '';
-        } else {
-          if ($('loc-lat')) $('loc-lat').value = String(loc.lat);
-          if ($('loc-lon')) $('loc-lon').value = String(loc.lon);
-          if ($('loc-zoom')) $('loc-zoom').value = String(loc.zoom);
-          if ($('loc-pitch')) $('loc-pitch').value = String(loc.pitch || 0);
-          if ($('loc-bearing')) $('loc-bearing').value = String(loc.bearing || 0);
-        }
-        if ($('btn-loc-add')) $('btn-loc-add').textContent = 'Save Changes';
+      editBtn.addEventListener('click', (ev) => {
+        ev.stopPropagation();
+        populateLocationForm(loc);
       });
       const delBtn = document.createElement('button');
       delBtn.type = 'button';
       delBtn.className = 'btn btn-xs';
       delBtn.textContent = 'Delete';
-      delBtn.addEventListener('click', () => {
+      delBtn.addEventListener('click', (ev) => {
+        ev.stopPropagation();
         const next = loadCustomLocations().filter((x) => x.id !== loc.id);
         saveCustomLocations(next);
         if (activeDefId === loc.id) saveUserPrefs({ default_location_id: null, last_center: null });
+        if (editingCustomLocId === loc.id) {
+          editingCustomLocId = null;
+          setLocFormDisabled(false);
+        }
         rebuildPresetDropdown();
         renderManageLocationsList();
       });
