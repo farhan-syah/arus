@@ -872,6 +872,14 @@ function updateSmoothWaterImage(meta, env, frame) {
     }
   }
 
+  const landMask = (
+    !state.uploadedDem
+    && state.cachedDem
+    && state.cachedDem.landMask
+    && state.cachedDem.maskW === W
+    && state.cachedDem.maskH === H
+  ) ? state.cachedDem.landMask : null;
+
   for (let py = 0; py < H; py++) {
     const fy = (1 - (py + 0.5) / H) * (rows - 1);
     const rNearest = Math.min(rows - 1, Math.max(0, Math.round(fy)));
@@ -881,6 +889,9 @@ function updateSmoothWaterImage(meta, env, frame) {
       const out = (py * W + px) * 4;
 
       if (!meta.active_mask[rNearest * cols + cNearest]) {
+        continue;
+      }
+      if (landMask && !landMask[py * W + px]) {
         continue;
       }
 
@@ -1589,7 +1600,15 @@ async function fetchTerrariumElevations(centerLon, centerLat, cols, rows, dxM) {
   for (const s of samples) {
     const data = tileData.get(s.tkey);
     if (!data) { raw.push(null); continue; }
-    let z = NaN;
+    // Keep open ocean / narrow sea straits (center z <= 0.05 m) strictly masked as nodata;
+    // never let neighboring coastal land pixels promote a sea cell into active land.
+    const cOff = (s.py * 256 + s.px) * 4;
+    const centerZ = (data[cOff] * 256 + data[cOff + 1] + data[cOff + 2] / 256) - 32768;
+    if (!(Number.isFinite(centerZ) && centerZ > 0.05)) {
+      raw.push(null);
+      continue;
+    }
+    let z = centerZ;
     if (useSubgridPool) {
       // 3x3 sub-grid lower-quartile (p25) pooling preserves narrow inland flood valleys
       // (e.g. 300-500 m kampung depressions) on coarse district/statewide meshes.
@@ -1607,24 +1626,32 @@ async function fetchTerrariumElevations(centerLon, centerLat, cols, rows, dxM) {
         vals.sort((a, b) => a - b);
         z = vals[Math.floor(vals.length * 0.25)];
       }
-    } else {
-      const off = (s.py * 256 + s.px) * 4;
-      z = (data[off] * 256 + data[off + 1] + data[off + 2] / 256) - 32768;
     }
-    // Mask open ocean / sea-level water (z <= 0.05 m) as inactive nodata so coastal
-    // administrative boundaries never simulate floodwater on top of the sea.
-    if (Number.isFinite(z) && z > 0.05) {
-      raw.push(z);
-      validCount++;
-      if (z < minZ) minZ = z;
-      if (z > maxZ) maxZ = z;
-    } else {
-      raw.push(null);
-    }
+    raw.push(z);
+    validCount++;
+    if (z < minZ) minZ = z;
+    if (z > maxZ) maxZ = z;
   }
   if (validCount < cols * rows * 0.15 || (maxZ - minZ) < 0.2) return null;
   const elevations = smoothScreeningDem(raw, cols, rows);
-  state.cachedDem = { key, elevations };
+  // Build a high-resolution shoreline land mask at rasterCanvas resolution from the
+  // already-fetched Terrarium tiles so coarse coastal cells never bleed onto sea channels.
+  const maskW = rasterCanvas.width;
+  const maskH = rasterCanvas.height;
+  const landMask = new Uint8Array(maskW * maskH);
+  for (let py = 0; py < maskH; py++) {
+    const lat = maxLat - ((py + 0.5) / maskH) * (maxLat - minLat);
+    for (let px = 0; px < maskW; px++) {
+      const lon = minLon + ((px + 0.5) / maskW) * (maxLon - minLon);
+      const tp = lonLatToTilePixel(lon, lat, zoom);
+      const d = tileData.get(`${tp.tx}/${tp.ty}`);
+      if (!d) { landMask[py * maskW + px] = 1; continue; }
+      const off = (tp.py * 256 + tp.px) * 4;
+      const v = (d[off] * 256 + d[off + 1] + d[off + 2] / 256) - 32768;
+      landMask[py * maskW + px] = (Number.isFinite(v) && v > 0.05) ? 1 : 0;
+    }
+  }
+  state.cachedDem = { key, elevations, landMask, maskW, maskH };
   return elevations;
 }
 
