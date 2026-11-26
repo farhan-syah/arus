@@ -43,6 +43,19 @@ fn StudioShell() -> Element {
                         placeholder: "Search place or lat, lon",
                     }
                     button { id: "btn-save-default", class: "btn btn-xs", title: "Save current view as your personal default home location", "☆ Home" }
+                    div { class: "alerts-wrap",
+                        button { id: "btn-alerts", class: "btn btn-xs alert-btn none", title: "Active flood alerts within monitored coverage",
+                            span { class: "alert-tri", "▲" }
+                            span { id: "alerts-badge", "0" }
+                        }
+                        div { id: "alerts-dropdown", class: "hud alerts-dropdown hidden",
+                            div { class: "alerts-dd-head",
+                                span { id: "alerts-dd-title", "Active Flood Alerts" }
+                                span { id: "alerts-dd-sub", class: "alerts-dd-sub", "" }
+                            }
+                            div { id: "alerts-dd-list", class: "alerts-dd-list" }
+                        }
+                    }
                 }
             }
             div { class: "top-actions",

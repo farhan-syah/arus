@@ -189,6 +189,8 @@ pub struct ServerConfig {
     #[serde(default)]
     pub disclaimer: Option<String>,
     #[serde(default)]
+    pub alert_bounds: Option<[f64; 4]>,
+    #[serde(default)]
     pub presets: Vec<PresetLocation>,
 }
 
@@ -211,6 +213,7 @@ impl Default for ServerConfig {
             features: FeatureFlags::default(),
             limits: ServerLimits::default(),
             disclaimer: None,
+            alert_bounds: None,
             presets: Vec::new(),
         }
     }

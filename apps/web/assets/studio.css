@@ -878,6 +878,180 @@ a.btn {
 .search-input {
   min-width: 155px;
 }
+.alerts-wrap {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+}
+.alert-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-weight: 600;
+  transition: background 0.15s, color 0.15s, border-color 0.15s;
+}
+.alert-btn.none {
+  color: var(--ink-3);
+}
+.alert-btn.advisory {
+  background: rgba(2, 132, 199, 0.14);
+  border-color: rgba(2, 132, 199, 0.45);
+  color: #0369a1;
+}
+.alert-btn.warning {
+  background: rgba(217, 119, 6, 0.16);
+  border-color: rgba(217, 119, 6, 0.55);
+  color: #b45309;
+}
+.alert-btn.danger {
+  background: rgba(220, 38, 38, 0.16);
+  border-color: rgba(220, 38, 38, 0.6);
+  color: #b91c1c;
+}
+.alert-tri {
+  font-size: 11px;
+  line-height: 1;
+}
+.alerts-dropdown {
+  position: absolute;
+  top: calc(100% + 8px);
+  left: 0;
+  width: 320px;
+  max-height: 360px;
+  display: flex;
+  flex-direction: column;
+  padding: 10px;
+  gap: 8px;
+  z-index: 70;
+}
+.alerts-dd-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--ink-1);
+}
+.alerts-dd-sub {
+  font-size: 10.5px;
+  font-weight: 500;
+  color: var(--ink-3);
+}
+.alerts-dd-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  overflow-y: auto;
+  max-height: 295px;
+}
+.alert-row {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  padding: 8px 10px;
+  border-radius: 8px;
+  background: var(--hud-well);
+  border: 1px solid var(--hud-border);
+  cursor: pointer;
+  text-align: left;
+  transition: border-color 0.15s, background 0.15s;
+}
+.alert-row:hover {
+  border-color: var(--accent);
+  background: rgba(2, 132, 199, 0.08);
+}
+.alert-row-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--ink-1);
+}
+.alert-row-meta {
+  font-size: 11px;
+  color: var(--ink-3);
+}
+.alert-pill {
+  font-size: 9.5px;
+  font-weight: 700;
+  padding: 1px 6px;
+  border-radius: 999px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+.alert-pill.danger { background: rgba(220, 38, 38, 0.16); color: #b91c1c; }
+.alert-pill.warning { background: rgba(217, 119, 6, 0.18); color: #b45309; }
+.alert-pill.advisory { background: rgba(2, 132, 199, 0.16); color: #0369a1; }
+
+/* Zoom-aware pulsing flood beacons (State -> District -> Region -> Disappear) */
+.flood-beacon {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  user-select: none;
+}
+.flood-beacon-core {
+  position: relative;
+  z-index: 2;
+  min-width: 22px;
+  height: 22px;
+  padding: 0 5px;
+  border-radius: 999px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 11px;
+  font-weight: 700;
+  color: #fff;
+  border: 2px solid rgba(255, 255, 255, 0.92);
+  box-shadow: 0 2px 8px rgba(15, 23, 42, 0.35);
+}
+.flood-beacon.singular .flood-beacon-core {
+  min-width: 14px;
+  width: 14px;
+  height: 14px;
+  padding: 0;
+}
+.flood-beacon-ring {
+  position: absolute;
+  inset: -6px;
+  border-radius: 999px;
+  z-index: 1;
+  animation: beacon-pulse 1.9s cubic-bezier(0.2, 0.6, 0.4, 1) infinite;
+  pointer-events: none;
+}
+.flood-beacon.advisory .flood-beacon-core { background: #0284c7; }
+.flood-beacon.advisory .flood-beacon-ring { background: rgba(2, 132, 199, 0.45); }
+.flood-beacon.warning .flood-beacon-core { background: #d97706; }
+.flood-beacon.warning .flood-beacon-ring { background: rgba(217, 119, 6, 0.48); }
+.flood-beacon.danger .flood-beacon-core { background: #dc2626; }
+.flood-beacon.danger .flood-beacon-ring { background: rgba(220, 38, 38, 0.52); }
+
+@keyframes beacon-pulse {
+  0% { transform: scale(0.75); opacity: 0.85; }
+  75% { transform: scale(2.05); opacity: 0; }
+  100% { transform: scale(2.05); opacity: 0; }
+}
+.beacon-tooltip {
+  position: fixed;
+  z-index: 90;
+  pointer-events: none;
+  padding: 8px 10px;
+  border-radius: 8px;
+  background: rgba(15, 23, 42, 0.94);
+  color: #f8fafc;
+  font-size: 11.5px;
+  line-height: 1.4;
+  box-shadow: 0 8px 24px rgba(15, 23, 42, 0.35);
+  max-width: 240px;
+}
+.beacon-tooltip strong { display: block; font-size: 12px; margin-bottom: 2px; }
+.beacon-tooltip .bt-sub { color: #cbd5e1; font-size: 10.5px; }
 [data-profile="researcher"]:not([data-presentation="true"]) .public-outlook {
   display: none !important;
 }

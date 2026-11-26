@@ -275,6 +275,7 @@ function initMap() {
   map.on('mousemove', (e) => handleHover(e.lngLat.lng, e.lngLat.lat));
   map.on('click', (e) => handleMapClick(e.lngLat.lng, e.lngLat.lat));
   map.on('moveend', updateFrameTelemetry);
+  map.on('zoomend', () => updateBeaconsForZoom());
 }
 
 function setBasemap(mode) {
@@ -1144,6 +1145,7 @@ function renderSecondaryLiveOverlays(forceRaster) {
 function renderFloodCanvas(forceRaster) {
   if (!state.grid || !state.frames.length || !layersReady) return;
   renderSecondaryLiveOverlays(forceRaster);
+  refreshAlertsAndBeacons();
   const meta = state.grid.metadata;
   const env = state.grid.envelope;
   const cols = meta.cols;
@@ -2029,6 +2031,7 @@ async function loadAllPrecomputedLiveBasins(primaryBasinId) {
       } catch (_) {}
     }));
     renderSecondaryLiveOverlays(true);
+    refreshAlertsAndBeacons();
   } catch (_) {}
 }
 
@@ -3332,6 +3335,16 @@ function wireUi() {
       }
     });
   });
+  $('btn-alerts')?.addEventListener('click', (e) => {
+    e.stopPropagation();
+    $('alerts-dropdown')?.classList.toggle('hidden');
+  });
+  document.addEventListener('click', (e) => {
+    const dd = $('alerts-dropdown');
+    if (dd && !dd.classList.contains('hidden') && !e.target.closest('.alerts-wrap')) {
+      dd.classList.add('hidden');
+    }
+  });
   $('btn-rec-close')?.addEventListener('click', closeRecPreviewModal);
   $('btn-rec-dismiss')?.addEventListener('click', closeRecPreviewModal);
   $('btn-saved-sims')?.addEventListener('click', openSavedSimsModal);
@@ -3346,6 +3359,7 @@ function wireUi() {
     const typing = tag === 'input' || tag === 'select' || tag === 'textarea';
     if (e.key === 'Escape') {
       ['sources-modal', 'layers-modal', 'sim-modal', 'saved-sims-modal', 'about-modal'].forEach((id) => { const el = $(id); if (el) el.classList.add('hidden'); });
+      $('alerts-dropdown')?.classList.add('hidden');
       closeRecPreviewModal();
       if (state.pickingStressSite) {
         state.pickingStressSite = false;
@@ -3974,9 +3988,11 @@ function setUiProfile(profile, persist = false) {
     if (state.layer === 'diff') setLayer('depth');
     if ($('inspector')) $('inspector').classList.add('hidden');
     renderSecondaryLiveOverlays(true);
+    refreshAlertsAndBeacons();
   } else {
     if ($('site-verdict')) $('site-verdict').classList.add('hidden');
     renderSecondaryLiveOverlays(false);
+    clearFloodBeacons();
     // Switching from Live -> Simulate brings t=0 initial state, paused, without auto-solving
     if (prev === 'public' && state.frames.length) {
       state.playing = false;
@@ -3992,6 +4008,386 @@ function setUiProfile(profile, persist = false) {
   }
   updateLiveMetrics();
   if (persist) saveUserPrefs({ profile: state.profile });
+}
+
+// ---------- Zoom-Aware Pulsing Flood Beacons & Top-Bar Alerts ----------
+let activeBeaconMarkers = [];
+let cachedFloodClusters = [];
+let lastAlertsComputeKey = '';
+let lastBeaconRenderKey = '';
+let beaconTooltipEl = null;
+
+function severityRank(sev) {
+  return sev === 'danger' ? 3 : (sev === 'warning' ? 2 : (sev === 'advisory' ? 1 : 0));
+}
+
+function severityLabel(sev) {
+  return sev === 'danger' ? 'Danger' : (sev === 'warning' ? 'Warning' : 'Advisory');
+}
+
+function depthToSeverity(depthM) {
+  if (depthM >= 0.60) return 'danger';
+  if (depthM >= 0.30) return 'warning';
+  return 'advisory';
+}
+
+function formatStateName(basinId) {
+  const base = String(basinId || 'region').replace(/-(west|east|north|south)$/i, '');
+  return base.replace(/(^|[-_])\w/g, (m) => m.toUpperCase()).replace(/[-_]/g, ' ');
+}
+
+function ensureBeaconTooltip() {
+  if (beaconTooltipEl) return beaconTooltipEl;
+  beaconTooltipEl = document.createElement('div');
+  beaconTooltipEl.className = 'beacon-tooltip hidden';
+  document.body.appendChild(beaconTooltipEl);
+  return beaconTooltipEl;
+}
+
+function hideBeaconTooltip() {
+  if (beaconTooltipEl) beaconTooltipEl.classList.add('hidden');
+}
+
+function clearFloodBeacons() {
+  for (const m of activeBeaconMarkers) {
+    try { m.remove(); } catch (_) {}
+  }
+  activeBeaconMarkers = [];
+  lastBeaconRenderKey = '';
+  hideBeaconTooltip();
+}
+
+function computeAllLiveFloodClusters() {
+  const sources = [];
+  if (state.liveOverlays.size > 0) {
+    for (const [basinId, ov] of state.liveOverlays.entries()) {
+      sources.push({ basinId, grid: ov.grid, frames: ov.frames });
+    }
+  } else if (state.grid && state.frames.length) {
+    sources.push({ basinId: state.liveBasinId || 'local', grid: state.grid, frames: state.frames });
+  }
+
+  const alertBounds = Array.isArray(state.serverConfig?.alert_bounds) && state.serverConfig.alert_bounds.length === 4
+    ? state.serverConfig.alert_bounds
+    : null;
+  const minDepth = 0.15;
+  const clusters = [];
+
+  for (const src of sources) {
+    const meta = src.grid?.metadata;
+    const env = src.grid?.envelope;
+    if (!meta || !src.frames?.length) continue;
+    const cols = meta.cols;
+    const rows = meta.rows;
+    const [minLon, minLat, maxLon, maxLat] = meta.wgs84_bounds;
+    const cellAreaKm2 = (meta.dx_m * meta.dx_m) / 1e6;
+    const fIdx = Math.min(state.frameIdx, src.frames.length - 1);
+    const depths = state.envelopeMode && env?.max_depth_m ? env.max_depth_m : src.frames[fIdx].depth;
+    const mask = meta.active_mask;
+    const visited = new Uint8Array(cols * rows);
+    const queue = new Int32Array(cols * rows);
+
+    for (let r = 0; r < rows; r++) {
+      for (let c = 0; c < cols; c++) {
+        const start = r * cols + c;
+        if (visited[start] || !mask[start] || depths[start] < minDepth) continue;
+        let head = 0;
+        let tail = 0;
+        queue[tail++] = start;
+        visited[start] = 1;
+        let sumLat = 0;
+        let sumLon = 0;
+        let peakDepth = 0;
+        let peakLat = 0;
+        let peakLon = 0;
+        let count = 0;
+
+        while (head < tail) {
+          const idx = queue[head++];
+          const cr = Math.floor(idx / cols);
+          const cc = idx - cr * cols;
+          const h = depths[idx];
+          const lat = minLat + ((cr + 0.5) / rows) * (maxLat - minLat);
+          const lon = minLon + ((cc + 0.5) / cols) * (maxLon - minLon);
+          sumLat += lat;
+          sumLon += lon;
+          count++;
+          if (h > peakDepth) {
+            peakDepth = h;
+            peakLat = lat;
+            peakLon = lon;
+          }
+          const neighbors = [
+            cr > 0 ? idx - cols : -1,
+            cr + 1 < rows ? idx + cols : -1,
+            cc > 0 ? idx - 1 : -1,
+            cc + 1 < cols ? idx + 1 : -1,
+          ];
+          for (const n of neighbors) {
+            if (n >= 0 && !visited[n] && mask[n] && depths[n] >= minDepth) {
+              visited[n] = 1;
+              queue[tail++] = n;
+            }
+          }
+        }
+
+        const cLat = peakDepth > 0 ? peakLat : sumLat / count;
+        const cLon = peakDepth > 0 ? peakLon : sumLon / count;
+        if (alertBounds) {
+          const [aMinLon, aMinLat, aMaxLon, aMaxLat] = alertBounds;
+          if (cLon < aMinLon || cLon > aMaxLon || cLat < aMinLat || cLat > aMaxLat) continue;
+        }
+        const areaKm2 = count * cellAreaKm2;
+        if (areaKm2 < 0.5 && peakDepth < 0.25) continue;
+        clusters.push({
+          basinId: src.basinId,
+          stateName: formatStateName(src.basinId),
+          lat: cLat,
+          lon: cLon,
+          peakDepthM: peakDepth,
+          areaKm2,
+          severity: depthToSeverity(peakDepth),
+        });
+      }
+    }
+  }
+
+  clusters.sort((a, b) => (severityRank(b.severity) - severityRank(a.severity)) || (b.areaKm2 - a.areaKm2));
+  return clusters;
+}
+
+function renderAlertsButtonAndDropdown(clusters) {
+  const btn = $('btn-alerts');
+  const badge = $('alerts-badge');
+  const list = $('alerts-dd-list');
+  const sub = $('alerts-dd-sub');
+  if (!btn || !badge || !list) return;
+
+  let maxSev = 'none';
+  for (const c of clusters) {
+    if (severityRank(c.severity) > severityRank(maxSev)) maxSev = c.severity;
+  }
+  btn.className = `btn btn-xs alert-btn ${maxSev}`;
+  badge.textContent = String(clusters.length);
+  btn.title = clusters.length
+    ? `${clusters.length} active flood zone${clusters.length === 1 ? '' : 's'} (max: ${severityLabel(maxSev)})`
+    : 'No active flood alerts in monitored coverage';
+  if (sub) {
+    sub.textContent = clusters.length
+      ? `${clusters.length} zone${clusters.length === 1 ? '' : 's'} · ${state.envelopeMode ? '5-Day Peak' : 'Current Frame'}`
+      : 'All clear';
+  }
+
+  list.replaceChildren();
+  if (!clusters.length) {
+    const empty = document.createElement('div');
+    empty.style.cssText = 'padding:12px;text-align:center;font-size:11.5px;color:var(--ink-3)';
+    empty.textContent = 'No active flood zones above 15 cm in monitored coverage.';
+    list.appendChild(empty);
+    return;
+  }
+
+  for (const item of clusters.slice(0, 25)) {
+    const row = document.createElement('button');
+    row.type = 'button';
+    row.className = 'alert-row';
+
+    const top = document.createElement('div');
+    top.className = 'alert-row-top';
+    const loc = document.createElement('span');
+    loc.textContent = `${item.stateName} · ${item.lat.toFixed(2)}°N, ${item.lon.toFixed(2)}°E`;
+    const pill = document.createElement('span');
+    pill.className = `alert-pill ${item.severity}`;
+    pill.textContent = severityLabel(item.severity);
+    top.append(loc, pill);
+
+    const meta = document.createElement('div');
+    meta.className = 'alert-row-meta';
+    meta.textContent = `Peak ${fmtDepth(item.peakDepthM, 2)} · Affected ${item.areaKm2.toFixed(1)} km²`;
+
+    row.append(top, meta);
+    row.addEventListener('click', () => {
+      $('alerts-dropdown')?.classList.add('hidden');
+      if (map) {
+        map.flyTo({ center: [item.lon, item.lat], zoom: 11.4, pitch: state.is3D ? 45 : 0, duration: 900 });
+      }
+    });
+    list.appendChild(row);
+  }
+}
+
+function groupBeaconsForZoom(clusters, zoom) {
+  // Level 4: Disappear once zoomed into local raster detail
+  if (zoom >= 10.2) return { tier: 'hidden', beacons: [] };
+
+  // Level 1: State-wide grouping (count)
+  if (zoom < 7.2) {
+    const byState = new Map();
+    for (const c of clusters) {
+      let g = byState.get(c.stateName);
+      if (!g) {
+        g = { title: c.stateName, latSum: 0, lonSum: 0, count: 0, peakDepthM: 0, areaKm2: 0, severity: 'advisory', targetZoom: 8.1 };
+        byState.set(c.stateName, g);
+      }
+      g.latSum += c.lat;
+      g.lonSum += c.lon;
+      g.count += 1;
+      g.areaKm2 += c.areaKm2;
+      if (c.peakDepthM > g.peakDepthM) g.peakDepthM = c.peakDepthM;
+      if (severityRank(c.severity) > severityRank(g.severity)) g.severity = c.severity;
+    }
+    return {
+      tier: 'state',
+      beacons: Array.from(byState.values()).map((g) => ({
+        title: `${g.title} (${g.count} ${g.count === 1 ? 'zone' : 'zones'})`,
+        lat: g.latSum / g.count,
+        lon: g.lonSum / g.count,
+        count: g.count,
+        singular: false,
+        peakDepthM: g.peakDepthM,
+        areaKm2: g.areaKm2,
+        severity: g.severity,
+        targetZoom: g.count > 1 ? 8.1 : 11.4,
+      })),
+    };
+  }
+
+  // Level 2: District-scale spatial clustering (~30 km radius)
+  if (zoom < 8.8) {
+    const radiusDeg = 0.28;
+    const groups = [];
+    for (const c of clusters) {
+      let matched = null;
+      for (const g of groups) {
+        if (g.stateName === c.stateName && Math.hypot(g.lat - c.lat, g.lon - c.lon) <= radiusDeg) {
+          matched = g;
+          break;
+        }
+      }
+      if (!matched) {
+        groups.push({
+          stateName: c.stateName,
+          latSum: c.lat,
+          lonSum: c.lon,
+          lat: c.lat,
+          lon: c.lon,
+          count: 1,
+          peakDepthM: c.peakDepthM,
+          areaKm2: c.areaKm2,
+          severity: c.severity,
+        });
+      } else {
+        matched.latSum += c.lat;
+        matched.lonSum += c.lon;
+        matched.count += 1;
+        matched.lat = matched.latSum / matched.count;
+        matched.lon = matched.lonSum / matched.count;
+        matched.areaKm2 += c.areaKm2;
+        if (c.peakDepthM > matched.peakDepthM) matched.peakDepthM = c.peakDepthM;
+        if (severityRank(c.severity) > severityRank(matched.severity)) matched.severity = c.severity;
+      }
+    }
+    return {
+      tier: 'district',
+      beacons: groups.map((g) => ({
+        title: g.count > 1
+          ? `${g.stateName} District (${g.count} zones)`
+          : `${g.stateName} · ${g.lat.toFixed(2)}°N, ${g.lon.toFixed(2)}°E`,
+        lat: g.lat,
+        lon: g.lon,
+        count: g.count,
+        singular: g.count === 1,
+        peakDepthM: g.peakDepthM,
+        areaKm2: g.areaKm2,
+        severity: g.severity,
+        targetZoom: g.count > 1 ? 9.4 : 11.4,
+      })),
+    };
+  }
+
+  // Level 3: Region / Local singular beacons only
+  return {
+    tier: 'region',
+    beacons: clusters.map((c) => ({
+      title: `${c.stateName} · ${c.lat.toFixed(2)}°N, ${c.lon.toFixed(2)}°E`,
+      lat: c.lat,
+      lon: c.lon,
+      count: 1,
+      singular: true,
+      peakDepthM: c.peakDepthM,
+      areaKm2: c.areaKm2,
+      severity: c.severity,
+      targetZoom: 11.4,
+    })),
+  };
+}
+
+function updateBeaconsForZoom(force = false) {
+  if (!map || state.profile !== 'public' || state.displayPrefs.showFlood === false) {
+    clearFloodBeacons();
+    return;
+  }
+  const zoom = map.getZoom();
+  const { tier, beacons } = groupBeaconsForZoom(cachedFloodClusters, zoom);
+  const renderKey = `${lastAlertsComputeKey}:${tier}:${beacons.length}`;
+  if (!force && renderKey === lastBeaconRenderKey) return;
+  clearFloodBeacons();
+  lastBeaconRenderKey = renderKey;
+  if (tier === 'hidden' || !beacons.length) return;
+
+  const tip = ensureBeaconTooltip();
+  for (const b of beacons) {
+    const el = document.createElement('div');
+    el.className = `flood-beacon ${b.severity}${b.singular ? ' singular' : ''}`;
+    const ring = document.createElement('span');
+    ring.className = 'flood-beacon-ring';
+    const core = document.createElement('span');
+    core.className = 'flood-beacon-core';
+    core.textContent = b.singular ? '' : String(b.count);
+    el.append(ring, core);
+
+    el.addEventListener('mouseenter', (ev) => {
+      tip.innerHTML = '';
+      const strong = document.createElement('strong');
+      strong.textContent = b.title;
+      const line1 = document.createElement('div');
+      line1.textContent = `${severityLabel(b.severity)} · Peak ${fmtDepth(b.peakDepthM, 2)} · ${b.areaKm2.toFixed(1)} km²`;
+      const line2 = document.createElement('div');
+      line2.className = 'bt-sub';
+      line2.textContent = 'Click to zoom in';
+      tip.append(strong, line1, line2);
+      tip.style.left = `${Math.min(window.innerWidth - 255, ev.clientX + 14)}px`;
+      tip.style.top = `${Math.max(12, ev.clientY - 12)}px`;
+      tip.classList.remove('hidden');
+    });
+    el.addEventListener('mousemove', (ev) => {
+      tip.style.left = `${Math.min(window.innerWidth - 255, ev.clientX + 14)}px`;
+      tip.style.top = `${Math.max(12, ev.clientY - 12)}px`;
+    });
+    el.addEventListener('mouseleave', hideBeaconTooltip);
+    el.addEventListener('click', (ev) => {
+      ev.stopPropagation();
+      hideBeaconTooltip();
+      map.flyTo({ center: [b.lon, b.lat], zoom: b.targetZoom, pitch: b.targetZoom >= 10.5 && state.is3D ? 45 : 0, duration: 850 });
+    });
+
+    const marker = new maplibregl.Marker({ element: el, anchor: 'center' })
+      .setLngLat([b.lon, b.lat])
+      .addTo(map);
+    activeBeaconMarkers.push(marker);
+  }
+}
+
+function refreshAlertsAndBeacons() {
+  const key = `${state.liveOverlays.size}:${state.runId}:${state.frameIdx}:${state.envelopeMode}`;
+  if (key !== lastAlertsComputeKey) {
+    lastAlertsComputeKey = key;
+    cachedFloodClusters = computeAllLiveFloodClusters();
+    renderAlertsButtonAndDropdown(cachedFloodClusters);
+    updateBeaconsForZoom(true);
+  } else {
+    updateBeaconsForZoom(false);
+  }
 }
 
 // ---------- IndexedDB Saved Configs & Completed Simulations ----------
