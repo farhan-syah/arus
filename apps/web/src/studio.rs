@@ -40,7 +40,7 @@ fn StudioShell() -> Element {
                         id: "coord-search",
                         class: "search-input",
                         r#type: "text",
-                        placeholder: "Search city or lat, lon…",
+                        placeholder: "Search place or lat, lon",
                     }
                     button { id: "btn-save-default", class: "btn btn-xs", title: "Save current view as your personal default home location", "☆ Home" }
                 }
@@ -649,7 +649,7 @@ fn StudioShell() -> Element {
             div { class: "hud modal-card",
                 div { class: "inspector-head",
                     span { class: "inspector-title", "Saved Configs & Simulations" }
-                    button { id: "btn-saved-close", class: "btn btn-xs", "Close" }
+                    button { id: "btn-saved-close", class: "btn btn-xs", "aria-label": "Close", "×" }
                 }
                 div { class: "modal-body", style: "display:flex;flex-direction:column;gap:12px",
                     div { style: "display:flex;gap:8px;flex-wrap:wrap;align-items:center",
@@ -670,7 +670,6 @@ fn StudioShell() -> Element {
                 }
                 div { class: "modal-foot",
                     span { id: "saved-sims-summary", style: "font-size:11px;color:var(--ink-3)", "0 saved items" }
-                    button { id: "btn-saved-done", class: "btn", "Done" }
                 }
             }
         }
@@ -679,7 +678,7 @@ fn StudioShell() -> Element {
             div { class: "hud modal-card",
                 div { class: "inspector-head",
                     span { class: "inspector-title", "About ARUS & Data Disclaimer" }
-                    button { id: "btn-about-close", class: "btn btn-xs", "Close" }
+                    button { id: "btn-about-close", class: "btn btn-xs", "aria-label": "Close", "×" }
                 }
                 div { class: "modal-body", style: "display:flex;flex-direction:column;gap:12px;font-size:13px;line-height:1.5;color:var(--ink-2)",
                     div { style: "padding:10px 12px;border-radius:8px;background:var(--hud-well);border:1px solid var(--hud-border)",

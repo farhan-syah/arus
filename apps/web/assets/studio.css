@@ -876,7 +876,7 @@ a.btn {
   flex-shrink: 1;
 }
 .search-input {
-  min-width: 110px;
+  min-width: 155px;
 }
 [data-profile="researcher"]:not([data-presentation="true"]) .public-outlook {
   display: none !important;

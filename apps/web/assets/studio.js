@@ -408,8 +408,8 @@ function ensureMapLayers() {
         filter: ['in', ['get', 'class'], ['literal', ['river', 'canal']]],
         paint: {
           'line-color': '#10b981',
-          'line-width': ['interpolate', ['linear'], ['zoom'], 8, 0.9, 12, 1.4, 15, 2.0],
-          'line-opacity': state.displayPrefs.riverOpacity ?? 0.72,
+          'line-width': ['interpolate', ['linear'], ['zoom'], 6, 1.1, 8, 1.4, 12, 1.8, 15, 2.4],
+          'line-opacity': state.displayPrefs.riverOpacity ?? 0.78,
         },
         layout: { 'line-cap': 'round', 'line-join': 'round' },
       },
@@ -3006,7 +3006,8 @@ async function openSourcesModal() {
       banner.className = 'src-card';
       banner.style.cssText = 'grid-column:1/-1;border-color:var(--accent);background:var(--hud-well)';
       const bTitle = document.createElement('strong');
-      bTitle.textContent = `Active Live Run · Basin: ${ctx.basin_id}${state.serverContext.is_stale ? ' (STALE >12h)' : ''}`;
+      const basinTitle = String(ctx.basin_id || '').replace(/(^|[-_])\w/g, (m) => m.toUpperCase()).replace(/[-_]/g, ' ');
+      bTitle.textContent = `Active Live Run · Basin: ${basinTitle}${state.serverContext.is_stale ? ' (STALE >12h)' : ''}`;
       const bSub = document.createElement('div');
       bSub.style.color = 'var(--ink-2)';
       bSub.textContent = `Forecast cycle: ${fmtMytDisplay(Date.parse(ctx.cycle_iso), true)} · Terrain: Terrarium 30m DEM`;
@@ -3106,7 +3107,7 @@ function wireUi() {
       last_center: { lat: Number(c.lat.toFixed(5)), lon: Number(c.lng.toFixed(5)), zoom: Number(z.toFixed(2)), label },
     });
     const btn = $('btn-save-default');
-    if (btn) btn.textContent = '★ Saved';
+    if (btn) btn.textContent = '★ Home';
     showToast(`Saved "${label}" as your personal default home view.`);
   });
 
@@ -4524,8 +4525,9 @@ function renderServerContextBox() {
     return;
   }
   const c = resp.context;
+  const basinTitle = String(c.basin_id || '').replace(/(^|[-_])\w/g, (m) => m.toUpperCase()).replace(/[-_]/g, ' ');
   const parts = [];
-  parts.push(`<div><strong>Basin:</strong> ${c.basin_id} · <strong>Cycle:</strong> ${c.cycle_iso}</div>`);
+  parts.push(`<div><strong>Basin:</strong> ${basinTitle} · <strong>Cycle:</strong> ${c.cycle_iso}</div>`);
   if (resp.is_stale) {
     parts.push(`<div class="stale-warn">Context is stale (${Math.round(resp.age_seconds / 3600)}h old).</div>`);
   }
