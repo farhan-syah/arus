@@ -320,6 +320,16 @@ function floodOpacityExpr(base) {
   return ['interpolate', ['linear'], ['zoom'], 11, hi, 13.5, lo];
 }
 
+function pushpinSvg(headColor = '#ef4444', w = 26, h = 38) {
+  return `<svg width="${w}" height="${h}" viewBox="0 0 28 42" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">`
+    + '<polygon points="12.6,18 15.4,18 14.6,37 14,41.5 13.4,37" fill="#64748b"/>'
+    + '<polygon points="13.2,18 14.3,18 14.0,39 13.6,37" fill="#94a3b8"/>'
+    + `<circle cx="14" cy="11" r="9.5" fill="${headColor}"/>`
+    + '<circle cx="11.2" cy="7.6" r="2.3" fill="#ffffff" opacity="0.92"/>'
+    + '<circle cx="8.6" cy="11.2" r="1.15" fill="#ffffff" opacity="0.88"/>'
+    + '</svg>';
+}
+
 function setPinDropMode(on) {
   state.pinDropMode = Boolean(on);
   document.body.classList.toggle('pin-drop-mode', state.pinDropMode);
@@ -344,13 +354,13 @@ class PinDropControl {
   onAdd(mapInstance) {
     this._map = mapInstance;
     const container = document.createElement('div');
-    container.className = 'maplibregl-ctrl maplibregl-ctrl-group arus-pin-ctrl';
+    container.className = 'maplibregl-ctrl arus-pin-ctrl';
     const btn = document.createElement('button');
     btn.type = 'button';
     btn.className = 'arus-pin-ctrl-btn';
-    btn.title = 'Drag onto map (or click) to drop water-level pin';
-    btn.setAttribute('aria-label', 'Drop water-level pin');
-    btn.innerHTML = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 21s-6-5.3-6-10a6 6 0 1 1 12 0c0 4.7-6 10-6 10z"/><circle cx="12" cy="11" r="2.2"/></svg>';
+    btn.title = 'Drag pin onto map (or click) to check water depth';
+    btn.setAttribute('aria-label', 'Drag pin onto map to check water depth');
+    btn.innerHTML = pushpinSvg('#ef4444', 26, 38);
 
     btn.addEventListener('pointerdown', (ev) => {
       if (ev.button !== 0 || window.innerWidth <= 768) return;
@@ -369,7 +379,7 @@ class PinDropControl {
           setPinDropMode(false);
           ghost = document.createElement('div');
           ghost.className = 'arus-pin-ghost';
-          ghost.innerHTML = '<svg width="30" height="36" viewBox="0 0 24 28" fill="#0284c7" stroke="#ffffff" stroke-width="1.8"><path d="M12 26s-9-7.8-9-15a9 9 0 1 1 18 0c0 7.2-9 15-9 15z"/><circle cx="12" cy="11" r="3.2" fill="#ffffff" stroke="none"/></svg>';
+          ghost.innerHTML = pushpinSvg('#ef4444', 30, 44);
           document.body.appendChild(ghost);
         }
         if (ghost) {
@@ -1962,7 +1972,10 @@ function renderSiteVerdict(isFrameTick = false) {
     if (!map || typeof maplibregl === 'undefined') return;
     if (isFrameTick && state.verdictMarker) return;
     if (state.verdictMarker) state.verdictMarker.remove();
-    const m = new maplibregl.Marker({ color, draggable: true }).setLngLat([lon, lat]).addTo(map);
+    const el = document.createElement('div');
+    el.className = 'arus-dropped-pin';
+    el.innerHTML = pushpinSvg(color, 28, 40);
+    const m = new maplibregl.Marker({ element: el, anchor: 'bottom', draggable: true }).setLngLat([lon, lat]).addTo(map);
     let lastDragTs = 0;
     m.on('drag', () => {
       const now = performance.now();

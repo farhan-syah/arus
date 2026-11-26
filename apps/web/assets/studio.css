@@ -1569,23 +1569,48 @@ input:focus-visible {
     display: none !important;
   }
 }
+.arus-pin-ctrl {
+  background: transparent !important;
+  box-shadow: none !important;
+  border: none !important;
+  margin-bottom: 4px !important;
+}
 .arus-pin-ctrl-btn {
   display: flex !important;
   align-items: center;
   justify-content: center;
-  width: 29px;
-  height: 29px;
+  width: 30px;
+  height: 38px;
   padding: 0;
+  border: none !important;
+  background: transparent !important;
   cursor: grab;
-  color: #1e293b;
   touch-action: none;
+  filter: drop-shadow(0 2px 4px rgba(15, 23, 42, 0.32));
+  transition: transform 0.14s ease, filter 0.14s ease;
+}
+.arus-pin-ctrl-btn:hover {
+  background: transparent !important;
+  transform: translateY(-2px) scale(1.08);
+  filter: drop-shadow(0 4px 7px rgba(15, 23, 42, 0.38));
 }
 .arus-pin-ctrl-btn:active {
   cursor: grabbing;
+  transform: scale(0.96);
 }
 .arus-pin-ctrl-btn.active {
-  background: #e0f2fe !important;
-  color: #0284c7 !important;
+  background: transparent !important;
+  transform: translateY(-2px) scale(1.12);
+  filter: drop-shadow(0 0 8px rgba(239, 68, 68, 0.7));
+}
+.arus-dropped-pin {
+  width: 28px;
+  height: 40px;
+  cursor: grab;
+  filter: drop-shadow(0 2px 4px rgba(15, 23, 42, 0.38));
+}
+.arus-dropped-pin:active {
+  cursor: grabbing;
 }
 body.pin-drop-mode .maplibregl-canvas-container {
   cursor: crosshair !important;
@@ -1595,7 +1620,7 @@ body.pin-drop-mode .maplibregl-canvas-container {
   z-index: 9999;
   pointer-events: none;
   transform: translate(-50%, -100%);
-  filter: drop-shadow(0 3px 6px rgba(15, 23, 42, 0.35));
+  filter: drop-shadow(0 4px 8px rgba(15, 23, 42, 0.42));
 }
 .modal-wide {
   width: min(680px, calc(100vw - 32px));
