@@ -991,11 +991,24 @@ async fn get_context(
         .map_err(internal_error)
 }
 
+fn has_internal_token(headers: &axum::http::HeaderMap) -> bool {
+    std::env::var("ARUS_INTERNAL_TOKEN")
+        .ok()
+        .filter(|t| !t.is_empty())
+        .is_some_and(|expected| {
+            headers
+                .get("x-arus-internal-token")
+                .and_then(|v| v.to_str().ok())
+                .is_some_and(|got| got == expected)
+        })
+}
+
 async fn post_job(
     State(state): State<ApiState>,
+    headers: axum::http::HeaderMap,
     Json(request): Json<CreateSimulationRequest>,
 ) -> Result<(StatusCode, Json<SimulationJobRecord>), (StatusCode, Json<ErrorResponse>)> {
-    if !state.config.features.allow_async_jobs {
+    if !state.config.features.allow_async_jobs && !has_internal_token(&headers) {
         return Err(forbidden(
             "async high-resolution jobs are disabled on this server",
         ));
@@ -1030,9 +1043,10 @@ async fn list_jobs(
 
 async fn get_job(
     State(state): State<ApiState>,
+    headers: axum::http::HeaderMap,
     Path(job_id): Path<String>,
 ) -> Result<Json<SimulationJobRecord>, (StatusCode, Json<ErrorResponse>)> {
-    if !state.config.features.allow_async_jobs {
+    if !state.config.features.allow_async_jobs && !has_internal_token(&headers) {
         return Err(forbidden(
             "async high-resolution jobs are disabled on this server",
         ));
