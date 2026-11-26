@@ -319,19 +319,19 @@ fn StudioShell() -> Element {
         }
 
         // Adaptive Multi-Day / Interval Forecast Timeline
-        footer { id: "forecast-bar", class: "hud forecast-bar hidden",
-            div { class: "fb-callout-rail",
-                div { id: "fb-callout", class: "fb-callout", "Wed 25 · 08:00 MYT" }
-            }
-            div { class: "fb-controls-row",
+        footer { id: "forecast-bar", class: "forecast-bar hidden",
+            div { class: "hud fb-playback",
                 button { id: "fb-play", class: "btn btn-icon active", title: "Play / Pause", "aria-label": "Play or pause forecast", "▶" }
                 button { id: "fb-speed", class: "btn btn-xs", title: "Playback speed (0.5x, 1x, 2x, 5x)", "1x" }
-                div { class: "fb-main-col",
-                    div { id: "fb-track", class: "fb-track", role: "slider", "aria-label": "Forecast timeline",
-                        div { id: "fb-fill", class: "fb-fill" }
-                    }
-                    div { id: "fb-segments", class: "fb-segments" }
+            }
+            div { class: "hud fb-card",
+                div { class: "fb-callout-rail",
+                    div { id: "fb-callout", class: "fb-callout", "Thu 26 · 08:00 MYT" }
                 }
+                div { id: "fb-track", class: "fb-track", role: "slider", "aria-label": "Forecast timeline",
+                    div { id: "fb-fill", class: "fb-fill" }
+                }
+                div { id: "fb-segments", class: "fb-segments" }
             }
         }
 
