@@ -10,7 +10,7 @@ use serde::{Deserialize, Serialize};
 use time::OffsetDateTime;
 use time::format_description::well_known::Rfc3339;
 
-use crate::sim::SpatialRainGrid;
+use crate::sim::{ObservedGaugeSeed, SpatialRainGrid};
 
 /// Maximum JSON size accepted for one published basin context file (`2 MiB`).
 pub const MAX_CONTEXT_BYTES: usize = 2 * 1024 * 1024;
@@ -70,6 +70,14 @@ pub struct RegionalContext {
     /// Optional RFC-3339 expiry timestamp.
     #[serde(default)]
     pub valid_until_iso: Option<String>,
+    #[serde(default)]
+    pub antecedent_rain_mm: f64,
+    #[serde(default)]
+    pub observed_gauges: Vec<ObservedGaugeSeed>,
+    #[serde(default)]
+    pub active_incidents: Vec<String>,
+    #[serde(default)]
+    pub interventions: Vec<serde_json::Value>,
     #[serde(default)]
     pub spatial_rain_grid: Option<SpatialRainGrid>,
     #[serde(default)]

@@ -795,10 +795,72 @@ input[type="range"] {
   top: 14px;
 }
 [data-profile="public"] #drawer,
+[data-profile="public"] #btn-open-sim,
+[data-profile="public"] #btn-saved-sims,
 [data-profile="public"] #btn-export-asc,
 [data-profile="public"] #btn-export-csv,
 [data-profile="public"] [data-layer="diff"] {
   display: none !important;
+}
+.saved-sims-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  max-height: 320px;
+  overflow-y: auto;
+}
+.saved-sim-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 9px 11px;
+  border-radius: 8px;
+  background: var(--hud-well);
+  border: 1px solid var(--hud-border);
+}
+.saved-sim-info {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+  flex: 1;
+}
+.saved-sim-title {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--ink-1);
+}
+.saved-sim-meta {
+  font-size: 11px;
+  color: var(--ink-3);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.saved-sim-badge {
+  font-size: 10px;
+  font-weight: 600;
+  padding: 1px 6px;
+  border-radius: 999px;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+}
+.saved-sim-badge.sim {
+  background: rgba(2, 132, 199, 0.14);
+  color: var(--accent);
+}
+.saved-sim-badge.cfg {
+  background: rgba(100, 116, 139, 0.14);
+  color: var(--ink-2);
+}
+.saved-sim-actions {
+  display: flex;
+  gap: 6px;
+  flex-shrink: 0;
 }
 [data-profile="researcher"]:not([data-presentation="true"]) .public-outlook {
   display: none !important;

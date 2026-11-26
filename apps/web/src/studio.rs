@@ -42,16 +42,18 @@ fn StudioShell() -> Element {
                         r#type: "text",
                         placeholder: "Search city or lat, lon…",
                     }
+                    button { id: "btn-save-default", class: "btn btn-xs", title: "Save current view as your personal default home location", "☆ Set Default" }
                 }
             }
             div { class: "top-actions",
                 div { class: "seg-group",
-                    button { class: "seg-btn active", "data-profile": "public", "Public" }
-                    button { class: "seg-btn", "data-profile": "researcher", "Researcher" }
+                    button { class: "seg-btn active", "data-profile": "public", title: "Current active flood view (t = 0) and forecast", "Live" }
+                    button { class: "seg-btn", "data-profile": "researcher", title: "What-if simulation studio, interventions, and GIS exports", "Simulate" }
                 }
                 button { id: "btn-open-layers", class: "btn", title: "Map layers, display, and units", "Layers & View" }
-                button { id: "btn-open-sim", class: "btn", title: "Forecast, Site Stress-Test, and physics settings", "Simulate…" }
-                button { id: "btn-share", class: "btn", title: "Copy shareable link to current scenario", "Share" }
+                button { id: "btn-open-sim", class: "btn", title: "Simulation window, initial state, stress-test, and physics", "Settings…" }
+                button { id: "btn-saved-sims", class: "btn", title: "Save or open configs and completed simulations (stored locally in your browser)", "Saved (0)" }
+                button { id: "btn-share", class: "btn", title: "Copy shareable link (Live view or Simulation scenario)", "Share" }
                 button { id: "btn-sources", class: "btn", "Sources" }
                 button { id: "btn-about", class: "btn", title: "About ARUS, disclaimer, self-hosting, and feedback", "About" }
                 button { id: "btn-snap", class: "btn", title: "Save PNG snapshot", "PNG" }
@@ -430,13 +432,23 @@ fn StudioShell() -> Element {
                 div { id: "sim-tab-forecast", class: "sim-tab-pane",
                     div { class: "modal-grid-2",
                         div { class: "modal-sec",
-                            div { class: "sec-title", "Forecast Horizon" }
+                            div { class: "sec-title", "Simulation Window & Initial State" }
                             div { class: "field",
-                                span { class: "field-label", "Horizon Mode" }
+                                span { class: "field-label", "Forecast Duration" }
                                 select { id: "sim-horizon", class: "ctl-select",
-                                    option { value: "5d", selected: true, "Days 1–5 (Deterministic Hourly 2D)" }
-                                    option { value: "15d", disabled: true, "Days 6–15 Ensemble (Requires server context)" }
-                                    option { value: "mjo", disabled: true, "Weeks 2–4 MJO Regime (Requires server context)" }
+                                    option { value: "6h", "6 Hours (Short-Term)" }
+                                    option { value: "1d", "1 Day (24 Hours)" }
+                                    option { value: "2d", selected: true, "2 Days (48 Hours)" }
+                                    option { value: "3d", "3 Days (72 Hours)" }
+                                    option { value: "5d", "5 Days (120 Hours)" }
+                                    option { value: "15d", disabled: true, "Days 6–15 Ensemble (Server context)" }
+                                }
+                            }
+                            div { class: "field",
+                                span { class: "field-label", "Start From (Initial State)" }
+                                select { id: "sim-start-mode", class: "ctl-select",
+                                    option { value: "live", selected: true, "Current Live Data (14d Wet + Active Gauges)" }
+                                    option { value: "dry", "Dry Ground (Start from 0)" }
                                 }
                             }
                             div { class: "field",
@@ -605,6 +617,36 @@ fn StudioShell() -> Element {
                         button { id: "btn-sim-cancel", class: "btn", "Cancel" }
                         button { id: "btn-sim-apply", class: "btn primary", "Apply & Run" }
                     }
+                }
+            }
+        }
+        // Saved Configs & Completed Simulations Modal (Browser IndexedDB)
+        div { id: "saved-sims-modal", class: "modal-backdrop hidden", role: "dialog", "aria-modal": "true",
+            div { class: "hud modal-card",
+                div { class: "inspector-head",
+                    span { class: "inspector-title", "Saved Configs & Simulations" }
+                    button { id: "btn-saved-close", class: "btn btn-xs", "Close" }
+                }
+                div { class: "modal-body", style: "display:flex;flex-direction:column;gap:12px",
+                    div { style: "display:flex;gap:8px;flex-wrap:wrap;align-items:center",
+                        input {
+                            id: "save-sim-name",
+                            class: "ctl-select",
+                            r#type: "text",
+                            placeholder: "Scenario name (optional)…",
+                            style: "flex:1;min-width:180px",
+                        }
+                        button { id: "btn-save-config", class: "btn", title: "Save setup parameters, location, and edits only (no result frames)", "Save Config" }
+                        button { id: "btn-save-sim", class: "btn primary", title: "Save setup plus full flood result so reopening needs zero re-solving", "Save Simulation" }
+                    }
+                    div { id: "saved-sims-hint", style: "font-size:11px;color:var(--ink-3)",
+                        "Stored locally in your browser (IndexedDB). Reopening a saved simulation loads its flood frames immediately without re-solving."
+                    }
+                    div { id: "saved-sims-list", class: "saved-sims-list" }
+                }
+                div { class: "modal-foot",
+                    span { id: "saved-sims-summary", style: "font-size:11px;color:var(--ink-3)", "0 saved items" }
+                    button { id: "btn-saved-done", class: "btn", "Done" }
                 }
             }
         }

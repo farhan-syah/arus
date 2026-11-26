@@ -115,6 +115,8 @@ pub fn router(state: ApiState) -> Router {
         .route("/health", get(health))
         .route("/api/v1/config", get(get_config))
         .route("/api/v1/context", get(get_context))
+        .route("/api/v1/live/{basin}/grid", get(get_live_basin_grid))
+        .route("/api/v1/live/{basin}/frames.bin", get(get_live_basin_frames_bin))
         .route("/api/v1/catalog/sources", get(get_catalog_sources))
         .route("/api/v1/published", get(get_published))
         .route("/api/v1/runs", get(list_runs))
@@ -719,6 +721,46 @@ async fn get_config(State(state): State<ApiState>) -> Response {
         .header(header::CACHE_CONTROL, "public, max-age=300")
         .body(Body::from(body))
         .unwrap_or_else(|_| StatusCode::INTERNAL_SERVER_ERROR.into_response())
+}
+
+async fn get_live_basin_grid(
+    State(state): State<ApiState>,
+    Path(basin): Path<String>,
+) -> Result<Response, (StatusCode, Json<ErrorResponse>)> {
+    crate::context::validate_basin_id(&basin).map_err(|e| map_sim_error((400, e)))?;
+    let Some(dir) = state.context_dir.clone() else {
+        return Err(not_found("no live context directory configured".to_owned()));
+    };
+    let path = dir.join("live").join(&basin).join("grid.json");
+    let bytes = tokio::fs::read(&path)
+        .await
+        .map_err(|_| not_found(format!("live grid for basin {basin} not cached")))?;
+    Response::builder()
+        .status(StatusCode::OK)
+        .header(header::CONTENT_TYPE, "application/json")
+        .header(header::CACHE_CONTROL, "public, max-age=120")
+        .body(Body::from(bytes))
+        .map_err(internal_error)
+}
+
+async fn get_live_basin_frames_bin(
+    State(state): State<ApiState>,
+    Path(basin): Path<String>,
+) -> Result<Response, (StatusCode, Json<ErrorResponse>)> {
+    crate::context::validate_basin_id(&basin).map_err(|e| map_sim_error((400, e)))?;
+    let Some(dir) = state.context_dir.clone() else {
+        return Err(not_found("no live context directory configured".to_owned()));
+    };
+    let path = dir.join("live").join(&basin).join("frames.bin");
+    let bytes = tokio::fs::read(&path)
+        .await
+        .map_err(|_| not_found(format!("live frames for basin {basin} not cached")))?;
+    Response::builder()
+        .status(StatusCode::OK)
+        .header(header::CONTENT_TYPE, "application/octet-stream")
+        .header(header::CACHE_CONTROL, "public, max-age=120")
+        .body(Body::from(bytes))
+        .map_err(internal_error)
 }
 
 async fn get_context(

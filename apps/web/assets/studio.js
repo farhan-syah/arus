@@ -6,11 +6,13 @@ const APP_BASE = new URL('.', window.location.href).href.replace(/\/$/, '');
 const apiUrl = (path) => `${APP_BASE}/${String(path).replace(/^\/+/, '')}`;
 
 const PRESETS = [
-  { id: 'shah-alam', name: 'Shah Alam · Taman Sri Muda (MY)', lon: 101.535, lat: 3.031, zoom: 14.3 },
-  { id: 'ijok', name: 'Ijok · Kuala Selangor (MY)', lon: 101.415, lat: 3.310, zoom: 13.0 },
-  { id: 'bukit-changgang', name: 'Bukit Changgang · Sg. Langat (MY)', lon: 101.622, lat: 2.825, zoom: 13.8 },
-  { id: 'kl', name: 'Kuala Lumpur · Sg. Klang (MY)', lon: 101.696, lat: 3.149, zoom: 14.3 },
-  { id: 'kota-bharu', name: 'Kota Bharu · Sg. Kelantan (MY)', lon: 102.238, lat: 6.125, zoom: 14.0 },
+  { id: 'kl', name: 'Kuala Lumpur (MY)', lon: 101.696, lat: 3.149, zoom: 11.4, liveBasin: 'selangor' },
+  { id: 'selangor', name: 'Selangor Statewide (MY)', lon: 101.40, lat: 3.22, zoom: 8.6, boundaryQuery: 'Selangor, Malaysia', liveBasin: 'selangor' },
+  { id: 'shah-alam', name: 'Shah Alam · Klang Valley (MY)', lon: 101.535, lat: 3.031, zoom: 11.8, liveBasin: 'selangor' },
+  { id: 'kota-bharu', name: 'Kota Bharu · Kelantan (MY)', lon: 102.238, lat: 6.125, zoom: 9.2, liveBasin: 'kelantan' },
+  { id: 'kuala-terengganu', name: 'Kuala Terengganu (MY)', lon: 103.132, lat: 5.329, zoom: 9.2, liveBasin: 'terengganu' },
+  { id: 'johor-bahru', name: 'Johor Bahru (MY)', lon: 103.761, lat: 1.492, zoom: 9.2, liveBasin: 'johor' },
+  { id: 'kuantan', name: 'Kuantan · Pahang (MY)', lon: 103.326, lat: 3.807, zoom: 9.2, liveBasin: 'pahang' },
   { id: 'jakarta', name: 'Jakarta · Ciliwung (ID)', lon: 106.845, lat: -6.208, zoom: 14.1 },
   { id: 'rotterdam', name: 'Rotterdam · Nieuwe Maas (NL)', lon: 4.477, lat: 51.924, zoom: 14.0 },
   { id: 'houston', name: 'Houston · Buffalo Bayou (US)', lon: -95.369, lat: 29.760, zoom: 14.0 },
@@ -28,7 +30,7 @@ const state = {
   envelopeMode: false,
   particlesOn: true,
   is3D: true,
-  playing: true,
+  playing: false,
   speed: 1,
   frameIdx: 0,
   lastTickMs: 0,
@@ -115,6 +117,8 @@ const state = {
     compute: 'auto', // auto | server
   },
   stormDrainGrid: null,
+  liveInterventions: [],
+  lastFramesBuf: null,
   userOverrideCutoff: false,
 };
 
@@ -256,14 +260,14 @@ function initMap() {
     }
     if (!initialSimTriggered) {
       initialSimTriggered = true;
-      runSimulation(false);
+      loadInitialLiveOrSim();
     }
   });
 
   setTimeout(() => {
     if (!initialSimTriggered) {
       initialSimTriggered = true;
-      runSimulation(false);
+      loadInitialLiveOrSim();
     }
   }, 2400);
 
@@ -1806,11 +1810,17 @@ async function buildRequestPayload() {
     : await fetchTerrariumElevations(state.center.lon, state.center.lat, cols, rows, dxM);
 
   const mult = Number.isFinite(sc.rainMult) && sc.rainMult > 0 ? sc.rainMult : 1.0;
-  let hourlyRain = (state.hourlyRainMm || []).map((v) => v * mult);
+  const horizonHoursMap = { '6h': 6, '1d': 24, '2d': 48, '3d': 72, '5d': 120 };
+  const targetHours = horizonHoursMap[sc.horizon] || 48;
+  let hourlyRain = (state.hourlyRainMm || []).slice(0, targetHours).map((v) => v * mult);
   let spatialGrid = state.spatialRainGrid ? {
     ...state.spatialRainGrid,
-    hourly_mm: (state.spatialRainGrid.hourly_mm || []).map((row) => row.map((v) => v * mult)),
+    hourly_mm: (state.spatialRainGrid.hourly_mm || []).map((row) => row.slice(0, targetHours).map((v) => v * mult)),
+    et0_mm: (state.spatialRainGrid.et0_mm || []).map((row) => row.slice(0, targetHours)),
   } : null;
+  if (spatialGrid && spatialGrid.hourly_mm?.[0]?.length) {
+    state.spanHours = spatialGrid.hourly_mm[0].length;
+  }
   let durationS = sc.durationS;
 
   if (sc.mode === 'stress') {
@@ -1852,7 +1862,7 @@ async function buildRequestPayload() {
     boundary,
     threshold_m: 0.12,
     precision: 'f64',
-    interventions: state.interventions,
+    interventions: state.interventions.length > 0 ? state.interventions : (sc.startDry ? [] : (state.liveInterventions || [])),
     baseline_interventions: state.baselineInterventions,
     ascii_dem: state.uploadedDem,
     terrain_elevations_m: sampled,
@@ -1875,9 +1885,10 @@ async function buildRequestPayload() {
   };
 }
 
-function applyLoadedSimulation(grid, frames, runId, engineLabel) {
+function applyLoadedSimulation(grid, frames, runId, engineLabel, framesBuf = null) {
   state.grid = grid;
   state.frames = frames;
+  if (framesBuf) state.lastFramesBuf = framesBuf;
   state.runId = runId;
   state.activeEngine = engineLabel || 'Server · F64';
   if (!state.userOverrideCutoff && grid?.metadata?.dx_m) {
@@ -1900,6 +1911,37 @@ function applyLoadedSimulation(grid, frames, runId, engineLabel) {
   setLayer(state.layer);
 }
 
+async function tryLoadPrecomputedLive(basinId) {
+  if (!basinId) return false;
+  try {
+    const [gridResp, binResp] = await Promise.all([
+      fetch(apiUrl(`api/v1/live/${encodeURIComponent(basinId)}/grid`)),
+      fetch(apiUrl(`api/v1/live/${encodeURIComponent(basinId)}/frames.bin`)),
+    ]);
+    if (!gridResp.ok || !binResp.ok) return false;
+    const grid = await gridResp.json();
+    const buf = await binResp.arrayBuffer();
+    const frames = decodeFramesBin(buf);
+    if (!frames.length) return false;
+    applyLoadedSimulation(grid, frames, grid.run_id || `live-${basinId}`, 'Live · Cached', buf);
+    return true;
+  } catch (_) {
+    return false;
+  }
+}
+
+async function loadInitialLiveOrSim() {
+  const qs = new URLSearchParams(window.location.search);
+  const isCustomParamSim = qs.get('presentation') === '1' || qs.get('fixed') === '1' || qs.has('rain');
+  const ctxBasin = state.serverContext?.context?.basin_id;
+  if (!isCustomParamSim && ctxBasin && await tryLoadPrecomputedLive(ctxBasin)) {
+    return;
+  }
+  // In Simulate tab without pre-cached data, wait for user to click Run Simulation
+  if (state.profile === 'researcher' && !isCustomParamSim) return;
+  await runSimulation(false);
+}
+
 async function loadRun(runId) {
   const [gridResp, binResp] = await Promise.all([
     fetch(apiUrl(`api/v1/runs/${runId}/grid`)),
@@ -1907,8 +1949,9 @@ async function loadRun(runId) {
   ]);
   if (!gridResp.ok || !binResp.ok) throw new Error('Failed to load simulation frames');
   const grid = await gridResp.json();
-  const frames = decodeFramesBin(await binResp.arrayBuffer());
-  applyLoadedSimulation(grid, frames, runId, 'Server · F64');
+  const buf = await binResp.arrayBuffer();
+  const frames = decodeFramesBin(buf);
+  applyLoadedSimulation(grid, frames, runId, 'Server · F64', buf);
 }
 
 function runBrowserSimulation(payload, abortSignal) {
@@ -1954,7 +1997,7 @@ function runBrowserSimulation(payload, abortSignal) {
       try {
         const grid = JSON.parse(msg.gridJson);
         const frames = decodeFramesBin(msg.framesBuffer);
-        resolve({ engine: msg.engine || 'WASM · F32', grid, frames });
+        resolve({ engine: msg.engine || 'WASM · F32', grid, frames, framesBuffer: msg.framesBuffer });
       } catch (parseErr) {
         reject(parseErr);
       }
@@ -2082,7 +2125,7 @@ async function runSimulation(compareMode) {
 
       if (browserRes) {
         state.frameRasterCache.clear();
-        applyLoadedSimulation(browserRes.grid, browserRes.frames, browserRes.grid.run_id, browserRes.engine);
+        applyLoadedSimulation(browserRes.grid, browserRes.frames, browserRes.grid.run_id, browserRes.engine, browserRes.framesBuffer);
         if (!state.fixedView && !state.boundaryGrid) {
           const [minLon, minLat, maxLon, maxLat] = browserRes.grid.metadata.wgs84_bounds;
           map.flyTo({
@@ -2900,23 +2943,45 @@ function setCustomPresetLabel(label) {
 function wireUi() {
   const sel = $('preset-select');
   sel.innerHTML = PRESETS.map((p) => `<option value="${p.id}">${p.name}</option>`).join('');
-  sel.addEventListener('change', () => {
+  sel.addEventListener('change', async () => {
     const p = PRESETS.find((x) => x.id === sel.value);
     if (!p) return;
     if ($('coord-search')) $('coord-search').value = '';
     if ($('site-verdict')) $('site-verdict').classList.add('hidden');
     state.verdictTarget = null;
     if (state.verdictMarker) { state.verdictMarker.remove(); state.verdictMarker = null; }
-    state.boundaryGeoJson = null;
-    state.boundaryGrid = null;
-    state.boundaryCellMask = null;
-    state.center = { lon: p.lon, lat: p.lat };
     state.uploadedDem = null;
     state.cachedDem = null;
     state.interventions = [];
     updateInterventionBar();
+    if (p.boundaryQuery) {
+      await loadBoundaryByQuery(p.boundaryQuery, { runSim: false });
+      if (p.liveBasin && await tryLoadPrecomputedLive(p.liveBasin)) return;
+      if (state.profile !== 'researcher') await runSimulation(false);
+      return;
+    }
+    state.boundaryGeoJson = null;
+    state.boundaryGrid = null;
+    state.boundaryCellMask = null;
+    state.center = { lon: p.lon, lat: p.lat };
     map.flyTo({ center: [p.lon, p.lat], zoom: p.zoom, pitch: state.is3D ? 48 : 0, duration: 900 });
-    runSimulation(false);
+    if (p.liveBasin && await tryLoadPrecomputedLive(p.liveBasin)) return;
+    if (state.profile !== 'researcher') runSimulation(false);
+  });
+
+  $('btn-save-default')?.addEventListener('click', () => {
+    if (!map) return;
+    const c = map.getCenter();
+    const z = map.getZoom();
+    const label = $('coord-search')?.value?.trim()
+      || $('preset-select')?.selectedOptions?.[0]?.textContent?.trim()
+      || `${c.lat.toFixed(4)}, ${c.lng.toFixed(4)}`;
+    saveUserPrefs({
+      last_center: { lat: Number(c.lat.toFixed(5)), lon: Number(c.lng.toFixed(5)), zoom: Number(z.toFixed(2)), label },
+    });
+    const btn = $('btn-save-default');
+    if (btn) btn.textContent = '★ Default Saved';
+    showToast(`Saved "${label}" as your personal default home view.`);
   });
 
   $('coord-search').addEventListener('keydown', async (e) => {
@@ -3131,16 +3196,22 @@ function wireUi() {
     });
   }
 
-  ['sources-modal', 'layers-modal', 'sim-modal'].forEach((id) => {
+  ['sources-modal', 'layers-modal', 'sim-modal', 'saved-sims-modal', 'about-modal'].forEach((id) => {
     const el = $(id);
     if (el) el.addEventListener('click', (e) => { if (e.target === el) el.classList.add('hidden'); });
   });
+  $('btn-saved-sims')?.addEventListener('click', openSavedSimsModal);
+  $('btn-saved-close')?.addEventListener('click', () => $('saved-sims-modal')?.classList.add('hidden'));
+  $('btn-saved-done')?.addEventListener('click', () => $('saved-sims-modal')?.classList.add('hidden'));
+  $('btn-save-config')?.addEventListener('click', () => saveCurrentToIdb('config'));
+  $('btn-save-sim')?.addEventListener('click', () => saveCurrentToIdb('simulation'));
+  refreshSavedCountBadge();
 
   window.addEventListener('keydown', (e) => {
     const tag = (e.target && e.target.tagName || '').toLowerCase();
     const typing = tag === 'input' || tag === 'select' || tag === 'textarea';
     if (e.key === 'Escape') {
-      ['sources-modal', 'layers-modal', 'sim-modal'].forEach((id) => { const el = $(id); if (el) el.classList.add('hidden'); });
+      ['sources-modal', 'layers-modal', 'sim-modal', 'saved-sims-modal', 'about-modal'].forEach((id) => { const el = $(id); if (el) el.classList.add('hidden'); });
       if (state.pickingStressSite) {
         state.pickingStressSite = false;
         document.body.classList.remove('picking-site');
@@ -3727,6 +3798,7 @@ function resetUserPrefs() {
 }
 
 function setUiProfile(profile, persist = false) {
+  const prev = state.profile;
   state.profile = profile === 'public' ? 'public' : 'researcher';
   document.documentElement.dataset.profile = state.profile;
   document.querySelectorAll('[data-profile]').forEach((el) => {
@@ -3738,36 +3810,306 @@ function setUiProfile(profile, persist = false) {
     if ($('inspector')) $('inspector').classList.add('hidden');
   } else {
     if ($('site-verdict')) $('site-verdict').classList.add('hidden');
+    // Switching from Live -> Simulate brings t=0 initial state, paused, without auto-solving
+    if (prev === 'public' && state.frames.length) {
+      state.playing = false;
+      state.envelopeMode = false;
+      state.frameIdx = 0;
+      if ($('btn-play')) $('btn-play').textContent = '▶';
+      if ($('fb-play')) $('fb-play').textContent = '▶';
+      if ($('scrubber')) $('scrubber').value = '0';
+      updateTimeReadout();
+      renderFloodCanvas(true);
+    }
+    refreshSavedCountBadge();
   }
   updateLiveMetrics();
   if (persist) saveUserPrefs({ profile: state.profile });
 }
 
+// ---------- IndexedDB Saved Configs & Completed Simulations ----------
+const SAVED_DB_NAME = 'arus-saved-sims-v1';
+const SAVED_STORE = 'items';
+
+function openSavedDb() {
+  return new Promise((resolve, reject) => {
+    if (typeof indexedDB === 'undefined') {
+      reject(new Error('IndexedDB unavailable in this browser'));
+      return;
+    }
+    const req = indexedDB.open(SAVED_DB_NAME, 1);
+    req.onupgradeneeded = () => {
+      const db = req.result;
+      if (!db.objectStoreNames.contains(SAVED_STORE)) {
+        db.createObjectStore(SAVED_STORE, { keyPath: 'id' });
+      }
+    };
+    req.onsuccess = () => resolve(req.result);
+    req.onerror = () => reject(req.error || new Error('Failed to open IndexedDB'));
+  });
+}
+
+async function idbAllSaved() {
+  const db = await openSavedDb();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(SAVED_STORE, 'readonly');
+    const req = tx.objectStore(SAVED_STORE).getAll();
+    req.onsuccess = () => {
+      const items = (req.result || []).sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
+      resolve(items);
+    };
+    req.onerror = () => reject(req.error);
+  });
+}
+
+async function idbPutSaved(item) {
+  const db = await openSavedDb();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(SAVED_STORE, 'readwrite');
+    tx.objectStore(SAVED_STORE).put(item);
+    tx.oncomplete = () => resolve();
+    tx.onerror = () => reject(tx.error);
+  });
+}
+
+async function idbGetSaved(id) {
+  const db = await openSavedDb();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(SAVED_STORE, 'readonly');
+    const req = tx.objectStore(SAVED_STORE).get(id);
+    req.onsuccess = () => resolve(req.result || null);
+    req.onerror = () => reject(req.error);
+  });
+}
+
+async function idbDeleteSaved(id) {
+  const db = await openSavedDb();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(SAVED_STORE, 'readwrite');
+    tx.objectStore(SAVED_STORE).delete(id);
+    tx.oncomplete = () => resolve();
+    tx.onerror = () => reject(tx.error);
+  });
+}
+
+async function refreshSavedCountBadge() {
+  try {
+    const items = await idbAllSaved();
+    const btn = $('btn-saved-sims');
+    if (btn) btn.textContent = `Saved (${items.length})`;
+  } catch (_) {}
+}
+
+async function openSavedSimsModal() {
+  const modal = $('saved-sims-modal');
+  if (!modal) return;
+  const saveSimBtn = $('btn-save-sim');
+  if (saveSimBtn) {
+    const hasResult = Boolean(state.grid && state.lastFramesBuf && state.frames.length);
+    saveSimBtn.disabled = !hasResult;
+    saveSimBtn.title = hasResult
+      ? 'Save setup plus full flood result so reopening needs zero re-solving'
+      : 'Run a simulation first to save its result';
+  }
+  modal.classList.remove('hidden');
+  await renderSavedSimsList();
+}
+
+async function saveCurrentToIdb(kind) {
+  try {
+    const c = map ? map.getCenter() : { lat: state.center.lat, lng: state.center.lon };
+    const z = map ? map.getZoom() : state.initZoom;
+    const rawName = $('save-sim-name')?.value?.trim();
+    const locLabel = $('coord-search')?.value?.trim()
+      || $('preset-select')?.selectedOptions?.[0]?.textContent?.trim()
+      || `${c.lat.toFixed(3)}, ${c.lng.toFixed(3)}`;
+    const horizon = state.simConfig.horizon || '5d';
+    const name = rawName || `${locLabel} · ${horizon} (${kind === 'simulation' ? 'Result' : 'Config'})`;
+
+    const item = {
+      id: `sim-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+      kind,
+      name,
+      createdAt: Date.now(),
+      config: {
+        center: { lat: Number(c.lat.toFixed(5)), lon: Number(c.lng.toFixed(5)) },
+        zoom: Number(z.toFixed(2)),
+        simConfig: { ...state.simConfig },
+        interventions: JSON.parse(JSON.stringify(state.interventions || [])),
+        baselineInterventions: JSON.parse(JSON.stringify(state.baselineInterventions || [])),
+        antecedentMm: state.antecedentMm || 0,
+        observedGauges: JSON.parse(JSON.stringify(state.observedGauges || [])),
+      },
+      sizeBytes: 0,
+    };
+
+    if (kind === 'simulation') {
+      if (!state.grid || !state.lastFramesBuf || !state.frames.length) {
+        showToast('No simulation result loaded yet. Click Run Simulation first.');
+        return;
+      }
+      const bufCopy = state.lastFramesBuf.slice(0);
+      item.result = {
+        grid: JSON.parse(JSON.stringify(state.grid)),
+        framesBuf: bufCopy,
+        runId: state.runId || item.id,
+        engine: state.activeEngine || 'Saved',
+      };
+      item.sizeBytes = bufCopy.byteLength + JSON.stringify(item.result.grid).length;
+    }
+
+    await idbPutSaved(item);
+    if ($('save-sim-name')) $('save-sim-name').value = '';
+    await refreshSavedCountBadge();
+    await renderSavedSimsList();
+    showToast(kind === 'simulation' ? `Saved simulation "${name}" with full result.` : `Saved config "${name}".`);
+  } catch (err) {
+    showToast(`Save failed: ${err && err.message ? err.message : String(err)}`);
+  }
+}
+
+async function openSavedItem(id) {
+  try {
+    const item = await idbGetSaved(id);
+    if (!item) {
+      showToast('Saved item not found.');
+      return;
+    }
+    const cfg = item.config || {};
+    if (cfg.simConfig) Object.assign(state.simConfig, cfg.simConfig);
+    if (cfg.center) state.center = { lat: cfg.center.lat, lon: cfg.center.lon };
+    state.interventions = Array.isArray(cfg.interventions) ? cfg.interventions : [];
+    state.baselineInterventions = Array.isArray(cfg.baselineInterventions) ? cfg.baselineInterventions : [];
+    if (typeof cfg.antecedentMm === 'number') state.antecedentMm = cfg.antecedentMm;
+    if (Array.isArray(cfg.observedGauges)) state.observedGauges = cfg.observedGauges;
+    updateInterventionBar();
+    if (map && cfg.center) {
+      map.flyTo({ center: [cfg.center.lon, cfg.center.lat], zoom: cfg.zoom || 11.4, duration: 700 });
+    }
+    $('saved-sims-modal')?.classList.add('hidden');
+    if (item.kind === 'simulation' && item.result?.grid && item.result?.framesBuf) {
+      const frames = decodeFramesBin(item.result.framesBuf);
+      if (frames.length) {
+        state.frameRasterCache.clear();
+        state.playing = false;
+        applyLoadedSimulation(item.result.grid, frames, item.result.runId || item.id, 'Saved · Instant', item.result.framesBuf);
+        showToast(`Loaded "${item.name}" instantly (no re-solve needed).`);
+        return;
+      }
+    }
+    showToast(`Loaded config "${item.name}". Click Run Simulation when ready.`);
+  } catch (err) {
+    showToast(`Failed to open saved item: ${err && err.message ? err.message : String(err)}`);
+  }
+}
+
+async function deleteSavedItem(id) {
+  try {
+    await idbDeleteSaved(id);
+    await refreshSavedCountBadge();
+    await renderSavedSimsList();
+  } catch (err) {
+    showToast(`Delete failed: ${err && err.message ? err.message : String(err)}`);
+  }
+}
+
+async function renderSavedSimsList() {
+  const list = $('saved-sims-list');
+  const summary = $('saved-sims-summary');
+  if (!list) return;
+  try {
+    const items = await idbAllSaved();
+    if (summary) {
+      const totalKb = Math.round(items.reduce((acc, x) => acc + (x.sizeBytes || 0), 0) / 1024);
+      summary.textContent = `${items.length} saved item${items.length === 1 ? '' : 's'}${totalKb > 0 ? ` · ${(totalKb / 1024).toFixed(1)} MB` : ''}`;
+    }
+    list.replaceChildren();
+    if (!items.length) {
+      const empty = document.createElement('div');
+      empty.style.cssText = 'padding:14px;text-align:center;font-size:12px;color:var(--ink-3);background:var(--hud-well);border-radius:8px';
+      empty.textContent = 'No saved configs or simulations yet. Save your current setup or completed run above.';
+      list.appendChild(empty);
+      return;
+    }
+    for (const item of items) {
+      const row = document.createElement('div');
+      row.className = 'saved-sim-row';
+
+      const info = document.createElement('div');
+      info.className = 'saved-sim-info';
+
+      const title = document.createElement('div');
+      title.className = 'saved-sim-title';
+      const badge = document.createElement('span');
+      badge.className = `saved-sim-badge ${item.kind === 'simulation' ? 'sim' : 'cfg'}`;
+      badge.textContent = item.kind === 'simulation' ? 'Result Saved' : 'Config';
+      const nameSpan = document.createElement('span');
+      nameSpan.textContent = item.name || 'Untitled';
+      title.appendChild(badge);
+      title.appendChild(nameSpan);
+
+      const sc = item.config?.simConfig || {};
+      const editsCount = (item.config?.interventions || []).length;
+      const when = item.createdAt ? new Date(item.createdAt).toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' }) : '';
+      const sizeStr = item.sizeBytes ? ` · ${(item.sizeBytes / (1024 * 1024)).toFixed(2)} MB` : '';
+      const meta = document.createElement('div');
+      meta.className = 'saved-sim-meta';
+      meta.textContent = `${sc.horizon || '5d'} · ${sc.startDry ? 'Dry start' : 'Live t=0'} · ${editsCount} edits · ${when}${sizeStr}`;
+
+      info.appendChild(title);
+      info.appendChild(meta);
+
+      const actions = document.createElement('div');
+      actions.className = 'saved-sim-actions';
+      const openBtn = document.createElement('button');
+      openBtn.className = 'btn btn-xs primary';
+      openBtn.textContent = 'Open';
+      openBtn.addEventListener('click', () => openSavedItem(item.id));
+      const delBtn = document.createElement('button');
+      delBtn.className = 'btn btn-xs';
+      delBtn.textContent = 'Delete';
+      delBtn.addEventListener('click', () => deleteSavedItem(item.id));
+      actions.appendChild(openBtn);
+      actions.appendChild(delBtn);
+
+      row.appendChild(info);
+      row.appendChild(actions);
+      list.appendChild(row);
+    }
+  } catch (err) {
+    list.textContent = `Could not read browser storage: ${err && err.message ? err.message : String(err)}`;
+  }
+}
+
 function buildShareUrl() {
   const qs = new URLSearchParams();
   const c = map ? map.getCenter() : { lat: state.center.lat, lng: state.center.lon };
+  qs.set('tab', state.profile === 'researcher' ? 'simulate' : 'live');
   qs.set('lat', c.lat.toFixed(4));
   qs.set('lon', c.lng.toFixed(4));
   if (map) qs.set('zoom', map.getZoom().toFixed(2));
-  qs.set('profile', state.profile);
   qs.set('basemap', state.basemap);
   qs.set('layer', state.layer);
-  const sc = state.simConfig;
-  qs.set('mode', sc.mode);
-  if (sc.mode === 'stress') {
-    qs.set('stress_mm', String(sc.stressMmDay));
-    qs.set('stress_days', String(sc.stressDays));
-    if (sc.stressPadM > 0) qs.set('stress_pad', String(sc.stressPadM));
-  } else {
-    qs.set('rain', String(sc.rainfallMmHr));
-    qs.set('dur', String(sc.durationS));
-    if (sc.rainMult !== 1) qs.set('rain_mult', String(sc.rainMult));
+  // Live tab shares ONLY the clean map view; Simulate tab shares the full scenario
+  if (state.profile === 'researcher') {
+    const sc = state.simConfig;
+    qs.set('horizon', sc.horizon || '2d');
+    qs.set('mode', sc.mode);
+    if (sc.mode === 'stress') {
+      qs.set('stress_mm', String(sc.stressMmDay));
+      qs.set('stress_days', String(sc.stressDays));
+      if (sc.stressPadM > 0) qs.set('stress_pad', String(sc.stressPadM));
+    } else {
+      qs.set('rain', String(sc.rainfallMmHr));
+      qs.set('dur', String(sc.durationS));
+      if (sc.rainMult !== 1) qs.set('rain_mult', String(sc.rainMult));
+    }
+    if (sc.startDry) qs.set('start_dry', '1');
+    if (!sc.enableEvap) qs.set('evap', '0');
+    if (!sc.enableDrain) qs.set('drain', '0');
+    if (sc.tideMode !== 'live') qs.set('tide', sc.tideMode);
+    if (sc.soil !== 'impervious') qs.set('soil', sc.soil);
   }
-  if (sc.startDry) qs.set('start_dry', '1');
-  if (!sc.enableEvap) qs.set('evap', '0');
-  if (!sc.enableDrain) qs.set('drain', '0');
-  if (sc.tideMode !== 'live') qs.set('tide', sc.tideMode);
-  if (sc.soil !== 'impervious') qs.set('soil', sc.soil);
   return `${window.location.origin}${window.location.pathname}?${qs.toString()}`;
 }
 
@@ -3924,7 +4266,8 @@ function updateStormDrainGridStatus() {
 function populateSimModal() {
   const sc = state.simConfig;
   switchSimTab(sc.mode || 'forecast');
-  $('sim-horizon').value = sc.horizon;
+  $('sim-horizon').value = sc.horizon || '2d';
+  if ($('sim-start-mode')) $('sim-start-mode').value = sc.startDry ? 'dry' : 'live';
     const multStr = String(Number(sc.rainMult));
     $('sim-rain-mult').value = multStr;
   $('sim-stress-mm-day').value = String(sc.stressMmDay);
@@ -3960,12 +4303,13 @@ function openSimModal() {
 
 function applySimModalDraftAndRun() {
   const sc = state.simConfig;
-  sc.horizon = $('sim-horizon').value;
+  sc.horizon = $('sim-horizon').value || '2d';
   sc.rainMult = parseFloat($('sim-rain-mult').value) || 1.0;
   sc.stressMmDay = parseFloat($('sim-stress-mm-day').value) || 150;
   sc.stressDays = parseInt($('sim-stress-days').value, 10) || 3;
   sc.stressPadM = parseFloat($('sim-stress-pad').value) || 0;
-  sc.startDry = $('sim-start-dry').checked;
+  sc.startDry = $('sim-start-mode') ? $('sim-start-mode').value === 'dry' : $('sim-start-dry').checked;
+  if ($('sim-start-dry')) $('sim-start-dry').checked = sc.startDry;
   sc.enableEvap = $('sim-enable-evap').checked;
   sc.enableDrain = $('sim-enable-drain').checked;
   if ($('sim-storm-drain')) {
@@ -4043,6 +4387,15 @@ async function fetchRegionalContext(qs) {
       const inBounds = state.center.lon >= minLon && state.center.lon <= maxLon
         && state.center.lat >= minLat && state.center.lat <= maxLat;
       if (inBounds) {
+        if (Number.isFinite(ctx.antecedent_rain_mm) && ctx.antecedent_rain_mm > 0) {
+          state.antecedentMm = ctx.antecedent_rain_mm;
+        }
+        if (Array.isArray(ctx.observed_gauges) && ctx.observed_gauges.length > 0 && state.observedGauges.length === 0) {
+          state.observedGauges = ctx.observed_gauges;
+        }
+        if (Array.isArray(ctx.interventions) && ctx.interventions.length > 0) {
+          state.liveInterventions = ctx.interventions;
+        }
         if (ctx.spatial_rain_grid) {
           state.spatialRainGrid = ctx.spatial_rain_grid;
           if (!qs.has('rain')) state.simConfig.rainfallMmHr = 0;
@@ -4065,6 +4418,20 @@ function applyUserPrefs(qs) {
   if (qs.get('presentation') === '1' || qs.get('presentation') === 'true') return;
   if (qs.get('fixed') === '1' || qs.get('fixed') === 'true') return;
   const prefs = loadUserPrefs();
+  if (prefs.last_center && !qs.has('lat') && !qs.has('lon')) {
+    const lc = prefs.last_center;
+    if (Number.isFinite(lc.lat) && Number.isFinite(lc.lon)) {
+      state.center = { lat: lc.lat, lon: lc.lon };
+      if (Number.isFinite(lc.zoom) && !qs.has('zoom')) state.initZoom = lc.zoom;
+      if (lc.label) setCustomPresetLabel(`★ ${lc.label}`);
+      if ($('btn-save-default')) $('btn-save-default').textContent = '★ Default';
+    }
+  }
+  if ($('btn-play')) $('btn-play').textContent = state.playing ? '❚❚' : '▶';
+  if ($('btn-env')) {
+    $('btn-env').textContent = state.envelopeMode ? 'Peak' : 'Live';
+    $('btn-env').classList.toggle('active', state.envelopeMode);
+  }
   if (prefs.profile) setUiProfile(prefs.profile, false);
   if (prefs.displayPrefs && typeof prefs.displayPrefs === 'object') {
     state.displayPrefs = { ...state.displayPrefs, ...prefs.displayPrefs };
@@ -4173,6 +4540,11 @@ window.addEventListener('unhandledrejection', (e) => {
 
 function applyStartupParams() {
   const qs = new URLSearchParams(window.location.search);
+  const tab = qs.get('tab');
+  if (tab === 'simulate') setUiProfile('researcher', false);
+  else if (tab === 'live') setUiProfile('public', false);
+  const horizon = qs.get('horizon');
+  if (horizon && ['6h', '1d', '2d', '3d', '5d'].includes(horizon)) state.simConfig.horizon = horizon;
   const lat = parseFloat(qs.get('lat'));
   const lon = parseFloat(qs.get('lon'));
   if (Number.isFinite(lat) && Number.isFinite(lon)) {
