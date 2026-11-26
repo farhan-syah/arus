@@ -1992,7 +1992,7 @@ function computeRecessionSummary(idx, thresholdM, framesOverride) {
 }
 
 function lookupPointAcrossBasins(lon, lat) {
-  const tryGrid = (grid, frames, basinId) => {
+  const tryGrid = (grid, frames, basinId, rainGrid) => {
     const meta = grid?.metadata;
     if (!meta || !frames?.length) return null;
     const [minLon, minLat, maxLon, maxLat] = meta.wgs84_bounds;
@@ -2000,17 +2000,18 @@ function lookupPointAcrossBasins(lon, lat) {
     const col = Math.min(meta.cols - 1, Math.max(0, Math.floor(((lon - minLon) / (maxLon - minLon)) * meta.cols)));
     const row = Math.min(meta.rows - 1, Math.max(0, Math.floor(((lat - minLat) / (maxLat - minLat)) * meta.rows)));
     const idx = row * meta.cols + col;
-    return { grid, frames, basinId, col, row, idx, active: Boolean(meta.active_mask[idx]) };
+    return { grid, frames, basinId, rainGrid: rainGrid || null, col, row, idx, active: Boolean(meta.active_mask[idx]) };
   };
   let fallback = null;
   if (state.profile === 'public' && state.liveOverlays.size > 0) {
     for (const [basinId, ov] of state.liveOverlays.entries()) {
-      const hit = tryGrid(ov.grid, ov.frames, basinId);
+      const hit = tryGrid(ov.grid, ov.frames, basinId, ov.rainGrid);
       if (hit && hit.active) return hit;
       if (hit && !fallback) fallback = hit;
     }
   }
-  const primary = tryGrid(state.grid, state.frames, state.liveBasinId);
+  const primaryRain = state.liveOverlays.get(state.liveBasinId)?.rainGrid || state.spatialRainGrid || null;
+  const primary = tryGrid(state.grid, state.frames, state.liveBasinId, primaryRain);
   if (primary && primary.active) return primary;
   return fallback || primary;
 }
@@ -2138,11 +2139,13 @@ function renderSiteVerdict(isFrameTick = false) {
   const peakDisp = isFlooded ? fmtDepth(rawPeakM, 2) : `< ${Math.round(cut * 100)} cm`;
   const padBtn = $('btn-sv-raise');
   if (padBtn) padBtn.style.display = state.profile === 'public' ? 'none' : '';
+  const pointRain = samplePointRainMmHr(hit.rainGrid, grid.metadata.wgs84_bounds, lon, lat);
   $('sv-stats').innerHTML = `
     <div class="mini-stat"><div class="mini-k">Current Depth</div><div class="mini-v">${nowDisp}</div></div>
     <div class="mini-stat"><div class="mini-k">Peak (5d)</div><div class="mini-v">${peakDisp}</div></div>
     <div class="mini-stat"><div class="mini-k">Above Floor</div><div class="mini-v">${fmtDepth(netM, 2)}</div></div>
     <div class="mini-stat"><div class="mini-k">Recession</div><div class="mini-v">${isFlooded ? recInfo.label : 'Dry'}</div></div>
+    <div class="mini-stat mini-stat-wide"><div class="mini-k">Rainfall</div><div class="mini-v">${fmtRain(pointRain, 1)}</div></div>
   `;
 }
 
@@ -3052,14 +3055,54 @@ async function parseErrorText(resp) {
   return txt || `HTTP ${resp.status}`;
 }
 
+function getCurrentForecastHourIdx(nHours, frameIdx, frameCount) {
+  if (!(nHours > 0)) return 0;
+  if (state.spanHours > 0 && Number.isFinite(state.forecastHour)) {
+    return Math.min(nHours - 1, Math.max(0, Math.round(state.forecastHour)));
+  }
+  const frac = frameCount > 1 ? Math.min(frameIdx, frameCount - 1) / (frameCount - 1) : 0;
+  return Math.min(nHours - 1, Math.floor(frac * nHours));
+}
+
+function samplePointRainMmHr(rainGrid, bBounds, lon, lat) {
+  const nFrames = state.frames.length;
+  const fIdx = Math.min(state.frameIdx, Math.max(0, nFrames - 1));
+  const usePeakEnv = Boolean(state.envelopeMode);
+  if (rainGrid && Array.isArray(rainGrid.hourly_mm) && rainGrid.hourly_mm.length && bBounds) {
+    const nx = rainGrid.nx || 1;
+    const ny = rainGrid.ny || 1;
+    const nHours = rainGrid.hourly_mm[0]?.length || 0;
+    if (nHours > 0) {
+      const [bMinLon, bMinLat, bMaxLon, bMaxLat] = bBounds;
+      const fx = Math.min(nx - 1, Math.max(0, ((lon - bMinLon) / Math.max(1e-6, bMaxLon - bMinLon)) * nx - 0.5));
+      const fy = Math.min(ny - 1, Math.max(0, ((bMaxLat - lat) / Math.max(1e-6, bMaxLat - bMinLat)) * ny - 0.5));
+      const i0 = Math.floor(fx), i1 = Math.min(nx - 1, i0 + 1), tx = fx - i0;
+      const j0 = Math.floor(fy), j1 = Math.min(ny - 1, j0 + 1), ty = fy - j0;
+      const hIdx = getCurrentForecastHourIdx(nHours, fIdx, nFrames);
+      const valAt = (j, i) => {
+        const arr = rainGrid.hourly_mm[j * nx + i];
+        if (!arr || !arr.length) return 0;
+        if (usePeakEnv) {
+          let s = 0;
+          for (let k = 0; k < nHours; k++) s += (arr[k] || 0);
+          return s / nHours;
+        }
+        return arr[hIdx] || 0;
+      };
+      const v00 = valAt(j0, i0), v10 = valAt(j0, i1), v01 = valAt(j1, i0), v11 = valAt(j1, i1);
+      return (1 - ty) * ((1 - tx) * v00 + tx * v10) + ty * ((1 - tx) * v01 + tx * v11);
+    }
+  }
+  return computeViewportAvgRainMmHr();
+}
+
 function sampleRainGridInBounds(rainGrid, bBounds, vBounds, frameIdx, frameCount, usePeakEnv) {
   if (!rainGrid || !Array.isArray(rainGrid.hourly_mm) || !rainGrid.hourly_mm.length) return null;
   const nx = rainGrid.nx || 1;
   const ny = rainGrid.ny || 1;
   const nHours = rainGrid.hourly_mm[0]?.length || 0;
   if (!nHours) return null;
-  const frac = frameCount > 1 ? Math.min(frameIdx, frameCount - 1) / (frameCount - 1) : 0;
-  const hIdx = Math.min(nHours - 1, Math.floor(frac * nHours));
+  const hIdx = getCurrentForecastHourIdx(nHours, frameIdx, frameCount);
   const [bMinLon, bMinLat, bMaxLon, bMaxLat] = bBounds;
   let sum = 0;
   let cnt = 0;
@@ -3681,12 +3724,16 @@ function getCurrentFrameEpochMs() {
   const idx = Math.min(state.frameIdx, Math.max(0, state.frames.length - 1));
   const cur = state.frames[idx]?.time_s || 0;
   const tot = Math.max(1, state.frames[state.frames.length - 1]?.time_s || 1);
-  const baseMs = state.startEpochMs
+  const rawBaseMs = state.startEpochMs
     || (state.serverContext?.context?.cycle_iso ? Date.parse(state.serverContext.context.cycle_iso) : Date.now());
   if (state.spanHours > 0) {
-    return baseMs + (cur / tot) * state.spanHours * 3600 * 1000;
+    if (Number.isFinite(state.forecastHour)) {
+      const hourBaseMs = Math.floor(rawBaseMs / 3600_000) * 3600_000;
+      return hourBaseMs + state.forecastHour * 3600_000;
+    }
+    return rawBaseMs + (cur / tot) * state.spanHours * 3600 * 1000;
   }
-  return baseMs + cur * 1000;
+  return rawBaseMs + cur * 1000;
 }
 
 function fmtEnvelopeRangeDisplay(includeYear = true) {
@@ -3731,8 +3778,10 @@ function updateTimeReadout() {
   }
 
   if (state.spanHours > 0) {
-    const frac = state.frames.length > 1 ? idx / (state.frames.length - 1) : 0;
-    const epochMs = state.startEpochMs + frac * state.spanHours * 3600_000;
+    const frac = Number.isFinite(state.forecastHour)
+      ? Math.min(1, Math.max(0, state.forecastHour / state.spanHours))
+      : (state.frames.length > 1 ? idx / (state.frames.length - 1) : 0);
+    const epochMs = frameMs;
     const pct = frac * 100;
     $('fb-fill').style.width = `${pct.toFixed(2)}%`;
     const callout = $('fb-callout');
@@ -3836,7 +3885,14 @@ function setLayer(layer) {
 
 function animationLoop(now) {
   if (state.playing && state.frames.length > 1 && now - state.lastTickMs > (220 / state.speed)) {
-    state.frameIdx = (state.frameIdx + 1) % state.frames.length;
+    if (state.spanHours > 0) {
+      const curHr = Number.isFinite(state.forecastHour) ? state.forecastHour : 0;
+      state.forecastHour = (curHr + 1) % (state.spanHours + 1);
+      state.frameIdx = Math.round((state.forecastHour / state.spanHours) * (state.frames.length - 1));
+    } else {
+      state.forecastHour = null;
+      state.frameIdx = (state.frameIdx + 1) % state.frames.length;
+    }
     $('scrubber').value = String(state.frameIdx);
     updateTimeReadout();
     if (state.xsecPts.length === 2) renderCrossSectionInspector();
@@ -4408,12 +4464,25 @@ function wireUi() {
       state.playing = false;
       if ($('btn-play')) $('btn-play').textContent = '▶';
       if ($('fb-play')) $('fb-play').textContent = '▶';
-      const nextIdx = Math.round(frac * (state.frames.length - 1));
-      if (nextIdx !== state.frameIdx) {
-        state.frameIdx = nextIdx;
-        $('scrubber').value = String(state.frameIdx);
-        updateTimeReadout();
-        renderFloodCanvas(true);
+      if (state.spanHours > 0) {
+        const nextHr = Math.round(frac * state.spanHours);
+        const nextIdx = Math.round((nextHr / state.spanHours) * (state.frames.length - 1));
+        if (nextHr !== state.forecastHour || nextIdx !== state.frameIdx) {
+          state.forecastHour = nextHr;
+          state.frameIdx = nextIdx;
+          $('scrubber').value = String(state.frameIdx);
+          updateTimeReadout();
+          renderFloodCanvas(true);
+        }
+      } else {
+        const nextIdx = Math.round(frac * (state.frames.length - 1));
+        if (nextIdx !== state.frameIdx) {
+          state.forecastHour = null;
+          state.frameIdx = nextIdx;
+          $('scrubber').value = String(state.frameIdx);
+          updateTimeReadout();
+          renderFloodCanvas(true);
+        }
       }
     };
     let dragging = false;
@@ -4448,7 +4517,13 @@ function wireUi() {
       state.playing = false;
       if ($('btn-play')) $('btn-play').textContent = '▶';
       if ($('fb-play')) $('fb-play').textContent = '▶';
-      state.frameIdx = Math.min(state.frames.length - 1, Math.round((i / Math.max(1, all.length)) * (state.frames.length - 1)));
+      if (state.spanHours > 0) {
+        state.forecastHour = Math.min(state.spanHours, Math.round((i / Math.max(1, all.length)) * state.spanHours));
+        state.frameIdx = Math.min(state.frames.length - 1, Math.round((state.forecastHour / state.spanHours) * (state.frames.length - 1)));
+      } else {
+        state.forecastHour = null;
+        state.frameIdx = Math.min(state.frames.length - 1, Math.round((i / Math.max(1, all.length)) * (state.frames.length - 1)));
+      }
       $('scrubber').value = String(state.frameIdx);
       updateTimeReadout();
       renderFloodCanvas(true);
