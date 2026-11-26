@@ -548,6 +548,10 @@ pub struct CreateSimulationRequest {
     /// Optional live observed flooded gauge seeds assimilated into local valley cells at `t = 0`.
     #[serde(default)]
     pub observed_gauges: Vec<ObservedGaugeSeed>,
+    /// Optional per-cell warm-start water depth field (`cols * rows`, meters) at `t = 0`,
+    /// e.g. from a prior historical spin-up or continuous rolling forecast cycle.
+    #[serde(default)]
+    pub initial_depth_m: Option<Vec<f32>>,
     #[serde(default)]
     pub wind_x_m_per_s: f64,
     /// Optional uniform 10 m coastal wind forcing y-component (`m/s`, `hydr 0.2.0`).
@@ -1019,6 +1023,14 @@ fn validate_request(
             "observed_gauges fields must be finite with nonnegative depth".to_owned(),
         ));
     }
+    if let Some(init_h) = &req.initial_depth_m
+        && init_h.iter().any(|v| !v.is_finite() || *v < 0.0)
+    {
+        return Err((
+            422,
+            "initial_depth_m values must be finite nonnegative".to_owned(),
+        ));
+    }
     if let Some(sg) = &req.spatial_rain_grid
         && (sg
             .hourly_mm
@@ -1204,6 +1216,14 @@ fn compute_request_hash(req: &CreateSimulationRequest) -> [u8; 32] {
         hash_f64(&mut h, g.lon);
         hash_f64(&mut h, g.depth_m);
         hash_usize(&mut h, g.radius_cells);
+    }
+    if let Some(init_h) = &req.initial_depth_m {
+        hash_usize(&mut h, init_h.len());
+        for &v in init_h {
+            h.update(v.to_bits().to_le_bytes());
+        }
+    } else {
+        hash_usize(&mut h, 0);
     }
     hash_f64(&mut h, req.wind_x_m_per_s);
     hash_f64(&mut h, req.wind_y_m_per_s);
@@ -1426,10 +1446,41 @@ where
             .collect(),
     };
 
-    // Stage 1: Channel-only initial water depth (hills = 0.0 m; rivers/valleys + observed gauges wet)
+    // Stage 1: Initial water depth at t = 0 (warm-start field if supplied, else channel prestate)
     let has_prestate =
         !req.start_dry && (req.antecedent_rain_mm > 0.0 || !req.observed_gauges.is_empty());
-    let per_cell_initial: Option<Vec<f64>> = if has_prestate {
+    let per_cell_initial: Option<Vec<f64>> = if !req.start_dry
+        && let Some(ref warm) = req.initial_depth_m
+        && warm.len() == cols * rows
+    {
+        let mut h_init: Vec<f64> = warm
+            .iter()
+            .enumerate()
+            .map(|(i, &d)| {
+                if terrain.cells()[i].is_some() && d.is_finite() {
+                    f64::from(d).clamp(0.0, 15.0)
+                } else {
+                    0.0
+                }
+            })
+            .collect();
+        if !req.observed_gauges.is_empty() {
+            let gauge_layer = build_channel_prestate(
+                terrain.cells(),
+                cols,
+                rows,
+                wgs84_bounds,
+                0.0,
+                &req.observed_gauges,
+            );
+            for (h, g) in h_init.iter_mut().zip(gauge_layer.iter()) {
+                if *g > *h {
+                    *h = *g;
+                }
+            }
+        }
+        Some(h_init)
+    } else if has_prestate {
         Some(build_channel_prestate(
             terrain.cells(),
             cols,
