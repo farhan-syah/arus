@@ -53,8 +53,9 @@ fn StudioShell() -> Element {
                 button { id: "btn-open-sim", class: "btn", title: "Forecast, Site Stress-Test, and physics settings", "Simulate…" }
                 button { id: "btn-share", class: "btn", title: "Copy shareable link to current scenario", "Share" }
                 button { id: "btn-sources", class: "btn", "Sources" }
+                button { id: "btn-about", class: "btn", title: "About ARUS, disclaimer, self-hosting, and feedback", "About" }
                 button { id: "btn-snap", class: "btn", title: "Save PNG snapshot", "PNG" }
-                button { id: "btn-rec", class: "btn", title: "Record MP4 video (via vidr)", "Rec" }
+                button { id: "btn-rec", class: "btn", title: "Record video locally in your browser", "Rec" }
                 button { id: "btn-export-asc", class: "btn", ".ASC" }
                 button { id: "btn-export-csv", class: "btn", ".CSV" }
             }
@@ -604,6 +605,52 @@ fn StudioShell() -> Element {
                         button { id: "btn-sim-cancel", class: "btn", "Cancel" }
                         button { id: "btn-sim-apply", class: "btn primary", "Apply & Run" }
                     }
+                }
+            }
+        }
+        // About, Curated-Data Disclaimer, Self-Hosting & Support Modal
+        div { id: "about-modal", class: "modal-backdrop hidden", role: "dialog", "aria-modal": "true",
+            div { class: "modal-card",
+                div { class: "modal-head",
+                    span { class: "modal-title", "About ARUS & Data Disclaimer" }
+                    button { id: "btn-about-close", class: "btn btn-xs", "Close" }
+                }
+                div { class: "modal-body", style: "display:flex;flex-direction:column;gap:12px;font-size:13px;line-height:1.5;color:var(--ink-2)",
+                    div { style: "padding:10px 12px;border-radius:8px;background:var(--hud-well);border:1px solid var(--hud-border)",
+                        strong { style: "color:var(--ink-1);display:block;margin-bottom:4px", "Curated Open-Data Screening Only" }
+                        "This hosted instance serves regional weather, tide, and terrain datasets curated by the ARUS team. Open 30 m terrain and global NWP forecasts have resolution limits and never replace official flood warnings from your national meteorological or hydrology agency."
+                    }
+                    div {
+                        strong { style: "color:var(--ink-1);display:block;margin-bottom:4px", "Own & Manage Your Own Data" }
+                        "ARUS is open-source Rust software. Agencies, engineers, and researchers can build and self-host ARUS locally with private LiDAR DEMs, surveyed drainage networks, and live telemetry gauges."
+                    }
+                    div { style: "display:flex;flex-wrap:wrap;gap:8px;padding-top:4px",
+                        a {
+                            class: "btn",
+                            href: "https://github.com/farhan-syah/arus",
+                            target: "_blank",
+                            rel: "noopener noreferrer",
+                            "GitHub Repo ↗"
+                        }
+                        a {
+                            class: "btn",
+                            href: "https://github.com/farhan-syah/arus/issues/new",
+                            target: "_blank",
+                            rel: "noopener noreferrer",
+                            "Report Issue / Suggest Feature ↗"
+                        }
+                        a {
+                            class: "btn primary",
+                            href: "https://ko-fi.com/farhansyah",
+                            target: "_blank",
+                            rel: "noopener noreferrer",
+                            "Support on Ko-fi ↗"
+                        }
+                    }
+                }
+                div { class: "modal-foot",
+                    span { style: "font-size:11px;color:var(--ink-3)", "Anonymous JS error telemetry helps strengthen ARUS (no PII or cookies)." }
+                    button { id: "btn-about-ok", class: "btn primary", "Got it" }
                 }
             }
         }

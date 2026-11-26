@@ -139,6 +139,10 @@ pub fn router(state: ApiState) -> Router {
             "/api/v1/export/mp4",
             post(post_export_mp4).layer(DefaultBodyLimit::max(64 * 1024 * 1024)),
         )
+        .route(
+            "/api/v1/telemetry/error",
+            post(post_client_error).layer(DefaultBodyLimit::max(4 * 1024)),
+        )
         .route("/runs/{run_id}", get(render_run_html))
         .layer(DefaultBodyLimit::max(MAX_BODY_BYTES))
         .with_state(state)
@@ -659,6 +663,52 @@ async fn render_run_html(
 #[derive(Debug, Deserialize)]
 struct ContextQuery {
     basin: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ClientErrorPayload {
+    kind: String,
+    message: String,
+    #[serde(default)]
+    source: Option<String>,
+    #[serde(default)]
+    profile: Option<String>,
+    #[serde(default)]
+    engine: Option<String>,
+}
+
+async fn post_client_error(
+    State(state): State<ApiState>,
+    Json(payload): Json<ClientErrorPayload>,
+) -> StatusCode {
+    let ts = time::OffsetDateTime::now_utc()
+        .format(&time::format_description::well_known::Rfc3339)
+        .unwrap_or_default();
+    let entry = serde_json::json!({
+        "ts": ts,
+        "kind": payload.kind.chars().take(48).collect::<String>(),
+        "message": payload.message.chars().take(500).collect::<String>(),
+        "source": payload.source.map(|s| s.chars().take(160).collect::<String>()),
+        "profile": payload.profile.map(|s| s.chars().take(24).collect::<String>()),
+        "engine": payload.engine.map(|s| s.chars().take(32).collect::<String>()),
+    });
+    let log_path = state.archive.root().join("client-errors.jsonl");
+    let line = format!("{entry}\n");
+    let _ = tokio::task::spawn_blocking(move || {
+        use std::io::Write;
+        if let Some(parent) = log_path.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        if let Ok(mut file) = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&log_path)
+        {
+            let _ = file.write_all(line.as_bytes());
+        }
+    })
+    .await;
+    StatusCode::NO_CONTENT
 }
 
 async fn get_config(State(state): State<ApiState>) -> Response {

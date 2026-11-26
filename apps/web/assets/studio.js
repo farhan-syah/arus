@@ -3310,6 +3310,13 @@ function wireUi() {
 
   $('btn-sources').addEventListener('click', openSourcesModal);
   $('btn-sources-close').addEventListener('click', () => $('sources-modal').classList.add('hidden'));
+  const dismissAbout = () => {
+    if ($('about-modal')) $('about-modal').classList.add('hidden');
+    try { window.localStorage.setItem('arus.about.ack.v1', '1'); } catch (_) {}
+  };
+  $('btn-about')?.addEventListener('click', () => $('about-modal')?.classList.remove('hidden'));
+  $('btn-about-close')?.addEventListener('click', dismissAbout);
+  $('btn-about-ok')?.addEventListener('click', dismissAbout);
   $('btn-inspector-close').addEventListener('click', () => {
     $('inspector').classList.add('hidden');
     state.xsecPts = [];
@@ -4105,6 +4112,13 @@ async function fetchAndApplyServerConfig(qs) {
       hide($('btn-export-asc'));
       hide($('btn-export-csv'));
     }
+    if (cfg.mode === 'hosted' && !qs.get('presentation') && !qs.get('fixed')) {
+      try {
+        if (!window.localStorage.getItem('arus.about.ack.v1') && $('about-modal')) {
+          $('about-modal').classList.remove('hidden');
+        }
+      } catch (_) {}
+    }
     const prefs = loadUserPrefs();
     const dv = cfg.default_view;
     if (dv && !qs.has('lat') && !qs.has('lon') && !prefs.last_center) {
@@ -4126,6 +4140,36 @@ async function fetchAndApplyServerConfig(qs) {
     }
   } catch (_) { /* server config optional in offline mode */ }
 }
+
+// Privacy-first client error feedback (zero PII/cookies, max 5 reports per session)
+const reportedErrors = new Set();
+function reportClientError(kind, message, source = '') {
+  if (reportedErrors.size >= 5) return;
+  const msg = String(message || '').slice(0, 500);
+  const key = `${kind}:${msg.slice(0, 120)}`;
+  if (!msg || reportedErrors.has(key)) return;
+  reportedErrors.add(key);
+  try {
+    fetch(apiUrl('api/v1/telemetry/error'), {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      keepalive: true,
+      body: JSON.stringify({
+        kind,
+        message: msg,
+        source: String(source || '').slice(0, 160),
+        profile: state.profile,
+        engine: state.activeEngine,
+      }),
+    }).catch(() => {});
+  } catch (_) {}
+}
+window.addEventListener('error', (e) => {
+  reportClientError('error', e.message || 'Script error', `${e.filename || ''}:${e.lineno || 0}`);
+});
+window.addEventListener('unhandledrejection', (e) => {
+  reportClientError('unhandledrejection', e.reason?.message || String(e.reason || 'Promise rejected'));
+});
 
 function applyStartupParams() {
   const qs = new URLSearchParams(window.location.search);
