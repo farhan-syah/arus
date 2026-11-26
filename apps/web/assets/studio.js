@@ -4122,61 +4122,151 @@ function drawRecordingHudOverlay(ctx, W, H) {
     || 'Flood Outlook';
   const frameMs = getCurrentFrameEpochMs();
   const stamp = fmtMytDisplay(frameMs, true);
+  const avgTxt = $('lm-avg')?.textContent?.trim() || '0.00 m';
   const peakTxt = $('lm-peak')?.textContent?.trim() || '0.00 m';
   const pctTxt = $('lm-pct')?.textContent?.trim() || '0%';
   const areaTxt = $('lm-stagnant')?.textContent?.trim() || '0.0 km²';
   const riskTxt = $('lm-badge')?.textContent?.trim() || 'LOW';
-  const riskColor = riskTxt === 'DANGER' ? '#dc2626'
-    : riskTxt === 'HIGH' ? '#ea580c'
-    : riskTxt === 'MODERATE' ? '#d97706'
-    : '#059669';
+  const trendTxt = $('lm-trend')?.textContent?.trim() || 'Current';
+  const markerLeftPct = parseFloat($('lm-marker')?.style?.left || '0') || 0;
+  const riskBg = riskTxt === 'DANGER' ? 'rgba(220, 38, 38, 0.16)'
+    : riskTxt === 'HIGH' ? 'rgba(234, 88, 12, 0.16)'
+    : riskTxt === 'MODERATE' ? 'rgba(217, 119, 6, 0.16)'
+    : 'rgba(16, 185, 129, 0.16)';
+  const riskFg = riskTxt === 'DANGER' ? '#b91c1c'
+    : riskTxt === 'HIGH' ? '#c2410c'
+    : riskTxt === 'MODERATE' ? '#b45309'
+    : '#047857';
 
   ctx.save();
-  // 1. Top-left broadcast title, live MYT timestamp & flood KPI card
-  const cardW = Math.round(360 * s);
-  const cardH = Math.round(86 * s);
-  ctx.fillStyle = 'rgba(255, 255, 255, 0.92)';
+  const cardW = Math.round(286 * s);
+
+  // 1. Top-left location + live MYT date/time card
+  const headH = Math.round(58 * s);
+  ctx.fillStyle = 'rgba(255, 255, 255, 0.93)';
   ctx.beginPath();
-  ctx.roundRect(pad, pad, cardW, cardH, Math.round(10 * s));
+  ctx.roundRect(pad, pad, cardW, headH, Math.round(10 * s));
   ctx.fill();
-  ctx.strokeStyle = 'rgba(15, 23, 42, 0.14)';
+  ctx.strokeStyle = 'rgba(15, 23, 42, 0.12)';
   ctx.lineWidth = Math.max(1, s);
   ctx.stroke();
 
   ctx.fillStyle = '#0f172a';
   ctx.font = `700 ${Math.round(14 * s)}px Inter, system-ui, sans-serif`;
-  ctx.fillText(`ARUS · ${title}`.slice(0, 34), pad + Math.round(12 * s), pad + Math.round(24 * s));
-
-  // Severity badge on top-right of left card
-  const pillW = Math.round(68 * s);
-  const pillH = Math.round(20 * s);
-  ctx.fillStyle = riskColor;
-  ctx.beginPath();
-  ctx.roundRect(pad + cardW - pillW - Math.round(10 * s), pad + Math.round(10 * s), pillW, pillH, Math.round(999 * s));
-  ctx.fill();
-  ctx.fillStyle = '#ffffff';
-  ctx.font = `700 ${Math.round(10 * s)}px Inter, system-ui, sans-serif`;
-  ctx.textAlign = 'center';
-  ctx.fillText(riskTxt, pad + cardW - pillW / 2 - Math.round(10 * s), pad + Math.round(24 * s));
-  ctx.textAlign = 'left';
+  ctx.fillText(`ARUS · ${title}`.slice(0, 30), pad + Math.round(12 * s), pad + Math.round(23 * s));
 
   ctx.fillStyle = '#0284c7';
   ctx.font = `600 ${Math.round(12 * s)}px "JetBrains Mono", monospace`;
-  ctx.fillText(stamp, pad + Math.round(12 * s), pad + Math.round(47 * s));
+  ctx.fillText(stamp, pad + Math.round(12 * s), pad + Math.round(44 * s));
 
-  ctx.fillStyle = '#334155';
-  ctx.font = `500 ${Math.round(11.5 * s)}px "JetBrains Mono", monospace`;
-  ctx.fillText(`Peak ${peakTxt}  ·  ${pctTxt} area  ·  ${areaTxt}`, pad + Math.round(12 * s), pad + Math.round(70 * s));
+  // 2. Area Flood Index card (matching the live HUD gauge + 2x2 KPIs)
+  const afiY = pad + headH + Math.round(10 * s);
+  const afiH = Math.round(166 * s);
+  ctx.fillStyle = 'rgba(255, 255, 255, 0.93)';
+  ctx.beginPath();
+  ctx.roundRect(pad, afiY, cardW, afiH, Math.round(10 * s));
+  ctx.fill();
+  ctx.strokeStyle = 'rgba(15, 23, 42, 0.12)';
+  ctx.stroke();
 
-  // 2. Top-right depth legend colorbar card
+  const ix = pad + Math.round(12 * s);
+  const iw = cardW - Math.round(24 * s);
+  ctx.fillStyle = '#0f172a';
+  ctx.font = `700 ${Math.round(12.5 * s)}px Inter, system-ui, sans-serif`;
+  ctx.fillText('Area Flood Index', ix, afiY + Math.round(22 * s));
+
+  // Severity badge on right
+  const bW = Math.round(54 * s);
+  const bH = Math.round(18 * s);
+  const bX = ix + iw - bW;
+  const bY = afiY + Math.round(9 * s);
+  ctx.fillStyle = riskBg;
+  ctx.beginPath();
+  ctx.roundRect(bX, bY, bW, bH, Math.round(5 * s));
+  ctx.fill();
+  ctx.fillStyle = riskFg;
+  ctx.font = `700 ${Math.round(9.5 * s)}px Inter, system-ui, sans-serif`;
+  ctx.textAlign = 'center';
+  ctx.fillText(riskTxt, bX + bW / 2, bY + Math.round(12.5 * s));
+
+  // Trend label left of badge
+  ctx.fillStyle = trendTxt.includes('Rising') ? '#dc2626' : (trendTxt.includes('Receding') ? '#059669' : '#64748b');
+  ctx.font = `600 ${Math.round(10.5 * s)}px Inter, system-ui, sans-serif`;
+  ctx.textAlign = 'right';
+  ctx.fillText(trendTxt, bX - Math.round(8 * s), afiY + Math.round(22 * s));
+  ctx.textAlign = 'left';
+
+  // Gauge gradient bar + live marker dot
+  const gY = afiY + Math.round(38 * s);
+  const gH = Math.round(7 * s);
+  const gGrad = ctx.createLinearGradient(ix, 0, ix + iw, 0);
+  gGrad.addColorStop(0, '#10b981');
+  gGrad.addColorStop(0.35, '#eab308');
+  gGrad.addColorStop(0.7, '#f97316');
+  gGrad.addColorStop(1, '#ef4444');
+  ctx.fillStyle = gGrad;
+  ctx.beginPath();
+  ctx.roundRect(ix, gY, iw, gH, Math.round(4 * s));
+  ctx.fill();
+
+  const mkX = ix + Math.max(0, Math.min(1, markerLeftPct / 100)) * iw;
+  ctx.fillStyle = '#ffffff';
+  ctx.beginPath();
+  ctx.arc(mkX, gY + gH / 2, Math.round(5.5 * s), 0, Math.PI * 2);
+  ctx.fill();
+  ctx.strokeStyle = '#0f172a';
+  ctx.lineWidth = Math.max(1.5, 2 * s);
+  ctx.stroke();
+
+  ctx.fillStyle = '#64748b';
+  ctx.font = `500 ${Math.round(9.5 * s)}px Inter, system-ui, sans-serif`;
+  ctx.fillText('Low', ix, gY + Math.round(20 * s));
+  ctx.fillText('Mod', ix + Math.round(iw * 0.30), gY + Math.round(20 * s));
+  ctx.fillText('High', ix + Math.round(iw * 0.62), gY + Math.round(20 * s));
+  ctx.textAlign = 'right';
+  ctx.fillText('Danger', ix + iw, gY + Math.round(20 * s));
+  ctx.textAlign = 'left';
+
+  // 2x2 KPI boxes (Avg Depth, Peak Depth, Flooded Area, Flooded Extent)
+  const kpis = [
+    ['Avg Depth', avgTxt],
+    ['Peak Depth', peakTxt],
+    ['Flooded Area', pctTxt],
+    ['Flooded Extent', areaTxt],
+  ];
+  const cellGap = Math.round(7 * s);
+  const cellW = Math.round((iw - cellGap) / 2);
+  const cellH = Math.round(42 * s);
+  const gridY = gY + Math.round(29 * s);
+  ctx.lineWidth = Math.max(1, s);
+  for (let i = 0; i < 4; i++) {
+    const col = i % 2;
+    const row = Math.floor(i / 2);
+    const cx = ix + col * (cellW + cellGap);
+    const cy = gridY + row * (cellH + cellGap);
+    ctx.fillStyle = 'rgba(241, 245, 249, 0.85)';
+    ctx.beginPath();
+    ctx.roundRect(cx, cy, cellW, cellH, Math.round(7 * s));
+    ctx.fill();
+    ctx.strokeStyle = 'rgba(15, 23, 42, 0.08)';
+    ctx.stroke();
+    ctx.fillStyle = '#64748b';
+    ctx.font = `500 ${Math.round(9.5 * s)}px Inter, system-ui, sans-serif`;
+    ctx.fillText(kpis[i][0], cx + Math.round(8 * s), cy + Math.round(15 * s));
+    ctx.fillStyle = '#0f172a';
+    ctx.font = `700 ${Math.round(12.5 * s)}px "JetBrains Mono", monospace`;
+    ctx.fillText(kpis[i][1], cx + Math.round(8 * s), cy + Math.round(33 * s));
+  }
+
+  // 3. Top-right depth legend colorbar card
   const legW = Math.round(224 * s);
   const legH = Math.round(64 * s);
   const legX = W - legW - pad;
-  ctx.fillStyle = 'rgba(255, 255, 255, 0.92)';
+  ctx.fillStyle = 'rgba(255, 255, 255, 0.93)';
   ctx.beginPath();
   ctx.roundRect(legX, pad, legW, legH, Math.round(10 * s));
   ctx.fill();
-  ctx.strokeStyle = 'rgba(15, 23, 42, 0.14)';
+  ctx.strokeStyle = 'rgba(15, 23, 42, 0.12)';
   ctx.stroke();
 
   const barX = legX + Math.round(12 * s);
@@ -4208,31 +4298,6 @@ function drawRecordingHudOverlay(ctx, W, H) {
   ctx.font = `500 ${Math.round(10 * s)}px Inter, system-ui, sans-serif`;
   ctx.fillText(`River channel (< ${cutCm} cm hidden)`, barX + Math.round(20 * s), barY + Math.round(40 * s));
 
-  // 3. Bottom timeline progress strip + watermark
-  const footW = Math.round(Math.min(460 * s, W - pad * 2));
-  const footH = Math.round(30 * s);
-  const footX = Math.round((W - footW) * 0.5);
-  const footY = H - footH - pad;
-  ctx.fillStyle = 'rgba(255, 255, 255, 0.90)';
-  ctx.beginPath();
-  ctx.roundRect(footX, footY, footW, footH, Math.round(8 * s));
-  ctx.fill();
-  ctx.strokeStyle = 'rgba(15, 23, 42, 0.12)';
-  ctx.stroke();
-
-  const frac = state.frames.length > 1 ? state.frameIdx / (state.frames.length - 1) : 0;
-  const pX = footX + Math.round(12 * s);
-  const pW = footW - Math.round(24 * s);
-  const pY = footY + Math.round(8 * s);
-  const pH = Math.round(5 * s);
-  ctx.fillStyle = 'rgba(15, 23, 42, 0.12)';
-  ctx.fillRect(pX, pY, pW, pH);
-  ctx.fillStyle = '#0284c7';
-  ctx.fillRect(pX, pY, Math.round(pW * frac), pH);
-
-  ctx.fillStyle = '#475569';
-  ctx.font = `500 ${Math.round(10 * s)}px Inter, system-ui, sans-serif`;
-  ctx.fillText('ARUS Screening Forecast · Follow official flood alerts', pX, footY + Math.round(24 * s));
   ctx.restore();
 }
 
