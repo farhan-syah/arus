@@ -10,7 +10,7 @@ ARUS is a Rust 3D flood simulation and forecasting platform for hydrologists, dr
 - **Spatial NWP Forcing**: Interpolates `nx × ny` rain grids, hourly FAO-56 Penman-Monteith `et0_mm` (suppressed above `0.2 mm/hr` rain), and initial `soil_moisture_init`. Applies per-cell Manning roughness (`0.032` channels, `0.060` floodplain, `0.110` upland) and `hourly_tide_m` backwater.
 - **Pre-State Assimilation**: Seeds valley channels from `antecedent_rain_mm` and assimilates live river-gauge depths via `observed_gauges`.
 - **4-Stage Forecast Pipeline (`arus-worker pipeline`)**: Computes soil and gauge headroom, 72–120h 1D hydrology ensembles, and coastal tide-lock checks. Triggers windowed 2D onset, peak, and recession runs.
-- **3D Web Studio (`arus-api`)**: Renders Terrarium 30m DEMs, `Topo | Satellite | Dark` basemaps, emerald river channels, and OSM polygon-masked boundaries. Includes a `6 cm` runoff cutoff, DEFRA FD2320 hazard (`HR = h × (v + 0.5)`), `A → B` profiles, and Baseline vs Intervention `Δh` diffs.
+- **3D Web Studio (`arus-api`)**: Renders Terrarium 30m DEMs, `Topo | Satellite | Dark` basemaps, emerald river channels, and OSM polygon-masked boundaries. Includes scale-adaptive flood cutoffs (`8 cm` local / `15 cm` statewide, configurable `5–30 cm`), DEFRA FD2320 hazard (`HR = h × (v + 0.5)`), `A → B` profiles, and Baseline vs Intervention `Δh` diffs.
 - **Broadcast Overlays**: Displays an aligned `288px` left stack with live per-frame hotspot water levels and hourly tide status. Shows an `Area Flood Index` (`Avg Depth`, `Peak Depth`, `Flooded Area`, `Stagnant km²`).
 - **Pure-Rust Video Export (`vidr 0.1.1`)**: Records JSON storyboards to H.264 faststart `.mp4` via `arus-worker record` over Chromium CDP (zero Python). Transcodes browser captures via `POST /api/v1/export/mp4`.
 - **High-Resolution Async Jobs (`/api/v1/jobs`)**: Queues background basin runs up to `262,144` cells (`512×512`) and `12h` duration with live step progress and cooperative cancellation.
@@ -62,7 +62,7 @@ wasm-bindgen --target web --no-typescript --out-dir apps/web/assets/wasm crates/
 | Multi-model NWP rainfall & ET0 | Open-Meteo (`ecmwf_ifs025`, `gfs_global`, `icon_seamless`, `gem_global`, `jma_seamless`) | `precipitation`, `et0_fao_evapotranspiration`, `soil_moisture_0_to_7cm` | `arus-cli data sync`, `spatial_rain_grid` |
 | Coastal tide & waves | Open-Meteo Marine (`openmeteo-marine-forecast`) | `sea_level_height_msl`, `wave_height` | Stage 3 tide-lock, `hourly_tide_m` |
 | River discharge benchmark | GloFAS (`openmeteo-glofas-flood`) | `river_discharge`, `river_discharge_median`, `river_discharge_max` | `arus-cli data sync` |
-| Official weather warnings | METMalaysia (`met-weather-warning`) | `product=warning` | `arus-cli data sync` |
+| Official weather warnings | Configurable national warning feeds (`catalog/sources.json`) | Agency warning payloads | `arus-cli data sync` |
 | Bare-earth terrain | Terrarium 30m tiles or projected ESRI ASCII `.asc` | `terrain_elevations_m`, `ascii_dem` | `POST /api/v1/simulations` |
 | River gauges & thresholds | Generic JSON (`arus-stations-v1`) | `normal_m`, `alert_m`, `warning_m`, `danger_m`, `observed_gauges` | `arus-worker pipeline`, `t = 0` seed |
 | District / basin mask | OSM Nominatim polygon query | `loadBoundaryByQuery` | Studio canvas mask |
@@ -87,9 +87,9 @@ cargo run --release -p arus-worker -- pipeline \
   --meteo data/acquisition/blobs/<meteo-blob-sha256> \
   --marine data/acquisition/blobs/<marine-blob-sha256> \
   --stations stations.json \
-  --station-id 5527401 \
+  --station-id station-001 \
   --current-stage-m 6.41 \
-  --basin-id sg-setiu \
+  --basin-id example-basin \
   --area-km2 876.89 \
   --impervious-fraction 0.10 \
   --past-hours 48 \
