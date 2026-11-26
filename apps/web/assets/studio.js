@@ -4070,7 +4070,8 @@ function computeAllLiveFloodClusters() {
   const alertBounds = Array.isArray(state.serverConfig?.alert_bounds) && state.serverConfig.alert_bounds.length === 4
     ? state.serverConfig.alert_bounds
     : null;
-  const minDepth = 0.15;
+  // Show Warning (>= 0.30 m) and Danger (>= 0.60 m) only to avoid Advisory noise
+  const minDepth = 0.30;
   const clusters = [];
 
   for (const src of sources) {
@@ -4138,10 +4139,13 @@ function computeAllLiveFloodClusters() {
           if (cLon < aMinLon || cLon > aMaxLon || cLat < aMinLat || cLat > aMaxLat) continue;
         }
         const areaKm2 = count * cellAreaKm2;
-        if (areaKm2 < 0.5 && peakDepth < 0.25) continue;
+        const placeKey = `spot:${cLat.toFixed(2)},${cLon.toFixed(2)}`;
+        const cachedPlace = readNominatimCache(placeKey);
         clusters.push({
           basinId: src.basinId,
           stateName: formatStateName(src.basinId),
+          placeKey,
+          placeName: cachedPlace || null,
           lat: cLat,
           lon: cLon,
           peakDepthM: peakDepth,
@@ -4154,6 +4158,46 @@ function computeAllLiveFloodClusters() {
 
   clusters.sort((a, b) => (severityRank(b.severity) - severityRank(a.severity)) || (b.areaKm2 - a.areaKm2));
   return clusters;
+}
+
+function formatClusterLabel(item) {
+  if (item.placeName) return item.placeName;
+  return `${item.stateName} (${item.lat.toFixed(2)}°N, ${item.lon.toFixed(2)}°E)`;
+}
+
+let alertGeoQueueRunning = false;
+async function resolveAlertPlaceNames(clusters) {
+  if (alertGeoQueueRunning) return;
+  const pending = clusters.filter((c) => !c.placeName && !readNominatimCache(c.placeKey)).slice(0, 12);
+  if (!pending.length) return;
+  alertGeoQueueRunning = true;
+  try {
+    for (const item of pending) {
+      try {
+        const resp = await fetch(
+          `https://nominatim.openstreetmap.org/reverse?format=json&zoom=13&lat=${item.lat.toFixed(4)}&lon=${item.lon.toFixed(4)}`,
+        );
+        if (resp.ok) {
+          const data = await resp.json();
+          const a = data?.address || {};
+          const local = a.village || a.suburb || a.town || a.city || a.county || a.state_district || a.municipality;
+          const st = a.state || item.stateName;
+          const name = local && st && local !== st ? `${local}, ${st}` : (local || st);
+          if (name) {
+            writeNominatimCache(item.placeKey, name);
+            for (const c of cachedFloodClusters) {
+              if (c.placeKey === item.placeKey) c.placeName = name;
+            }
+            renderAlertsButtonAndDropdown(cachedFloodClusters);
+            updateBeaconsForZoom(true);
+          }
+        }
+      } catch (_) {}
+      await new Promise((r) => setTimeout(r, 1100));
+    }
+  } finally {
+    alertGeoQueueRunning = false;
+  }
 }
 
 function renderAlertsButtonAndDropdown(clusters) {
@@ -4170,11 +4214,11 @@ function renderAlertsButtonAndDropdown(clusters) {
   btn.className = `btn btn-xs alert-btn ${maxSev}`;
   badge.textContent = String(clusters.length);
   btn.title = clusters.length
-    ? `${clusters.length} active flood zone${clusters.length === 1 ? '' : 's'} (max: ${severityLabel(maxSev)})`
-    : 'No active flood alerts in monitored coverage';
+    ? `${clusters.length} Warning/Danger flood zone${clusters.length === 1 ? '' : 's'} (max: ${severityLabel(maxSev)})`
+    : 'No active Warning or Danger flood alerts';
   if (sub) {
     sub.textContent = clusters.length
-      ? `${clusters.length} zone${clusters.length === 1 ? '' : 's'} · ${state.envelopeMode ? '5-Day Peak' : 'Current Frame'}`
+      ? `${clusters.length} Warning/Danger · ${state.envelopeMode ? '5-Day Peak' : 'Current'}`
       : 'All clear';
   }
 
@@ -4182,7 +4226,7 @@ function renderAlertsButtonAndDropdown(clusters) {
   if (!clusters.length) {
     const empty = document.createElement('div');
     empty.style.cssText = 'padding:12px;text-align:center;font-size:11.5px;color:var(--ink-3)';
-    empty.textContent = 'No active flood zones above 15 cm in monitored coverage.';
+    empty.textContent = 'No active Warning (≥ 30 cm) or Danger (≥ 60 cm) flood zones.';
     list.appendChild(empty);
     return;
   }
@@ -4195,7 +4239,7 @@ function renderAlertsButtonAndDropdown(clusters) {
     const top = document.createElement('div');
     top.className = 'alert-row-top';
     const loc = document.createElement('span');
-    loc.textContent = `${item.stateName} · ${item.lat.toFixed(2)}°N, ${item.lon.toFixed(2)}°E`;
+    loc.textContent = formatClusterLabel(item);
     const pill = document.createElement('span');
     pill.className = `alert-pill ${item.severity}`;
     pill.textContent = severityLabel(item.severity);
@@ -4267,6 +4311,7 @@ function groupBeaconsForZoom(clusters, zoom) {
       if (!matched) {
         groups.push({
           stateName: c.stateName,
+          placeName: c.placeName,
           latSum: c.lat,
           lonSum: c.lon,
           lat: c.lat,
@@ -4291,8 +4336,8 @@ function groupBeaconsForZoom(clusters, zoom) {
       tier: 'district',
       beacons: groups.map((g) => ({
         title: g.count > 1
-          ? `${g.stateName} District (${g.count} zones)`
-          : `${g.stateName} · ${g.lat.toFixed(2)}°N, ${g.lon.toFixed(2)}°E`,
+          ? `${g.stateName} (${g.count} zones)`
+          : formatClusterLabel(g),
         lat: g.lat,
         lon: g.lon,
         count: g.count,
@@ -4309,7 +4354,7 @@ function groupBeaconsForZoom(clusters, zoom) {
   return {
     tier: 'region',
     beacons: clusters.map((c) => ({
-      title: `${c.stateName} · ${c.lat.toFixed(2)}°N, ${c.lon.toFixed(2)}°E`,
+      title: formatClusterLabel(c),
       lat: c.lat,
       lon: c.lon,
       count: 1,
@@ -4385,6 +4430,7 @@ function refreshAlertsAndBeacons() {
     cachedFloodClusters = computeAllLiveFloodClusters();
     renderAlertsButtonAndDropdown(cachedFloodClusters);
     updateBeaconsForZoom(true);
+    resolveAlertPlaceNames(cachedFloodClusters);
   } else {
     updateBeaconsForZoom(false);
   }
