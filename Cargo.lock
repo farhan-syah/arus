@@ -396,6 +396,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "arus"
+version = "0.1.0"
+dependencies = [
+ "arus-domain",
+ "arus-evaluation",
+ "arus-forecasting",
+ "arus-geo",
+ "arus-hydraulics",
+ "arus-hydrology",
+ "arus-optimisation",
+ "arus-scenarios",
+]
+
+[[package]]
 name = "arus-api"
 version = "0.1.0"
 dependencies = [

@@ -6,6 +6,7 @@ members = [
     "apps/web",
     "apps/worker",
     "crates/api-types",
+    "crates/arus",
     "crates/assets",
     "crates/domain",
     "crates/evaluation",

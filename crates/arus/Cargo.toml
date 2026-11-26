@@ -1,0 +1,27 @@
+[package]
+name = "arus"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+description = "Open-source 2D flood modeling, hydrology, hydraulics, and forecasting platform in Rust."
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+homepage.workspace = true
+readme = "../../README.md"
+keywords.workspace = true
+categories.workspace = true
+
+[dependencies]
+arus-domain.workspace = true
+arus-evaluation.workspace = true
+arus-forecasting.workspace = true
+arus-geo.workspace = true
+arus-hydraulics.workspace = true
+arus-hydrology.workspace = true
+arus-optimisation.workspace = true
+arus-scenarios.workspace = true
+
+[lints]
+workspace = true

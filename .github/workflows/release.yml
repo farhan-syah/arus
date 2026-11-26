@@ -112,6 +112,7 @@ jobs:
             arus-forecasting \
             arus-hydraulics \
             arus-optimisation \
+            arus \
             arus-api \
             arus-worker
           do
