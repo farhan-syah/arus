@@ -4107,6 +4107,128 @@ function closeRecPreviewModal() {
   $('rec-preview-modal')?.classList.add('hidden');
 }
 
+function drawRecordingHudOverlay(ctx, W, H) {
+  const s = Math.max(0.85, Math.min(1.6, W / 1280));
+  const pad = Math.round(16 * s);
+  const title = $('po-title')?.textContent?.trim()
+    || $('preset-select')?.selectedOptions?.[0]?.textContent?.trim()
+    || 'Flood Outlook';
+  const frameMs = getCurrentFrameEpochMs();
+  const stamp = fmtMytDisplay(frameMs, true);
+  const peakTxt = $('lm-peak')?.textContent?.trim() || '0.00 m';
+  const pctTxt = $('lm-pct')?.textContent?.trim() || '0%';
+  const areaTxt = $('lm-stagnant')?.textContent?.trim() || '0.0 km²';
+  const riskTxt = $('lm-badge')?.textContent?.trim() || 'LOW';
+  const riskColor = riskTxt === 'DANGER' ? '#dc2626'
+    : riskTxt === 'HIGH' ? '#ea580c'
+    : riskTxt === 'MODERATE' ? '#d97706'
+    : '#059669';
+
+  ctx.save();
+  // 1. Top-left broadcast title, live MYT timestamp & flood KPI card
+  const cardW = Math.round(360 * s);
+  const cardH = Math.round(86 * s);
+  ctx.fillStyle = 'rgba(255, 255, 255, 0.92)';
+  ctx.beginPath();
+  ctx.roundRect(pad, pad, cardW, cardH, Math.round(10 * s));
+  ctx.fill();
+  ctx.strokeStyle = 'rgba(15, 23, 42, 0.14)';
+  ctx.lineWidth = Math.max(1, s);
+  ctx.stroke();
+
+  ctx.fillStyle = '#0f172a';
+  ctx.font = `700 ${Math.round(14 * s)}px Inter, system-ui, sans-serif`;
+  ctx.fillText(`ARUS · ${title}`.slice(0, 34), pad + Math.round(12 * s), pad + Math.round(24 * s));
+
+  // Severity badge on top-right of left card
+  const pillW = Math.round(68 * s);
+  const pillH = Math.round(20 * s);
+  ctx.fillStyle = riskColor;
+  ctx.beginPath();
+  ctx.roundRect(pad + cardW - pillW - Math.round(10 * s), pad + Math.round(10 * s), pillW, pillH, Math.round(999 * s));
+  ctx.fill();
+  ctx.fillStyle = '#ffffff';
+  ctx.font = `700 ${Math.round(10 * s)}px Inter, system-ui, sans-serif`;
+  ctx.textAlign = 'center';
+  ctx.fillText(riskTxt, pad + cardW - pillW / 2 - Math.round(10 * s), pad + Math.round(24 * s));
+  ctx.textAlign = 'left';
+
+  ctx.fillStyle = '#0284c7';
+  ctx.font = `600 ${Math.round(12 * s)}px "JetBrains Mono", monospace`;
+  ctx.fillText(stamp, pad + Math.round(12 * s), pad + Math.round(47 * s));
+
+  ctx.fillStyle = '#334155';
+  ctx.font = `500 ${Math.round(11.5 * s)}px "JetBrains Mono", monospace`;
+  ctx.fillText(`Peak ${peakTxt}  ·  ${pctTxt} area  ·  ${areaTxt}`, pad + Math.round(12 * s), pad + Math.round(70 * s));
+
+  // 2. Top-right depth legend colorbar card
+  const legW = Math.round(224 * s);
+  const legH = Math.round(64 * s);
+  const legX = W - legW - pad;
+  ctx.fillStyle = 'rgba(255, 255, 255, 0.92)';
+  ctx.beginPath();
+  ctx.roundRect(legX, pad, legW, legH, Math.round(10 * s));
+  ctx.fill();
+  ctx.strokeStyle = 'rgba(15, 23, 42, 0.14)';
+  ctx.stroke();
+
+  const barX = legX + Math.round(12 * s);
+  const barY = pad + Math.round(12 * s);
+  const barW = legW - Math.round(24 * s);
+  const barH = Math.round(10 * s);
+  const grad = ctx.createLinearGradient(barX, 0, barX + barW, 0);
+  grad.addColorStop(0, '#a5f3fc');
+  grad.addColorStop(0.25, '#22d3ee');
+  grad.addColorStop(0.55, '#2563eb');
+  grad.addColorStop(0.82, '#7c3aed');
+  grad.addColorStop(1, '#4c1d95');
+  ctx.fillStyle = grad;
+  ctx.beginPath();
+  ctx.roundRect(barX, barY, barW, barH, Math.round(4 * s));
+  ctx.fill();
+
+  const cutCm = Math.round((state.displayPrefs.depthCutoffM || 0.15) * 100);
+  ctx.fillStyle = '#334155';
+  ctx.font = `600 ${Math.round(10 * s)}px "JetBrains Mono", monospace`;
+  ctx.fillText(`${(cutCm / 100).toFixed(2)}m`, barX, barY + Math.round(24 * s));
+  ctx.fillText('0.3m', barX + Math.round(barW * 0.30), barY + Math.round(24 * s));
+  ctx.fillText('0.6m', barX + Math.round(barW * 0.58), barY + Math.round(24 * s));
+  ctx.fillText('1.2m+', barX + Math.round(barW * 0.83), barY + Math.round(24 * s));
+
+  ctx.fillStyle = '#10b981';
+  ctx.fillRect(barX, barY + Math.round(35 * s), Math.round(14 * s), Math.max(2, Math.round(3 * s)));
+  ctx.fillStyle = '#475569';
+  ctx.font = `500 ${Math.round(10 * s)}px Inter, system-ui, sans-serif`;
+  ctx.fillText(`River channel (< ${cutCm} cm hidden)`, barX + Math.round(20 * s), barY + Math.round(40 * s));
+
+  // 3. Bottom timeline progress strip + watermark
+  const footW = Math.round(Math.min(460 * s, W - pad * 2));
+  const footH = Math.round(30 * s);
+  const footX = Math.round((W - footW) * 0.5);
+  const footY = H - footH - pad;
+  ctx.fillStyle = 'rgba(255, 255, 255, 0.90)';
+  ctx.beginPath();
+  ctx.roundRect(footX, footY, footW, footH, Math.round(8 * s));
+  ctx.fill();
+  ctx.strokeStyle = 'rgba(15, 23, 42, 0.12)';
+  ctx.stroke();
+
+  const frac = state.frames.length > 1 ? state.frameIdx / (state.frames.length - 1) : 0;
+  const pX = footX + Math.round(12 * s);
+  const pW = footW - Math.round(24 * s);
+  const pY = footY + Math.round(8 * s);
+  const pH = Math.round(5 * s);
+  ctx.fillStyle = 'rgba(15, 23, 42, 0.12)';
+  ctx.fillRect(pX, pY, pW, pH);
+  ctx.fillStyle = '#0284c7';
+  ctx.fillRect(pX, pY, Math.round(pW * frac), pH);
+
+  ctx.fillStyle = '#475569';
+  ctx.font = `500 ${Math.round(10 * s)}px Inter, system-ui, sans-serif`;
+  ctx.fillText('ARUS Screening Forecast · Follow official flood alerts', pX, footY + Math.round(24 * s));
+  ctx.restore();
+}
+
 function toggleVideoRecording() {
   const btn = $('btn-rec');
   if (activeRecorder && activeRecorder.state === 'recording') {
@@ -4119,7 +4241,23 @@ function toggleVideoRecording() {
     showToast('Browser video recording is not supported in this browser.');
     return;
   }
-  const stream = map.getCanvas().captureStream(30);
+  const mapCanvas = map.getCanvas();
+  const recCanvas = document.createElement('canvas');
+  recCanvas.width = mapCanvas.width || 1280;
+  recCanvas.height = mapCanvas.height || 720;
+  const recCtx = recCanvas.getContext('2d');
+  const paintComposite = () => {
+    if (!map) return;
+    map.triggerRepaint();
+    if (recCanvas.width !== mapCanvas.width || recCanvas.height !== mapCanvas.height) {
+      recCanvas.width = mapCanvas.width || 1280;
+      recCanvas.height = mapCanvas.height || 720;
+    }
+    recCtx.drawImage(mapCanvas, 0, 0, recCanvas.width, recCanvas.height);
+    drawRecordingHudOverlay(recCtx, recCanvas.width, recCanvas.height);
+  };
+  paintComposite();
+  const stream = recCanvas.captureStream(24);
   const candidates = [
     'video/mp4;codecs=avc1.42E01E',
     'video/mp4',
@@ -4131,8 +4269,8 @@ function toggleVideoRecording() {
   recordedChunks = [];
   try {
     activeRecorder = mime
-      ? new MediaRecorder(stream, { mimeType: mime, videoBitsPerSecond: 4_000_000 })
-      : new MediaRecorder(stream, { videoBitsPerSecond: 4_000_000 });
+      ? new MediaRecorder(stream, { mimeType: mime, videoBitsPerSecond: 4_500_000 })
+      : new MediaRecorder(stream, { videoBitsPerSecond: 4_500_000 });
   } catch (err) {
     stream.getTracks().forEach((t) => t.stop());
     showToast(`Recording unavailable: ${err.message}`);
@@ -4141,10 +4279,8 @@ function toggleVideoRecording() {
   activeRecorder.ondataavailable = (e) => {
     if (e.data && e.data.size > 0) recordedChunks.push(e.data);
   };
-  // Keep WebGL canvas emitting frames even if user pauses playback while recording
-  activeRecRepaintTimer = setInterval(() => {
-    if (map) map.triggerRepaint();
-  }, 100);
+  // Composite map + broadcast HUD (date/time, KPIs, colorbar, timeline) at ~24 fps
+  activeRecRepaintTimer = setInterval(paintComposite, 42);
   activeRecorder.onstop = async () => {
     if (activeRecRepaintTimer) { clearInterval(activeRecRepaintTimer); activeRecRepaintTimer = null; }
     stream.getTracks().forEach((t) => t.stop());
