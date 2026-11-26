@@ -42,7 +42,7 @@ fn StudioShell() -> Element {
                         r#type: "text",
                         placeholder: "Search place or lat, lon",
                     }
-                    button { id: "btn-save-default", class: "btn btn-xs", title: "Save current view as your personal default home location", "☆ Home" }
+                    button { id: "btn-save-default", class: "btn btn-xs", title: "Save current view as your personal default view", "Set Default" }
                     div { class: "alerts-wrap",
                         button { id: "btn-alerts", class: "btn btn-xs alert-btn none", title: "Active flood alerts within monitored coverage",
                             span { class: "alert-tri", "▲" }

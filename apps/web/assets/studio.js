@@ -3109,9 +3109,7 @@ function wireUi() {
     saveUserPrefs({
       last_center: { lat: Number(c.lat.toFixed(5)), lon: Number(c.lng.toFixed(5)), zoom: Number(z.toFixed(2)), label },
     });
-    const btn = $('btn-save-default');
-    if (btn) btn.textContent = '★ Home';
-    showToast(`Saved "${label}" as your personal default home view.`);
+    showToast(`Saved "${label}" as your personal default view.`);
   });
 
   $('coord-search').addEventListener('keydown', async (e) => {
