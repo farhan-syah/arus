@@ -3,35 +3,35 @@
   font-style: normal;
   font-weight: 400;
   font-display: swap;
-  src: url("/assets/fonts/inter-400.woff2") format("woff2");
+  src: url("fonts/inter-400.woff2") format("woff2");
 }
 @font-face {
   font-family: "Inter";
   font-style: normal;
   font-weight: 500;
   font-display: swap;
-  src: url("/assets/fonts/inter-500.woff2") format("woff2");
+  src: url("fonts/inter-500.woff2") format("woff2");
 }
 @font-face {
   font-family: "Inter";
   font-style: normal;
   font-weight: 600;
   font-display: swap;
-  src: url("/assets/fonts/inter-600.woff2") format("woff2");
+  src: url("fonts/inter-600.woff2") format("woff2");
 }
 @font-face {
   font-family: "JetBrains Mono";
   font-style: normal;
   font-weight: 400;
   font-display: swap;
-  src: url("/assets/fonts/jbmono-400.woff2") format("woff2");
+  src: url("fonts/jbmono-400.woff2") format("woff2");
 }
 @font-face {
   font-family: "JetBrains Mono";
   font-style: normal;
   font-weight: 500;
   font-display: swap;
-  src: url("/assets/fonts/jbmono-500.woff2") format("woff2");
+  src: url("fonts/jbmono-500.woff2") format("woff2");
 }
 
 :root {
@@ -582,7 +582,7 @@ input[type="range"] {
   left: 12px;
   bottom: 14px;
   height: 38px;
-  max-width: calc(50vw - 290px);
+  max-width: calc(50vw - 268px);
   padding: 0 11px;
   display: flex;
   align-items: center;

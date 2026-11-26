@@ -9,8 +9,8 @@ async function ensureWasm() {
   if (wasmApi) return wasmApi;
   if (!wasmInitPromise) {
     wasmInitPromise = (async () => {
-      const mod = await import('/assets/wasm/arus_wasm_solver.js');
-      await mod.default({ module_or_path: '/assets/wasm/arus_wasm_solver_bg.wasm' });
+      const mod = await import('./wasm/arus_wasm_solver.js');
+      await mod.default({ module_or_path: new URL('./wasm/arus_wasm_solver_bg.wasm', import.meta.url) });
       wasmApi = mod;
       return mod;
     })();

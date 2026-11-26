@@ -618,9 +618,9 @@ pub fn render_studio_page_html(_locale: Locale) -> String {
          <meta charset=\"utf-8\"/>\
          <meta name=\"viewport\" content=\"width=device-width,initial-scale=1\"/>\
          <title>ARUS — Flood Simulation Studio</title>\
-         <link rel=\"stylesheet\" href=\"/assets/maplibre-gl.css\"/>\
-         <link rel=\"stylesheet\" href=\"/assets/studio.css\"/>\
-         <script src=\"/assets/maplibre-gl.js\"></script>\
-         </head><body>{body}<script src=\"/assets/studio.js\"></script></body></html>"
+         <link rel=\"stylesheet\" href=\"assets/maplibre-gl.css\"/>\
+         <link rel=\"stylesheet\" href=\"assets/studio.css\"/>\
+         <script src=\"assets/maplibre-gl.js\"></script>\
+         </head><body>{body}<script src=\"assets/studio.js\"></script></body></html>"
     )
 }

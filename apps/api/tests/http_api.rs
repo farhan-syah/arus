@@ -137,8 +137,8 @@ async fn api_serves_health_runs_and_outlooks_from_archive() -> Result<(), String
         .map_err(|e| e.to_string())?;
     let studio_html = String::from_utf8(studio_bytes.to_vec()).map_err(|e| e.to_string())?;
     assert!(studio_html.contains("id=\"map\""));
-    assert!(studio_html.contains("/assets/maplibre-gl.js"));
-    assert!(studio_html.contains("/assets/studio.js"));
+    assert!(studio_html.contains("assets/maplibre-gl.js"));
+    assert!(studio_html.contains("assets/studio.js"));
 
     let index_resp = app
         .clone()

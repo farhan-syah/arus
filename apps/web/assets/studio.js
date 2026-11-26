@@ -1,6 +1,10 @@
 // ARUS 2026 Flood Simulation Studio Client
 // Driven by real hydr 0.1.0 binary Float32 frames (/api/v1/runs/{id}/grid & frames.bin).
 
+// Resolve API and asset URLs relative to the mounted Studio directory (works at / and /arus/).
+const APP_BASE = new URL('.', window.location.href).href.replace(/\/$/, '');
+const apiUrl = (path) => `${APP_BASE}/${String(path).replace(/^\/+/, '')}`;
+
 const PRESETS = [
   { id: 'shah-alam', name: 'Shah Alam · Taman Sri Muda (MY)', lon: 101.535, lat: 3.031, zoom: 14.3 },
   { id: 'ijok', name: 'Ijok · Kuala Selangor (MY)', lon: 101.415, lat: 3.310, zoom: 13.0 },
@@ -690,10 +694,12 @@ async function applyBoundaryGeometry(geom, runSim = true) {
   state.boundaryGrid = { cols, rows, dxM };
   state.cachedDem = null;
   if (map) { try { map.setTerrain(null); } catch (_) {} }
+  if ($('site-verdict')) $('site-verdict').classList.add('hidden');
   applyRegionBoundary();
+  map.stop();
   map.fitBounds([[minLon, minLat], [maxLon, maxLat]], {
     padding: { top: 64, bottom: 78, left: 310, right: 235 },
-    pitch: 12,
+    pitch: 0,
     bearing: 0,
     duration: 0,
   });
@@ -1337,37 +1343,45 @@ function renderSiteVerdict() {
   }
 
   const ffeM = parseFloat($('sv-ffe-select')?.value || '0') || 0;
-  const peakM = env.max_depth_m[idx] || 0;
-  const netM = Math.max(0, peakM - ffeM);
-  const bedM = meta.bed_m[idx] || 0;
+  const rawPeakM = env.max_depth_m[idx] || 0;
+  const cut = state.displayPrefs.depthCutoffM || 0.08;
+  const isFlooded = rawPeakM >= cut;
+  const peakM = isFlooded ? rawPeakM : 0;
+  const netM = isFlooded ? Math.max(0, rawPeakM - ffeM) : 0;
   const onsetS = env.onset_time_s[idx];
-  const cut = state.displayPrefs.depthCutoffM || 0.06;
   const totalSec = Math.max(1, state.frames[state.frames.length - 1].time_s || 1);
   const recInfo = computeRecessionSummary(idx, env.threshold_m || 0.15);
 
   let lvl = 'low';
   let label = 'DRY';
-  let msg = `Water stays below your ${fmtDepth(ffeM, 1)} floor level in this scenario.`;
+  let msg = `Below ${Math.round(cut * 100)} cm flood cutoff for your ${fmtDepth(ffeM, 1)} floor. Safe for parked cars and normal access.`;
   if (netM >= 0.30) {
     lvl = 'danger';
     label = 'FLOOD EXPECTED';
-    msg = `Peak reaches ${fmtDepth(netM, 2)} above floor (${fmtDepth(peakM, 2)} ground). ${recInfo.receded ? recInfo.label : 'Water does not recede within forecast window'}.`;
+    msg = `Reaches ${fmtDepth(netM, 2)} above floor (${fmtDepth(rawPeakM, 2)} ground). Move cars to high ground, do not drive through floodwater, and prepare to evacuate. ${recInfo.receded ? recInfo.label : 'Water persists through forecast end'}.`;
+  } else if (netM >= 0.15) {
+    lvl = 'moderate';
+    label = 'WATCH · MOVE CARS';
+    msg = `Reaches ${fmtDepth(netM, 2)} above floor (${fmtDepth(rawPeakM, 2)} ground — car floor height). Move parked vehicles and monitor JPS / METMalaysia alerts. ${recInfo.receded ? recInfo.label : 'Standing water persists'}.`;
   } else if (netM >= cut) {
     lvl = 'moderate';
     label = 'WATCH';
-    msg = `Shallow water up to ${fmtDepth(netM, 2)} above floor (${fmtDepth(peakM, 2)} ground). ${recInfo.receded ? recInfo.label : 'Stagnant ponding persists through forecast end'}.`;
+    msg = `Shallow ponding up to ${fmtDepth(netM, 2)} above floor (${fmtDepth(rawPeakM, 2)} ground). Avoid low driveways and monitor official alerts.`;
   }
 
   $('sv-title').textContent = `${lat.toFixed(4)}°, ${lon.toFixed(4)}°`;
   $('sv-badge').className = `lm-badge ${lvl}`;
   $('sv-badge').textContent = label;
   $('sv-summary').textContent = msg;
-  const onsetTxt = onsetS >= 0 ? fmtSimOffset(onsetS, totalSec) : 'Never';
+  const onsetTxt = isFlooded && onsetS >= 0 ? fmtSimOffset(onsetS, totalSec) : 'Never';
+  const peakDisp = isFlooded ? fmtDepth(rawPeakM, 2) : `< ${Math.round(cut * 100)} cm`;
+  const padBtn = $('btn-sv-raise');
+  if (padBtn) padBtn.style.display = state.profile === 'public' ? 'none' : '';
   $('sv-stats').innerHTML = `
-    <div class="mini-stat"><div class="mini-k">Peak Depth</div><div class="mini-v">${fmtDepth(peakM, 2)}</div></div>
+    <div class="mini-stat"><div class="mini-k">Peak Depth</div><div class="mini-v">${peakDisp}</div></div>
     <div class="mini-stat"><div class="mini-k">Above Floor</div><div class="mini-v">${fmtDepth(netM, 2)}</div></div>
     <div class="mini-stat"><div class="mini-k">Arrival</div><div class="mini-v">${onsetTxt}</div></div>
-    <div class="mini-stat"><div class="mini-k">Recession</div><div class="mini-v">${recInfo.label}</div></div>
+    <div class="mini-stat"><div class="mini-k">Recession</div><div class="mini-v">${isFlooded ? recInfo.label : 'Dry'}</div></div>
   `;
 }
 
@@ -1757,8 +1771,8 @@ function applyLoadedSimulation(grid, frames, runId, engineLabel) {
 
 async function loadRun(runId) {
   const [gridResp, binResp] = await Promise.all([
-    fetch(`/api/v1/runs/${runId}/grid`),
-    fetch(`/api/v1/runs/${runId}/frames.bin`),
+    fetch(apiUrl(`api/v1/runs/${runId}/grid`)),
+    fetch(apiUrl(`api/v1/runs/${runId}/frames.bin`)),
   ]);
   if (!gridResp.ok || !binResp.ok) throw new Error('Failed to load simulation frames');
   const grid = await gridResp.json();
@@ -1775,7 +1789,7 @@ function runBrowserSimulation(payload, abortSignal) {
       return;
     }
     if (!state.simWorker) {
-      state.simWorker = new Worker('/assets/sim-worker.js', { type: 'module' });
+      state.simWorker = new Worker(apiUrl('assets/sim-worker.js'), { type: 'module' });
     }
     const worker = state.simWorker;
     const id = ++state.simWorkerSeq;
@@ -1868,7 +1882,7 @@ async function runSimulation(compareMode) {
     if (abort.signal.aborted) return;
     setSimProgress(compareMode ? 'Solving Baseline vs Intervention…' : 'Solving 2D shallow water…');
     if (compareMode) {
-      const resp = await fetch('/api/v1/compare', {
+      const resp = await fetch(apiUrl('api/v1/compare'), {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify(payload),
@@ -1936,7 +1950,7 @@ async function runSimulation(compareMode) {
         const useAsyncJob = payload.duration_s > 900 || payload.cols * payload.rows > 8192;
         let summary = null;
         if (!useAsyncJob) {
-          const resp = await fetch('/api/v1/simulations', {
+          const resp = await fetch(apiUrl('api/v1/simulations'), {
             method: 'POST',
             headers: { 'content-type': 'application/json' },
             body: JSON.stringify(payload),
@@ -1951,7 +1965,7 @@ async function runSimulation(compareMode) {
           }
         }
         if (!summary) {
-          const jobResp = await fetch('/api/v1/jobs', {
+          const jobResp = await fetch(apiUrl('api/v1/jobs'), {
             method: 'POST',
             headers: { 'content-type': 'application/json' },
             body: JSON.stringify(payload),
@@ -1961,7 +1975,7 @@ async function runSimulation(compareMode) {
           const job = await jobResp.json();
           const jobId = job.job_id;
           const onCancelJob = () => {
-            fetch(`/api/v1/jobs/${jobId}/cancel`, { method: 'POST' }).catch(() => {});
+            fetch(apiUrl(`api/v1/jobs/${jobId}/cancel`), { method: 'POST' }).catch(() => {});
           };
           abort.signal.addEventListener('abort', onCancelJob, { once: true });
           try {
@@ -1971,7 +1985,7 @@ async function runSimulation(compareMode) {
                 err.name = 'AbortError';
                 throw err;
               }
-              const pollResp = await fetch(`/api/v1/jobs/${jobId}`, { signal: abort.signal });
+              const pollResp = await fetch(apiUrl(`api/v1/jobs/${jobId}`), { signal: abort.signal });
               if (!pollResp.ok) throw new Error(await parseErrorText(pollResp));
               const rec = await pollResp.json();
               if (rec.status === 'completed' && rec.summary) {
@@ -2080,9 +2094,12 @@ function updateHonestyPill() {
   pill.classList.toggle('fail', !ok);
   pill.title = `Engine: ${state.activeEngine} · Mass residual: ${res.toExponential(1)} m³ (screening only)`;
   const isPres = document.documentElement.dataset.presentation === 'true';
+  const massTag = ok ? `Mass OK (${res.toExponential(0)} m³)` : `Mass FAIL (${res.toExponential(1)} m³)`;
   txt.textContent = isPres
     ? `${demTag} screening · Mass ${ok ? 'OK' : 'FAIL'}`
-    : `${state.activeEngine} · ${demTag} · Mass ${ok ? 'OK' : 'FAIL'}`;
+    : state.profile === 'public'
+      ? `${demTag} · Mass ${ok ? 'OK' : 'FAIL'}`
+      : `${state.activeEngine} · ${demTag} · ${massTag}`;
   updateFrameTelemetry();
 }
 
@@ -2220,7 +2237,8 @@ function updateLiveMetrics() {
   const cut = state.displayPrefs.depthCutoffM || 0.06;
   const idx = Math.min(state.frameIdx, state.frames.length - 1);
   const frame = state.frames[idx];
-  const depth = frame.depth;
+  const usePeakEnv = Boolean(state.envelopeMode && state.grid.envelope?.max_depth_m);
+  const depth = usePeakEnv ? state.grid.envelope.max_depth_m : frame.depth;
   const vx = frame.vx;
   const vy = frame.vy;
   let totalCells = 0;
@@ -2259,7 +2277,10 @@ function updateLiveMetrics() {
   badge.textContent = label;
   const trendEl = $('lm-trend');
   if (trendEl) {
-    if (idx === 0) {
+    if (usePeakEnv) {
+      trendEl.className = 'lm-trend';
+      trendEl.textContent = 'Peak Max';
+    } else if (idx === 0) {
       trendEl.className = 'lm-trend';
       trendEl.textContent = 'Current';
     } else {
@@ -2304,11 +2325,19 @@ function updateLiveMetrics() {
       risk.className = `po-risk ${lvl}`;
       risk.textContent = label;
       const sc = state.simConfig;
-      const modeDesc = sc.mode === 'stress'
-        ? `${sc.stressMmDay} mm/day × ${sc.stressDays}d stress-test`
-        : `${fmtRain(sc.rainfallMmHr * (sc.rainMult || 1), 0)} scenario`;
+      const hasLiveGrid = Boolean(state.spatialRainGrid);
+      const modeDesc = hasLiveGrid
+        ? 'live NWP regional forecast'
+        : (sc.mode === 'stress'
+          ? `hypothetical ${sc.stressMmDay} mm/day × ${sc.stressDays}d stress-test`
+          : `hypothetical ${fmtRain(sc.rainfallMmHr * (sc.rainMult || 1), 0)} scenario — not live forecast`);
+      const actionHint = peakDepth >= 0.30
+        ? ' >30 cm: move vehicles and do not drive through floodwater.'
+        : peakDepth >= 0.15
+          ? ' 15–30 cm: move parked cars from low streets.'
+          : ' Click any spot on the map to check your floor height.';
       $('po-summary').textContent =
-        `Peak simulated depth ${fmtDepth(peakDepth, 2)} across ${floodedPct.toFixed(0)}% of the area (${modeDesc}). Open Simulate… to test other rain or site pad scenarios.`;
+        `Peak depth ${fmtDepth(peakDepth, 2)} across ${floodedPct.toFixed(0)}% of area (${modeDesc}).${actionHint}`;
       $('po-hotspots').innerHTML = '';
       if (state.serverConfig?.disclaimer) $('po-foot').textContent = state.serverConfig.disclaimer;
       po.classList.remove('hidden');
@@ -2497,7 +2526,9 @@ function setLayer(layer) {
   } else if (layer === 'hazard') {
     bar.style.background = 'linear-gradient(90deg, #38bdf8 0% 25%, #facc15 25% 50%, #f97316 50% 75%, #e11d48 75% 100%)';
     ticks.innerHTML = '<span>Low</span><span>Mod</span><span>Ext</span>';
-    note.textContent = 'DEFRA FD2320 hazard rating: h × (v + 0.5).';
+    note.textContent = state.profile === 'public'
+      ? 'Flood danger level (combines water depth and flow speed).'
+      : 'DEFRA FD2320 hazard rating: h × (v + 0.5).';
   } else if (layer === 'arrival') {
     bar.style.background = 'linear-gradient(90deg, #e11d48, #f97316, #facc15, #38bdf8)';
     ticks.innerHTML = '<span>Early</span><span>Mid</span><span>Late</span>';
@@ -2591,7 +2622,7 @@ async function openSourcesModal() {
   const grid = $('sources-grid');
   grid.innerHTML = 'Loading catalog…';
   try {
-    const resp = await fetch('/api/v1/catalog/sources');
+    const resp = await fetch(apiUrl('api/v1/catalog/sources'));
     if (!resp.ok) throw new Error('Catalog not configured');
     const data = await resp.json();
     grid.innerHTML = data.sources.map((s) => `
@@ -2625,6 +2656,10 @@ function wireUi() {
   sel.addEventListener('change', () => {
     const p = PRESETS.find((x) => x.id === sel.value);
     if (!p) return;
+    if ($('coord-search')) $('coord-search').value = '';
+    state.boundaryGeoJson = null;
+    state.boundaryGrid = null;
+    state.boundaryCellMask = null;
     state.center = { lon: p.lon, lat: p.lat };
     state.uploadedDem = null;
     state.cachedDem = null;
@@ -2640,6 +2675,9 @@ function wireUi() {
     if (!raw) return;
     const parts = raw.split(',').map((v) => parseFloat(v.trim()));
     if (parts.length === 2 && Number.isFinite(parts[0]) && Number.isFinite(parts[1])) {
+      state.boundaryGeoJson = null;
+      state.boundaryGrid = null;
+      state.boundaryCellMask = null;
       state.center = { lat: parts[0], lon: parts[1] };
       state.cachedDem = null;
       setCustomPresetLabel(`Custom · ${parts[0].toFixed(4)}, ${parts[1].toFixed(4)}`);
@@ -2648,11 +2686,23 @@ function wireUi() {
       return;
     }
     try {
-      const resp = await fetch(`https://nominatim.openstreetmap.org/search?format=json&limit=1&q=${encodeURIComponent(raw)}`);
+      const resp = await fetch(`https://nominatim.openstreetmap.org/search?format=json&polygon_geojson=1&limit=1&q=${encodeURIComponent(raw)}`);
       const hits = await resp.json();
       if (hits && hits.length > 0) {
-        const lat = parseFloat(hits[0].lat);
-        const lon = parseFloat(hits[0].lon);
+        const hit = hits[0];
+        const geo = hit.geojson;
+        const isAdminPoly = (hit.class === 'boundary' || hit.type === 'administrative')
+          && geo && (geo.type === 'Polygon' || geo.type === 'MultiPolygon');
+        if (isAdminPoly) {
+          setCustomPresetLabel(raw);
+          await loadBoundaryByQuery(raw, true);
+          return;
+        }
+        const lat = parseFloat(hit.lat);
+        const lon = parseFloat(hit.lon);
+        state.boundaryGeoJson = null;
+        state.boundaryGrid = null;
+        state.boundaryCellMask = null;
         state.center = { lat, lon };
         state.cachedDem = null;
         setCustomPresetLabel(raw);
@@ -2874,6 +2924,7 @@ function wireUi() {
     state.envelopeMode = !state.envelopeMode;
     $('btn-env').textContent = state.envelopeMode ? 'Peak' : 'Live';
     $('btn-env').classList.toggle('active', state.envelopeMode);
+    updateLiveMeter();
     renderFloodCanvas(true);
   });
 
@@ -2942,10 +2993,10 @@ function wireUi() {
   });
 
   $('btn-export-asc').addEventListener('click', () => {
-    if (state.runId) window.open(`/api/v1/runs/${state.runId}/export/max-depth.asc`, '_blank');
+    if (state.runId) window.open(apiUrl(`api/v1/runs/${state.runId}/export/max-depth.asc`), '_blank');
   });
   $('btn-export-csv').addEventListener('click', () => {
-    if (state.runId) window.open(`/api/v1/runs/${state.runId}/export/outlooks.csv`, '_blank');
+    if (state.runId) window.open(apiUrl(`api/v1/runs/${state.runId}/export/outlooks.csv`), '_blank');
   });
   $('btn-snap').addEventListener('click', captureSnapshotPng);
   $('btn-rec').addEventListener('click', toggleVideoRecording);
@@ -3018,7 +3069,7 @@ function toggleVideoRecording() {
     btn.disabled = true;
     btn.textContent = 'MP4…';
     try {
-      const resp = await fetch('/api/v1/export/mp4', {
+      const resp = await fetch(apiUrl('api/v1/export/mp4'), {
         method: 'POST',
         headers: { 'content-type': 'video/webm' },
         body: blob,
@@ -3577,7 +3628,7 @@ async function fetchRegionalContext(qs) {
   if (qs.get('presentation') === '1' || qs.get('presentation') === 'true') return;
   if (qs.get('fixed') === '1' || qs.get('fixed') === 'true') return;
   try {
-    const resp = await fetch('/api/v1/context');
+    const resp = await fetch(apiUrl('api/v1/context'));
     if (!resp.ok) return;
     const data = await resp.json();
     state.serverContext = data;
@@ -3587,7 +3638,10 @@ async function fetchRegionalContext(qs) {
       const inBounds = state.center.lon >= minLon && state.center.lon <= maxLon
         && state.center.lat >= minLat && state.center.lat <= maxLat;
       if (inBounds) {
-        if (ctx.spatial_rain_grid) state.spatialRainGrid = ctx.spatial_rain_grid;
+        if (ctx.spatial_rain_grid) {
+          state.spatialRainGrid = ctx.spatial_rain_grid;
+          if (!qs.has('rain')) state.simConfig.rainfallMmHr = 0;
+        }
         if (Array.isArray(ctx.hourly_tide_m) && ctx.hourly_tide_m.length > 0) state.hourlyTideM = ctx.hourly_tide_m;
       }
     }
@@ -3617,7 +3671,7 @@ function applyUserPrefs(qs) {
 
 async function fetchAndApplyServerConfig(qs) {
   try {
-    const resp = await fetch('/api/v1/config');
+    const resp = await fetch(apiUrl('api/v1/config'));
     if (!resp.ok) return;
     const cfg = await resp.json();
     state.serverConfig = cfg;
