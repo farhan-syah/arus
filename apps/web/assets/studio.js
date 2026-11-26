@@ -3595,13 +3595,42 @@ function getCurrentFrameEpochMs() {
   return baseMs + cur * 1000;
 }
 
+function fmtEnvelopeRangeDisplay(includeYear = true) {
+  const tz = getActiveTimeZone();
+  if (state.spanHours > 0) {
+    const startMs = state.startEpochMs;
+    const endMs = state.startEpochMs + state.spanHours * 3600_000;
+    const pEnd = getTimePartsInTz(endMs, tz);
+    try {
+      const fmtStart = new Date(startMs).toLocaleDateString('en-GB', {
+        day: '2-digit',
+        month: 'short',
+        timeZone: tz,
+      });
+      const fmtEnd = new Date(endMs).toLocaleDateString('en-GB', {
+        day: '2-digit',
+        month: 'short',
+        ...(includeYear ? { year: 'numeric' } : {}),
+        timeZone: tz,
+      });
+      return `Peak Max · ${fmtStart} – ${fmtEnd} ${pEnd.tzShort}`;
+    } catch (_) {
+      return `Peak Max · ${Math.round(state.spanHours / 24)}d ${pEnd.tzShort}`;
+    }
+  }
+  const tot = state.frames.length ? (state.frames[state.frames.length - 1].time_s || 0) : 0;
+  return `Peak Max · 00:00 – ${fmtMMSS(tot)}`;
+}
+
 function updateTimeReadout() {
   if (!state.frames.length) return;
   const idx = Math.min(state.frameIdx, state.frames.length - 1);
   const cur = state.frames[idx].time_s;
   const tot = state.frames[state.frames.length - 1].time_s || 0;
   const frameMs = getCurrentFrameEpochMs();
-  if (state.spanHours > 0) {
+  if (state.envelopeMode) {
+    $('time-readout').textContent = fmtEnvelopeRangeDisplay(false);
+  } else if (state.spanHours > 0) {
     $('time-readout').textContent = fmtMytDisplay(frameMs, false);
   } else {
     $('time-readout').textContent = `${fmtMytDisplay(frameMs, false)} · ${fmtMMSS(cur)} / ${fmtMMSS(tot)}`;
@@ -3613,8 +3642,8 @@ function updateTimeReadout() {
     const pct = frac * 100;
     $('fb-fill').style.width = `${pct.toFixed(2)}%`;
     const callout = $('fb-callout');
-    callout.textContent = fmtCalloutTime(epochMs);
-    callout.style.left = `${Math.max(12, Math.min(88, pct)).toFixed(2)}%`;
+    callout.textContent = state.envelopeMode ? fmtEnvelopeRangeDisplay(false) : fmtCalloutTime(epochMs);
+    callout.style.left = state.envelopeMode ? '50%' : `${Math.max(12, Math.min(88, pct)).toFixed(2)}%`;
     const segNodes = document.querySelectorAll('#fb-segments .fb-seg');
     if (segNodes.length > 0) {
       let activeIdx;
@@ -4505,6 +4534,7 @@ function wireUi() {
     state.envelopeMode = !state.envelopeMode;
     $('btn-env').textContent = state.envelopeMode ? 'Peak' : 'Step';
     $('btn-env').classList.toggle('active', state.envelopeMode);
+    updateTimeReadout();
     updateLiveMetrics();
     renderFloodCanvas(true);
   });
@@ -4771,7 +4801,7 @@ function drawRecordingHudOverlay(ctx, W, H) {
     || $('preset-select')?.selectedOptions?.[0]?.textContent?.trim()
     || 'Flood Outlook';
   const frameMs = getCurrentFrameEpochMs();
-  const stamp = fmtMytDisplay(frameMs, true);
+  const stamp = state.envelopeMode ? fmtEnvelopeRangeDisplay(true) : fmtMytDisplay(frameMs, true);
   const avgTxt = $('lm-avg')?.textContent?.trim() || '0.00 m';
   const peakTxt = $('lm-peak')?.textContent?.trim() || '0.00 m';
   const pctTxt = $('lm-pct')?.textContent?.trim() || '0%';
