@@ -710,11 +710,11 @@ fn StudioShell() -> Element {
                             }
                         }
                         div { id: "loc-point-fields", class: "loc-form-row",
-                            input { id: "loc-lat", class: "ctl-select", r#type: "number", step: "0.0001", placeholder: "Lat" }
-                            input { id: "loc-lon", class: "ctl-select", r#type: "number", step: "0.0001", placeholder: "Lon" }
-                            input { id: "loc-zoom", class: "ctl-select", r#type: "number", step: "0.1", min: "4", max: "17", value: "11.5", placeholder: "Zoom" }
-                            input { id: "loc-pitch", class: "ctl-select", r#type: "number", step: "1", min: "0", max: "60", value: "0", placeholder: "Pitch°" }
-                            input { id: "loc-bearing", class: "ctl-select", r#type: "number", step: "1", min: "-180", max: "180", value: "0", placeholder: "Bearing°" }
+                            label { class: "loc-mini-field", span { "Lat" } input { id: "loc-lat", class: "ctl-select", r#type: "number", step: "0.0001", placeholder: "3.149" } }
+                            label { class: "loc-mini-field", span { "Lon" } input { id: "loc-lon", class: "ctl-select", r#type: "number", step: "0.0001", placeholder: "101.696" } }
+                            label { class: "loc-mini-field", span { "Zoom" } input { id: "loc-zoom", class: "ctl-select", r#type: "number", step: "0.1", min: "4", max: "17", value: "11.5" } }
+                            label { class: "loc-mini-field", span { "Pitch°" } input { id: "loc-pitch", class: "ctl-select", r#type: "number", step: "1", min: "0", max: "60", value: "0" } }
+                            label { class: "loc-mini-field", span { "Bearing°" } input { id: "loc-bearing", class: "ctl-select", r#type: "number", step: "1", min: "-180", max: "180", value: "0" } }
                             button { id: "btn-loc-use-view", class: "btn btn-xs", r#type: "button", title: "Fill lat, lon, zoom, pitch, and bearing from current map view", "Use View" }
                         }
                         div { id: "loc-boundary-fields", class: "loc-form-row hidden",

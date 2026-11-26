@@ -1132,7 +1132,15 @@ a.btn {
   align-items: center;
 }
 .loc-form-row input[type="number"] {
-  width: 96px;
+  width: 78px;
+}
+.loc-mini-field {
+  display: inline-flex;
+  flex-direction: column;
+  gap: 2px;
+  font-size: 10px;
+  font-weight: 600;
+  color: var(--ink-3);
 }
 .loc-star-btn {
   font-size: 14px;
@@ -1366,6 +1374,7 @@ input:focus-visible {
     flex-direction: column;
     align-items: stretch;
     gap: 0;
+    z-index: 45;
   }
   .brand-name {
     display: none;
@@ -1396,16 +1405,23 @@ input:focus-visible {
   }
   body.mob-menu-open .search-wrap {
     flex-wrap: wrap;
+    row-gap: 6px;
+  }
+  body.mob-menu-open .search-select {
+    flex: 1 1 40%;
   }
   body.mob-menu-open #coord-search {
     display: block;
-    flex: 1 1 65%;
-    min-width: 140px;
+    flex: 1 1 60%;
+    min-width: 150px;
     order: 10;
   }
   body.mob-menu-open #btn-save-view {
     display: inline-flex;
     order: 11;
+  }
+  body.mob-menu-open .mobile-dock {
+    display: none !important;
   }
   .top-actions {
     display: none;
