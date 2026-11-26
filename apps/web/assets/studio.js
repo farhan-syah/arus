@@ -5,17 +5,8 @@
 const APP_BASE = new URL('.', window.location.href).href.replace(/\/$/, '');
 const apiUrl = (path) => `${APP_BASE}/${String(path).replace(/^\/+/, '')}`;
 
-const PRESETS = [
-  { id: 'kl', name: 'Kuala Lumpur (MY)', lon: 101.696, lat: 3.149, zoom: 11.4, liveBasin: 'selangor' },
-  { id: 'selangor', name: 'Selangor Statewide (MY)', lon: 101.40, lat: 3.22, zoom: 8.6, boundaryQuery: 'Selangor, Malaysia', liveBasin: 'selangor' },
-  { id: 'shah-alam', name: 'Shah Alam · Klang Valley (MY)', lon: 101.535, lat: 3.031, zoom: 11.8, liveBasin: 'selangor' },
-  { id: 'kota-bharu', name: 'Kota Bharu · Kelantan (MY)', lon: 102.238, lat: 6.125, zoom: 9.2, liveBasin: 'kelantan' },
-  { id: 'kuala-terengganu', name: 'Kuala Terengganu (MY)', lon: 103.132, lat: 5.329, zoom: 9.2, liveBasin: 'terengganu' },
-  { id: 'johor-bahru', name: 'Johor Bahru (MY)', lon: 103.761, lat: 1.492, zoom: 9.2, liveBasin: 'johor' },
-  { id: 'kuantan', name: 'Kuantan · Pahang (MY)', lon: 103.326, lat: 3.807, zoom: 9.2, liveBasin: 'pahang' },
-  { id: 'jakarta', name: 'Jakarta · Ciliwung (ID)', lon: 106.845, lat: -6.208, zoom: 14.1 },
-  { id: 'rotterdam', name: 'Rotterdam · Nieuwe Maas (NL)', lon: 4.477, lat: 51.924, zoom: 14.0 },
-  { id: 'houston', name: 'Houston · Buffalo Bayou (US)', lon: -95.369, lat: 29.760, zoom: 14.0 },
+let PRESETS = [
+  { id: 'default', name: 'Kuala Lumpur, Malaysia', lon: 101.696, lat: 3.149, zoom: 10.2 },
 ];
 
 const state = {
@@ -118,6 +109,8 @@ const state = {
   },
   stormDrainGrid: null,
   liveInterventions: [],
+  liveBasinId: null,
+  liveOverlays: new Map(),
   lastFramesBuf: null,
   userOverrideCutoff: false,
 };
@@ -264,6 +257,14 @@ function initMap() {
     }
   });
 
+  map.on('load', () => {
+    if (!layersReady) ensureMapLayers();
+    if (state.grid) {
+      updateDomainOutline(state.grid.metadata.wgs84_bounds);
+      renderFloodCanvas(true);
+    }
+  });
+
   setTimeout(() => {
     if (!initialSimTriggered) {
       initialSimTriggered = true;
@@ -289,7 +290,7 @@ function setBasemap(mode) {
 }
 
 function ensureMapLayers() {
-  if (!map || !map.isStyleLoaded() || map.getSource('arus-particles')) return;
+  if (!map || !map.getStyle() || map.getSource('arus-particles')) return;
   const empty = { type: 'FeatureCollection', features: [] };
   const beforeLabels = findFirstLabelLayerId();
   const isDark = state.basemap !== 'topo';
@@ -1049,8 +1050,100 @@ function updateSmoothWaterImage(meta, env, frame) {
   }
 }
 
+function renderSecondaryLiveOverlays(forceRaster) {
+  if (!map || !layersReady) return;
+  const showSecondary = state.profile === 'public' && !state.boundaryGeoJson && state.displayPrefs.showFlood;
+  const anchor = map.getLayer('arus-river-halo') ? 'arus-river-halo' : (map.getLayer('arus-particles-line') ? 'arus-particles-line' : undefined);
+  for (const [basinId, ov] of state.liveOverlays.entries()) {
+    const srcId = `arus-live-img-${basinId}`;
+    const layerId = `arus-live-layer-${basinId}`;
+    if (!showSecondary || basinId === state.liveBasinId) {
+      if (map.getLayer(layerId)) map.setLayoutProperty(layerId, 'visibility', 'none');
+      continue;
+    }
+    const meta = ov.grid.metadata;
+    const env = ov.grid.envelope;
+    const fIdx = Math.min(state.frameIdx, ov.frames.length - 1);
+    const frame = ov.frames[fIdx];
+    const key = `${basinId}:${fIdx}:${state.layer}:${state.envelopeMode}:${state.displayPrefs.depthCutoffM}`;
+    if (forceRaster || ov.lastKey !== key || !map.getSource(srcId)) {
+      ov.lastKey = key;
+      const W = rasterCanvas.width;
+      const H = rasterCanvas.height;
+      const img = rasterCtx.createImageData(W, H);
+      const data = img.data;
+      const cols = meta.cols;
+      const rows = meta.rows;
+      let speedArr = null;
+      if (state.layer === 'velocity' || state.layer === 'hazard') {
+        speedArr = new Float32Array(cols * rows);
+        for (let i = 0; i < cols * rows; i++) speedArr[i] = Math.hypot(frame.vx[i], frame.vy[i]);
+      }
+      for (let py = 0; py < H; py++) {
+        const fy = (1 - (py + 0.5) / H) * (rows - 1);
+        const rN = Math.min(rows - 1, Math.max(0, Math.round(fy)));
+        for (let px = 0; px < W; px++) {
+          const fx = ((px + 0.5) / W) * (cols - 1);
+          const cN = Math.min(cols - 1, Math.max(0, Math.round(fx)));
+          if (!meta.active_mask[rN * cols + cN]) continue;
+          let rgba = null;
+          if (state.layer === 'depth') {
+            const src = state.envelopeMode ? env.max_depth_m : frame.depth;
+            const h = sampleBilinear(src, meta.active_mask, cols, rows, fx, fy);
+            if (h !== null) rgba = colorForDepth(h);
+          } else if (state.layer === 'velocity') {
+            const src = state.envelopeMode ? env.max_speed_m_s : speedArr;
+            const sp = sampleBilinear(src, meta.active_mask, cols, rows, fx, fy);
+            if (sp !== null) rgba = colorForVelocity(sp);
+          } else if (state.layer === 'hazard') {
+            const h = sampleBilinear(frame.depth, meta.active_mask, cols, rows, fx, fy);
+            const sp = sampleBilinear(speedArr, meta.active_mask, cols, rows, fx, fy);
+            const hr = state.envelopeMode
+              ? sampleBilinear(env.max_hazard_m2_s, meta.active_mask, cols, rows, fx, fy)
+              : (h !== null && sp !== null ? h * (sp + 0.5) : null);
+            if (hr !== null) rgba = colorForHazard(hr);
+          } else if (state.layer === 'arrival') {
+            const onset = env.onset_time_s[rN * cols + cN];
+            const maxT = ov.frames.length ? (ov.frames[ov.frames.length - 1].time_s || 360) : 360;
+            rgba = colorForArrival(onset, maxT);
+          }
+          if (rgba) {
+            const out = (py * W + px) * 4;
+            data[out] = rgba[0];
+            data[out + 1] = rgba[1];
+            data[out + 2] = rgba[2];
+            data[out + 3] = Math.round(rgba[3]);
+          }
+        }
+      }
+      rasterCtx.putImageData(img, 0, 0);
+      const url = rasterCanvas.toDataURL('image/png');
+      const [minLon, minLat, maxLon, maxLat] = meta.wgs84_bounds;
+      const coords = [[minLon, maxLat], [maxLon, maxLat], [maxLon, minLat], [minLon, minLat]];
+      if (map.getSource(srcId)) {
+        try { map.getSource(srcId).updateImage({ url, coordinates: coords }); } catch (_) {}
+      } else {
+        try {
+          map.addSource(srcId, { type: 'image', url, coordinates: coords });
+          map.addLayer(
+            {
+              id: layerId,
+              type: 'raster',
+              source: srcId,
+              paint: { 'raster-opacity': state.displayPrefs.floodOpacity ?? 0.95, 'raster-resampling': 'linear', 'raster-fade-duration': 0 },
+            },
+            anchor,
+          );
+        } catch (_) {}
+      }
+    }
+    if (map.getLayer(layerId)) map.setLayoutProperty(layerId, 'visibility', 'visible');
+  }
+}
+
 function renderFloodCanvas(forceRaster) {
   if (!state.grid || !state.frames.length || !layersReady) return;
+  renderSecondaryLiveOverlays(forceRaster);
   const meta = state.grid.metadata;
   const env = state.grid.envelope;
   const cols = meta.cols;
@@ -1508,7 +1601,10 @@ function renderHydrographInspector() {
   const curT = state.frames[Math.min(state.frameIdx, state.frames.length - 1)].time_s;
   const cx = 38 + (curT / tMax) * 288;
 
-  $('inspector-title').textContent = `Hydrograph (${col}, ${row})`;
+  const [minLon, minLat, maxLon, maxLat] = meta.wgs84_bounds;
+  const hLon = minLon + ((col + 0.5) / meta.cols) * (maxLon - minLon);
+  const hLat = minLat + ((row + 0.5) / meta.rows) * (maxLat - minLat);
+  $('inspector-title').textContent = `Hydrograph · ${hLat.toFixed(4)}°, ${hLon.toFixed(4)}°`;
   const pinColors = ['#0d9488', '#d97706', '#7c3aed'];
   const pinLines = state.pinnedProbes
     .filter((p) => !(p.col === col && p.row === row))
@@ -1911,6 +2007,31 @@ function applyLoadedSimulation(grid, frames, runId, engineLabel, framesBuf = nul
   setLayer(state.layer);
 }
 
+async function loadAllPrecomputedLiveBasins(primaryBasinId) {
+  try {
+    const resp = await fetch(apiUrl('api/v1/live/basins'));
+    if (!resp.ok) return;
+    const data = await resp.json();
+    const basins = Array.isArray(data?.basins) ? data.basins : [];
+    const others = basins.filter((id) => id && id !== primaryBasinId && !state.liveOverlays.has(id));
+    await Promise.all(others.map(async (id) => {
+      try {
+        const [gResp, bResp] = await Promise.all([
+          fetch(apiUrl(`api/v1/live/${encodeURIComponent(id)}/grid`)),
+          fetch(apiUrl(`api/v1/live/${encodeURIComponent(id)}/frames.bin`)),
+        ]);
+        if (!gResp.ok || !bResp.ok) return;
+        const grid = await gResp.json();
+        const frames = decodeFramesBin(await bResp.arrayBuffer());
+        if (frames.length) {
+          state.liveOverlays.set(id, { grid, frames, lastKey: '' });
+        }
+      } catch (_) {}
+    }));
+    renderSecondaryLiveOverlays(true);
+  } catch (_) {}
+}
+
 async function tryLoadPrecomputedLive(basinId) {
   if (!basinId) return false;
   try {
@@ -1923,7 +2044,10 @@ async function tryLoadPrecomputedLive(basinId) {
     const buf = await binResp.arrayBuffer();
     const frames = decodeFramesBin(buf);
     if (!frames.length) return false;
+    state.liveBasinId = basinId;
+    state.liveOverlays.set(basinId, { grid, frames, lastKey: '' });
     applyLoadedSimulation(grid, frames, grid.run_id || `live-${basinId}`, 'Live · Cached', buf);
+    loadAllPrecomputedLiveBasins(basinId);
     return true;
   } catch (_) {
     return false;
@@ -2744,6 +2868,8 @@ function setTool(tool) {
 }
 
 function setLayer(layer) {
+  if (layer === 'diff' && !state.diffData) layer = 'depth';
+  if (!['depth', 'velocity', 'hazard', 'arrival', 'diff'].includes(layer)) layer = 'depth';
   state.layer = layer;
   document.querySelectorAll('[data-layer]').forEach((el) => {
     el.classList.toggle('active', el.dataset.layer === layer);
@@ -2980,7 +3106,7 @@ function wireUi() {
       last_center: { lat: Number(c.lat.toFixed(5)), lon: Number(c.lng.toFixed(5)), zoom: Number(z.toFixed(2)), label },
     });
     const btn = $('btn-save-default');
-    if (btn) btn.textContent = '★ Default Saved';
+    if (btn) btn.textContent = '★ Saved';
     showToast(`Saved "${label}" as your personal default home view.`);
   });
 
@@ -3846,8 +3972,10 @@ function setUiProfile(profile, persist = false) {
     if (state.tool !== 'inspect') setTool('inspect');
     if (state.layer === 'diff') setLayer('depth');
     if ($('inspector')) $('inspector').classList.add('hidden');
+    renderSecondaryLiveOverlays(true);
   } else {
     if ($('site-verdict')) $('site-verdict').classList.add('hidden');
+    renderSecondaryLiveOverlays(false);
     // Switching from Live -> Simulate brings t=0 initial state, paused, without auto-solving
     if (prev === 'public' && state.frames.length) {
       state.playing = false;
@@ -4493,6 +4621,21 @@ async function fetchAndApplyServerConfig(qs) {
     const cfg = await resp.json();
     state.serverConfig = cfg;
     if (cfg.instance_title) document.title = cfg.instance_title;
+    if (Array.isArray(cfg.presets) && cfg.presets.length > 0) {
+      PRESETS = cfg.presets.map((p) => ({
+        id: p.id,
+        name: p.name,
+        lon: p.lon,
+        lat: p.lat,
+        zoom: p.zoom,
+        boundaryQuery: p.boundary_query || null,
+        liveBasin: p.live_basin || null,
+      }));
+      const sel = $('preset-select');
+      if (sel) {
+        sel.innerHTML = PRESETS.map((p) => `<option value="${p.id}">${p.name}</option>`).join('');
+      }
+    }
     const defaultProfile = cfg.default_ui_profile || (cfg.mode === 'hosted' ? 'public' : 'researcher');
     setUiProfile(defaultProfile, false);
     const f = cfg.features || {};

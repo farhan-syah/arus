@@ -151,6 +151,21 @@ impl Default for DefaultViewConfig {
     }
 }
 
+/// Preset location entry advertised via `GET /api/v1/config` for deployment-specific quick jumps.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PresetLocation {
+    pub id: String,
+    pub name: String,
+    pub lon: f64,
+    pub lat: f64,
+    pub zoom: f64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub boundary_query: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub live_basin: Option<String>,
+}
+
 /// Server runtime configuration loaded by `arus-api --config <path>`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -173,6 +188,8 @@ pub struct ServerConfig {
     pub limits: ServerLimits,
     #[serde(default)]
     pub disclaimer: Option<String>,
+    #[serde(default)]
+    pub presets: Vec<PresetLocation>,
 }
 
 const fn default_schema_version() -> u32 {
@@ -194,6 +211,7 @@ impl Default for ServerConfig {
             features: FeatureFlags::default(),
             limits: ServerLimits::default(),
             disclaimer: None,
+            presets: Vec::new(),
         }
     }
 }

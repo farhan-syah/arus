@@ -862,6 +862,22 @@ input[type="range"] {
   gap: 6px;
   flex-shrink: 0;
 }
+a.btn {
+  text-decoration: none;
+}
+.toast-bar {
+  z-index: 40;
+}
+.modal-backdrop {
+  z-index: 80;
+}
+.search-wrap {
+  min-width: 0;
+  flex-shrink: 1;
+}
+.search-input {
+  min-width: 110px;
+}
 [data-profile="researcher"]:not([data-presentation="true"]) .public-outlook {
   display: none !important;
 }
