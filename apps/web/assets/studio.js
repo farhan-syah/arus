@@ -299,12 +299,34 @@ function findFirstLabelLayerId() {
   return sym ? sym.id : undefined;
 }
 
+function findFloodInsertBeforeId() {
+  if (!map) return undefined;
+  const style = map.getStyle();
+  if (!style || !style.layers) return undefined;
+  if (state.basemap === 'sat') return 'sat-labels';
+  // Place flood water beneath vector buildings, roads, highways, and labels
+  // so street geometry and structures stay crisp when zoomed in (< 300 m).
+  const struct = style.layers.find((l) =>
+    !l.id.startsWith('arus-')
+    && /^(building|tunnel|road|highway|bridge|railway|aeroway)/i.test(l.id),
+  );
+  if (struct) return struct.id;
+  return findFirstLabelLayerId();
+}
+
+function floodOpacityExpr(base) {
+  const hi = Math.max(0.1, Math.min(1.0, Number.isFinite(base) ? base : 0.95));
+  const lo = Math.min(hi, Math.max(0.45, hi * 0.58));
+  return ['interpolate', ['linear'], ['zoom'], 11, hi, 13.5, lo];
+}
+
 function initMap() {
   map = new maplibregl.Map({
     container: 'map',
     style: getBasemapStyle(state.basemap),
     center: [state.center.lon, state.center.lat],
-    zoom: state.initZoom,
+    zoom: Math.min(state.initZoom, state.profile === 'public' ? 15.5 : 17.5),
+    maxZoom: state.profile === 'public' ? 15.5 : 17.5,
     pitch: state.initPitch,
     bearing: state.initBearing,
     antialias: true,
@@ -1352,13 +1374,13 @@ function updateSmoothWaterImage(meta, env, frame) {
     map.getSource('arus-water-img').updateImage({ url, coordinates: coords });
   } else {
     map.addSource('arus-water-img', { type: 'image', url, coordinates: coords });
-    const anchor = map.getLayer('arus-river-halo') ? 'arus-river-halo' : 'arus-particles-line';
+    const anchor = findFloodInsertBeforeId() || (map.getLayer('arus-river-halo') ? 'arus-river-halo' : 'arus-particles-line');
     map.addLayer(
       {
         id: 'arus-water-smooth',
         type: 'raster',
         source: 'arus-water-img',
-        paint: { 'raster-opacity': state.displayPrefs.floodOpacity ?? 0.95, 'raster-resampling': 'linear', 'raster-fade-duration': 0 },
+        paint: { 'raster-opacity': floodOpacityExpr(state.displayPrefs.floodOpacity), 'raster-resampling': 'linear', 'raster-fade-duration': 0 },
       },
       anchor,
     );
@@ -1368,7 +1390,7 @@ function updateSmoothWaterImage(meta, env, frame) {
 function renderSecondaryLiveOverlays(forceRaster) {
   if (!map || !layersReady) return;
   const showSecondary = state.profile === 'public' && !state.boundaryGeoJson && state.displayPrefs.showFlood;
-  const anchor = map.getLayer('arus-river-halo') ? 'arus-river-halo' : (map.getLayer('arus-particles-line') ? 'arus-particles-line' : undefined);
+  const anchor = findFloodInsertBeforeId() || (map.getLayer('arus-river-halo') ? 'arus-river-halo' : (map.getLayer('arus-particles-line') ? 'arus-particles-line' : undefined));
   for (const [basinId, ov] of state.liveOverlays.entries()) {
     const srcId = `arus-live-img-${basinId}`;
     const layerId = `arus-live-layer-${basinId}`;
@@ -1445,7 +1467,7 @@ function renderSecondaryLiveOverlays(forceRaster) {
               id: layerId,
               type: 'raster',
               source: srcId,
-              paint: { 'raster-opacity': state.displayPrefs.floodOpacity ?? 0.95, 'raster-resampling': 'linear', 'raster-fade-duration': 0 },
+              paint: { 'raster-opacity': floodOpacityExpr(state.displayPrefs.floodOpacity), 'raster-resampling': 'linear', 'raster-fade-duration': 0 },
             },
             anchor,
           );
@@ -4774,8 +4796,8 @@ function setUiProfile(profile, persist = false) {
     if ($('inspector')) $('inspector').classList.add('hidden');
     if (map) {
       try { map.setTerrain(null); } catch (_) {}
-      map.setMaxZoom(14.5);
-      if (map.getZoom() > 14.5) map.setZoom(14.5);
+      map.setMaxZoom(15.5);
+      if (map.getZoom() > 15.5) map.setZoom(15.5);
     }
     renderSecondaryLiveOverlays(true);
     refreshAlertsAndBeacons();
@@ -5897,7 +5919,12 @@ function applyDisplayPrefsToMap() {
     setVis('arus-hotspots-circle', p.showMarkers);
     setVis('arus-hotspots-label', p.showMarkers);
     setVis('arus-hotspots-tide', p.showMarkers);
-    if (map.getLayer('arus-water-smooth')) map.setPaintProperty('arus-water-smooth', 'raster-opacity', p.floodOpacity);
+    const floodOp = floodOpacityExpr(p.floodOpacity);
+    if (map.getLayer('arus-water-smooth')) map.setPaintProperty('arus-water-smooth', 'raster-opacity', floodOp);
+    for (const basinId of state.liveOverlays.keys()) {
+      const lid = `arus-live-layer-${basinId}`;
+      if (map.getLayer(lid)) map.setPaintProperty(lid, 'raster-opacity', floodOp);
+    }
     if (map.getLayer('arus-river-line')) map.setPaintProperty('arus-river-line', 'line-opacity', p.riverOpacity);
     if (map.getLayer('arus-river-halo')) map.setPaintProperty('arus-river-halo', 'line-opacity', p.riverOpacity * 0.45);
     const style = map.getStyle();
