@@ -582,9 +582,10 @@ input[type="range"] {
 .status-pill {
   left: 12px;
   bottom: 14px;
-  height: 38px;
-  max-width: calc(50vw - 268px);
-  padding: 0 11px;
+  height: 36px;
+  max-width: calc(50vw - 275px);
+  padding: 0 9px;
+  font-size: 11px;
   display: flex;
   align-items: center;
   gap: 6px;
@@ -799,7 +800,7 @@ input[type="range"] {
 [data-profile="public"] [data-layer="diff"] {
   display: none !important;
 }
-[data-profile="researcher"]:not([data-presentation="true"]) .left-stack {
+[data-profile="researcher"]:not([data-presentation="true"]) .public-outlook {
   display: none !important;
 }
 body.has-forecast-bar .inspector {
@@ -1212,7 +1213,7 @@ input:focus-visible {
 }
 [data-profile="researcher"] .left-stack {
   top: auto;
-  bottom: 92px;
+  bottom: 102px;
 }
 .lm-head {
   display: flex;

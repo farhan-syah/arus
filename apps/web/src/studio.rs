@@ -167,6 +167,7 @@ fn StudioShell() -> Element {
 
             div { class: "cta-stack",
                 button { id: "btn-run", class: "btn primary", "Run Simulation" }
+                button { id: "btn-storm-test", class: "btn", title: "Run a 100-yr design thunderstorm (220 mm/hr) to stress-test drainage or levees", "Test 100-yr Storm" }
                 button { id: "btn-compare", class: "btn compare hidden", disabled: true, "Compare vs Baseline" }
             }
 

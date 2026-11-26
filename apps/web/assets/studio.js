@@ -1897,6 +1897,17 @@ async function runSimulation(compareMode) {
     if (abort.signal.aborted) return;
     setSimProgress(compareMode ? 'Solving Baseline vs Intervention…' : 'Solving 2D shallow water…');
     if (compareMode) {
+      // Cap interactive compare window to 24h (360s, <=240x) so Baseline vs Intervention solves in <2s
+      if (payload.spatial_rain_grid && Array.isArray(payload.spatial_rain_grid.hourly_mm)) {
+        const hrs = payload.spatial_rain_grid.hourly_mm[0]?.length || 0;
+        if (hrs > 24 && payload.duration_s > 600) {
+          payload.spatial_rain_grid = {
+            ...payload.spatial_rain_grid,
+            hourly_mm: payload.spatial_rain_grid.hourly_mm.map((row) => row.slice(0, 24)),
+          };
+          payload.duration_s = 360;
+        }
+      }
       const resp = await fetch(apiUrl('api/v1/compare'), {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
@@ -2101,20 +2112,16 @@ function updateHonestyPill() {
   const ok = state.grid.budget_assessment.passed;
   const res = Math.abs(state.grid.water_budget.residual_m3);
   const prov = state.grid.metadata.terrain_provenance;
-  const demTag = prov === 'BrowserTerrariumScreening'
-    ? 'Terrarium 30m'
-    : prov === 'UploadedAsciiDem'
-      ? 'Uploaded .ASC'
-      : 'Synthetic DEM';
+  const isPres = document.documentElement.dataset.presentation === 'true';
+  const demTag = isPres
+    ? (prov === 'BrowserTerrariumScreening' ? 'Terrarium 30m' : prov === 'UploadedAsciiDem' ? 'Uploaded .ASC' : 'Synthetic DEM')
+    : (prov === 'BrowserTerrariumScreening' ? '30m DEM' : prov === 'UploadedAsciiDem' ? '.ASC DEM' : 'Synthetic');
   pill.classList.toggle('fail', !ok);
   pill.title = `Engine: ${state.activeEngine} · Mass residual: ${res.toExponential(1)} m³ (screening only)`;
-  const isPres = document.documentElement.dataset.presentation === 'true';
-  const massTag = ok ? `Mass OK (${res.toExponential(0)} m³)` : `Mass FAIL (${res.toExponential(1)} m³)`;
+  const massTag = ok ? `Mass OK` : `Mass FAIL`;
   txt.textContent = isPres
     ? `${demTag} screening · Mass ${ok ? 'OK' : 'FAIL'}`
-    : state.profile === 'public'
-      ? `${demTag} · Mass ${ok ? 'OK' : 'FAIL'}`
-      : `${state.activeEngine} · ${demTag} · ${massTag}`;
+    : `${demTag} · ${massTag}`;
   updateFrameTelemetry();
 }
 
@@ -2452,24 +2459,56 @@ function updateLiveHotspots(frameIdx) {
   }
 }
 
+function fmtMytDisplay(epochMs, includeYear = true) {
+  const d = new Date(epochMs);
+  const datePart = d.toLocaleDateString('en-GB', {
+    day: '2-digit',
+    month: 'short',
+    ...(includeYear ? { year: 'numeric' } : {}),
+    timeZone: 'Asia/Kuala_Lumpur',
+  });
+  const timePart = d.toLocaleTimeString('en-GB', {
+    hour: '2-digit',
+    minute: '2-digit',
+    hour12: false,
+    timeZone: 'Asia/Kuala_Lumpur',
+  });
+  return `${datePart}, ${timePart} MYT`;
+}
+
+function fmtMytSlug(epochMs) {
+  const d = new Date(epochMs);
+  const parts = new Intl.DateTimeFormat('en-GB', {
+    year: 'numeric', month: '2-digit', day: '2-digit',
+    hour: '2-digit', minute: '2-digit', hour12: false,
+    timeZone: 'Asia/Kuala_Lumpur',
+  }).formatToParts(d);
+  const get = (t) => parts.find((p) => p.type === t)?.value || '00';
+  return `${get('year')}${get('month')}${get('day')}-${get('hour')}${get('minute')}myt`;
+}
+
+function getCurrentFrameEpochMs() {
+  const idx = Math.min(state.frameIdx, Math.max(0, state.frames.length - 1));
+  const cur = state.frames[idx]?.time_s || 0;
+  const tot = Math.max(1, state.frames[state.frames.length - 1]?.time_s || 1);
+  const baseMs = state.startEpochMs
+    || (state.serverContext?.context?.cycle_iso ? Date.parse(state.serverContext.context.cycle_iso) : Date.now());
+  if (state.spanHours > 0) {
+    return baseMs + (cur / tot) * state.spanHours * 3600 * 1000;
+  }
+  return baseMs + cur * 1000;
+}
+
 function updateTimeReadout() {
   if (!state.frames.length) return;
   const idx = Math.min(state.frameIdx, state.frames.length - 1);
   const cur = state.frames[idx].time_s;
   const tot = state.frames[state.frames.length - 1].time_s || 0;
+  const frameMs = getCurrentFrameEpochMs();
   if (state.spanHours > 0) {
-    const ts = fmtCalendarTime(state.startEpochMs + cur * 1000, state.tzLabel);
-    $('time-readout').textContent = `${ts} (+${fmtMMSS(cur)})`;
+    $('time-readout').textContent = fmtMytDisplay(frameMs, false);
   } else {
-    const baseMs = state.serverContext?.context?.cycle_iso
-      ? Date.parse(state.serverContext.context.cycle_iso)
-      : Date.now();
-    const wall = Number.isFinite(baseMs)
-      ? new Date(baseMs + cur * 1000).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
-      : '';
-    $('time-readout').textContent = wall
-      ? `${wall} · ${fmtMMSS(cur)} / ${fmtMMSS(tot)}`
-      : `${fmtMMSS(cur)} / ${fmtMMSS(tot)}`;
+    $('time-readout').textContent = `${fmtMytDisplay(frameMs, false)} · ${fmtMMSS(cur)} / ${fmtMMSS(tot)}`;
   }
 
   if (state.spanHours > 0) {
@@ -2653,14 +2692,21 @@ async function openSourcesModal() {
   $('sources-modal').classList.remove('hidden');
   const grid = $('sources-grid');
   grid.innerHTML = 'Loading catalog…';
+  const fmtTag = (t) => String(t || '').replace(/_/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase());
   try {
     const resp = await fetch(apiUrl('api/v1/catalog/sources'));
     if (!resp.ok) throw new Error('Catalog not configured');
     const data = await resp.json();
-    grid.innerHTML = data.sources.map((s) => `
+    const ctx = state.serverContext?.context;
+    const activeBanner = ctx ? `
+      <div class="src-card" style="grid-column:1/-1;border-color:var(--accent);background:var(--hud-well)">
+        <strong>Active Live Run · Basin: ${ctx.basin_id}</strong>
+        <div style="color:var(--ink-2)">Forecast cycle: ${fmtMytDisplay(Date.parse(ctx.cycle_iso), true)} · Terrain: Terrarium 30m DEM</div>
+      </div>` : '';
+    grid.innerHTML = activeBanner + data.sources.map((s) => `
       <div class="src-card">
         <strong>${s.title}</strong>
-        <div><span class="src-badge ${s.access === 'public' ? 'pub' : ''}">${s.access}</span> <span class="src-badge">${s.data_class}</span></div>
+        <div><span class="src-badge ${s.access === 'public' ? 'pub' : ''}">${fmtTag(s.access)}</span> <span class="src-badge">${fmtTag(s.data_class)}</span></div>
         <div style="color:var(--ink-3)">${s.provider} · ${s.license.name}</div>
       </div>
     `).join('');
@@ -3017,6 +3063,14 @@ function wireUi() {
     });
   }
   $('btn-run').addEventListener('click', () => runSimulation(false));
+  $('btn-storm-test')?.addEventListener('click', () => {
+    state.simConfig.mode = 'forecast';
+    state.simConfig.rainfallMmHr = 220;
+    state.simConfig.durationS = 1200;
+    state.spatialRainGrid = null;
+    state.spanHours = 0;
+    runSimulation(state.interventions.length > 0);
+  });
   $('btn-compare').addEventListener('click', () => runSimulation(true));
   $('btn-nwp').addEventListener('click', fetchLiveMultiModelNwp);
   $('btn-nwp-apply').addEventListener('click', () => {
@@ -3128,13 +3182,12 @@ function captureSnapshotPng() {
     ctx.fillRect(0, 0, out.width, out.height);
     ctx.drawImage(src, 0, 0);
 
-    // Top-left alert-ready header banner with location, peak depth, date/MYT, and official alert note
+    // Top-left alert-ready header banner with location, peak depth, unified MYT timestamp, and official alert note
     const title = $('po-title')?.textContent?.trim() || 'ARUS Flood Screening';
     const peak = $('lm-peak')?.textContent?.trim() || '0.00 m';
-    const now = new Date();
-    const dateStr = now.toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric', timeZone: 'Asia/Kuala_Lumpur' });
-    const timeStr = now.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit', hour12: false, timeZone: 'Asia/Kuala_Lumpur' });
-    const readout = $('time-readout')?.textContent?.trim() || `${dateStr} · ${timeStr} MYT`;
+    const frameMs = getCurrentFrameEpochMs();
+    const mytStr = fmtMytDisplay(frameMs, true);
+    const scenStr = state.spatialRainGrid ? 'Live NWP' : `${Math.round(state.simConfig.rainfallMmHr || 0)} mm/hr storm`;
     const pad = 16;
     ctx.fillStyle = 'rgba(255,255,255,0.94)';
     ctx.fillRect(pad, pad, Math.min(560, out.width - pad * 2), 58);
@@ -3143,7 +3196,7 @@ function captureSnapshotPng() {
     ctx.fillText(`${title}  ·  Peak ${peak}`, pad + 12, pad + 24);
     ctx.fillStyle = '#475569';
     ctx.font = '12px Inter, sans-serif';
-    ctx.fillText(`${dateStr} · ${readout}  ·  ARUS Screening (follow JPS / METMalaysia)`, pad + 12, pad + 45);
+    ctx.fillText(`${mytStr}  ·  ${scenStr}  ·  ARUS Screening (follow JPS / METMalaysia)`, pad + 12, pad + 45);
 
     // Top-right depth colorbar + river legend so WhatsApp/Telegram readers can interpret colors
     const legW = 216;
@@ -3171,7 +3224,7 @@ function captureSnapshotPng() {
     ctx.fillText(`River channel  (< ${cutCm} cm hidden)`, legX + 32, pad + 54);
 
     const slug = title.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 32) || 'view';
-    const stamp = `${now.getFullYear()}${String(now.getMonth() + 1).padStart(2, '0')}${String(now.getDate()).padStart(2, '0')}-${timeStr.replace(':', '')}myt`;
+    const stamp = fmtMytSlug(frameMs);
     out.toBlob((blob) => {
       if (blob) downloadBlob(blob, `arus-${slug}-${stamp}.png`);
     }, 'image/png');
