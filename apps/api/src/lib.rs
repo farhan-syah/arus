@@ -115,6 +115,7 @@ pub fn router(state: ApiState) -> Router {
         .route("/health", get(health))
         .route("/api/v1/config", get(get_config))
         .route("/api/v1/context", get(get_context))
+        .route("/api/v1/boundaries", get(get_boundaries))
         .route("/api/v1/live/basins", get(list_live_basins))
         .route("/api/v1/live/{basin}/grid", get(get_live_basin_grid))
         .route("/api/v1/live/{basin}/frames.bin", get(get_live_basin_frames_bin))
@@ -721,6 +722,45 @@ async fn get_config(State(state): State<ApiState>) -> Response {
         .header(header::CONTENT_TYPE, "application/json")
         .header(header::CACHE_CONTROL, "public, max-age=300")
         .body(Body::from(body))
+        .unwrap_or_else(|_| StatusCode::INTERNAL_SERVER_ERROR.into_response())
+}
+
+async fn get_boundaries(State(state): State<ApiState>) -> Response {
+    let Some(dir) = state.context_dir.clone() else {
+        return Json(serde_json::json!({ "type": "FeatureCollection", "features": [] }))
+            .into_response();
+    };
+    let boundaries_dir = dir.join("boundaries");
+    let features = tokio::task::spawn_blocking(move || {
+        let mut all: Vec<serde_json::Value> = Vec::new();
+        let Ok(entries) = std::fs::read_dir(&boundaries_dir) else {
+            return all;
+        };
+        let mut paths: Vec<PathBuf> = entries
+            .flatten()
+            .map(|e| e.path())
+            .filter(|p| p.extension().and_then(|s| s.to_str()) == Some("geojson"))
+            .collect();
+        paths.sort();
+        for path in paths {
+            if let Ok(bytes) = std::fs::read(&path)
+                && let Ok(val) = serde_json::from_slice::<serde_json::Value>(&bytes)
+                && let Some(arr) = val.get("features").and_then(|f| f.as_array())
+            {
+                all.extend(arr.iter().cloned());
+            }
+        }
+        all
+    })
+    .await
+    .unwrap_or_default();
+    Response::builder()
+        .status(StatusCode::OK)
+        .header(header::CONTENT_TYPE, "application/json")
+        .header(header::CACHE_CONTROL, "public, max-age=3600")
+        .body(Body::from(
+            serde_json::json!({ "type": "FeatureCollection", "features": features }).to_string(),
+        ))
         .unwrap_or_else(|_| StatusCode::INTERNAL_SERVER_ERROR.into_response())
 }
 

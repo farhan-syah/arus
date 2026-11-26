@@ -112,6 +112,9 @@ const state = {
   liveInterventions: [],
   liveBasinId: null,
   liveOverlays: new Map(),
+  catalogBoundaries: [],
+  hoveredBoundary: null,
+  activeBoundaryName: null,
   lastFramesBuf: null,
   userOverrideCutoff: false,
 };
@@ -277,14 +280,6 @@ function initMap() {
   map.on('click', (e) => handleMapClick(e.lngLat.lng, e.lngLat.lat));
   map.on('moveend', () => {
     updateFrameTelemetry();
-    if (state.profile === 'public' && state.boundaryGeoJson && state.boundaryBounds && !state.fixedView) {
-      const c = map.getCenter();
-      const [bMinLon, bMinLat, bMaxLon, bMaxLat] = state.boundaryBounds;
-      const pad = 0.18;
-      if (c.lng < bMinLon - pad || c.lng > bMaxLon + pad || c.lat < bMinLat - pad || c.lat > bMaxLat + pad) {
-        clearBoundaryFocus();
-      }
-    }
     updateLiveMetrics();
   });
   map.on('zoomend', () => updateBeaconsForZoom());
@@ -348,6 +343,30 @@ function ensureMapLayers() {
     }
   }
   const showBox = !isPres && !state.boundaryGeoJson && ['pick', 'bund', 'pond'].includes(state.tool);
+  map.addSource('arus-hover-boundary', { type: 'geojson', data: empty });
+  map.addLayer(
+    {
+      id: 'arus-hover-fill',
+      type: 'fill',
+      source: 'arus-hover-boundary',
+      paint: { 'fill-color': '#0284c7', 'fill-opacity': 0.10 },
+    },
+    beforeLabels,
+  );
+  map.addLayer(
+    {
+      id: 'arus-hover-line',
+      type: 'line',
+      source: 'arus-hover-boundary',
+      paint: {
+        'line-color': '#0284c7',
+        'line-width': 2.0,
+        'line-opacity': 0.65,
+        'line-dasharray': [3, 2],
+      },
+    },
+    beforeLabels,
+  );
   map.addSource('arus-domain-box', { type: 'geojson', data: empty });
   map.addLayer(
     {
@@ -643,14 +662,143 @@ function clearBoundaryFocus() {
   state.boundaryGrid = null;
   state.boundaryCellMask = null;
   state.boundaryBounds = null;
+  state.activeBoundaryName = null;
   const empty = { type: 'FeatureCollection', features: [] };
   if (map && layersReady) {
     const bSrc = map.getSource('arus-region-boundary');
     const mSrc = map.getSource('arus-region-mask');
+    const hSrc = map.getSource('arus-hover-boundary');
     if (bSrc) bSrc.setData(empty);
     if (mSrc) mSrc.setData(empty);
+    if (hSrc) hSrc.setData(empty);
   }
+  state.hoveredBoundary = null;
   $('focus-chip')?.classList.add('hidden');
+  renderFloodCanvas(true);
+  updateLiveMetrics();
+}
+
+function pointInRing(lon, lat, ring) {
+  let inside = false;
+  for (let i = 0, j = ring.length - 1; i < ring.length; j = i++) {
+    const xi = ring[i][0], yi = ring[i][1];
+    const xj = ring[j][0], yj = ring[j][1];
+    const intersect = ((yi > lat) !== (yj > lat)) && (lon < ((xj - xi) * (lat - yi)) / ((yj - yi) || 1e-12) + xi);
+    if (intersect) inside = !inside;
+  }
+  return inside;
+}
+
+function pointInGeoGeom(lon, lat, geom) {
+  if (!geom) return false;
+  if (geom.type === 'Polygon') {
+    if (!pointInRing(lon, lat, geom.coordinates[0])) return false;
+    for (let k = 1; k < geom.coordinates.length; k++) {
+      if (pointInRing(lon, lat, geom.coordinates[k])) return false;
+    }
+    return true;
+  }
+  if (geom.type === 'MultiPolygon') {
+    for (const poly of geom.coordinates) {
+      if (!poly?.[0]) continue;
+      if (pointInRing(lon, lat, poly[0])) {
+        let inHole = false;
+        for (let k = 1; k < poly.length; k++) {
+          if (pointInRing(lon, lat, poly[k])) { inHole = true; break; }
+        }
+        if (!inHole) return true;
+      }
+    }
+  }
+  return false;
+}
+
+async function fetchCatalogBoundaries() {
+  try {
+    const resp = await fetch(apiUrl('api/v1/boundaries'));
+    if (!resp.ok) return;
+    const fc = await resp.json();
+    const feats = Array.isArray(fc?.features) ? fc.features : [];
+    const items = [];
+    for (const f of feats) {
+      const geom = f?.geometry;
+      if (!geom || (geom.type !== 'Polygon' && geom.type !== 'MultiPolygon')) continue;
+      const name = String(f.properties?.shapeName || f.properties?.name || '').trim();
+      if (!name) continue;
+      let minLon = Infinity, minLat = Infinity, maxLon = -Infinity, maxLat = -Infinity;
+      const scan = (ring) => {
+        for (const pt of ring) {
+          if (pt[0] < minLon) minLon = pt[0];
+          if (pt[0] > maxLon) maxLon = pt[0];
+          if (pt[1] < minLat) minLat = pt[1];
+          if (pt[1] > maxLat) maxLat = pt[1];
+        }
+      };
+      if (geom.type === 'Polygon') scan(geom.coordinates[0]);
+      else for (const poly of geom.coordinates) if (poly?.[0]) scan(poly[0]);
+      if (!Number.isFinite(minLon)) continue;
+      const area = (maxLon - minLon) * (maxLat - minLat);
+      items.push({ name, geom, bbox: [minLon, minLat, maxLon, maxLat], area });
+    }
+    // Smallest enclosing boundary wins (e.g. Putrajaya < Kuala Lumpur < Selangor)
+    items.sort((a, b) => a.area - b.area);
+    state.catalogBoundaries = items;
+  } catch (_) {}
+}
+
+function findEnclosingCatalogBoundary(lon, lat) {
+  for (const b of state.catalogBoundaries) {
+    const [minLon, minLat, maxLon, maxLat] = b.bbox;
+    if (lon < minLon || lon > maxLon || lat < minLat || lat > maxLat) continue;
+    if (pointInGeoGeom(lon, lat, b.geom)) return b;
+  }
+  return null;
+}
+
+function updateHoverBoundary(lon, lat) {
+  if (!map || !layersReady || state.profile !== 'public' || !state.catalogBoundaries.length) return;
+  const hSrc = map.getSource('arus-hover-boundary');
+  if (!hSrc) return;
+  const hit = findEnclosingCatalogBoundary(lon, lat);
+  // Highlight when hovering a DIFFERENT boundary while a focus is active, OR any state when zoomed out (< 9.5)
+  const shouldHighlight = hit && (
+    (state.boundaryGeoJson && hit.name.toLowerCase() !== String(state.activeBoundaryName || '').toLowerCase())
+    || (!state.boundaryGeoJson && map.getZoom() < 9.5)
+  );
+  if (shouldHighlight) {
+    if (state.hoveredBoundary?.name !== hit.name) {
+      state.hoveredBoundary = hit;
+      hSrc.setData({ type: 'Feature', geometry: hit.geom, properties: { name: hit.name } });
+      map.getCanvas().style.cursor = 'pointer';
+    }
+  } else if (state.hoveredBoundary) {
+    state.hoveredBoundary = null;
+    hSrc.setData({ type: 'FeatureCollection', features: [] });
+    map.getCanvas().style.cursor = '';
+  }
+}
+
+async function activateCatalogBoundary(b) {
+  if (!b || !b.geom) return;
+  state.hoveredBoundary = null;
+  if (map && layersReady) {
+    const hSrc = map.getSource('arus-hover-boundary');
+    if (hSrc) hSrc.setData({ type: 'FeatureCollection', features: [] });
+    map.getCanvas().style.cursor = '';
+  }
+  state.activeBoundaryName = b.name;
+  // Sync preset dropdown if a matching preset exists
+  const matchedPreset = PRESETS.find((p) =>
+    p.name.toLowerCase() === b.name.toLowerCase()
+    || (b.name === 'Malacca' && p.name.toLowerCase() === 'melaka'),
+  );
+  if (matchedPreset && $('preset-select')) $('preset-select').value = matchedPreset.id;
+  if ($('site-verdict')) $('site-verdict').classList.add('hidden');
+  if (state.verdictMarker) { state.verdictMarker.remove(); state.verdictMarker = null; }
+  applyBoundaryGeometry(b.geom, false);
+  if (matchedPreset?.liveBasin) {
+    await tryLoadPrecomputedLive(matchedPreset.liveBasin);
+  }
   renderFloodCanvas(true);
   updateLiveMetrics();
 }
@@ -678,9 +826,11 @@ function applyRegionBoundary() {
   if (Number.isFinite(bMinLon)) {
     state.boundaryBounds = [bMinLon, bMinLat, bMaxLon, bMaxLat];
   }
-  const focusLabel = $('preset-select')?.selectedOptions?.[0]?.textContent?.trim()
+  const focusLabel = state.activeBoundaryName
+    || $('preset-select')?.selectedOptions?.[0]?.textContent?.trim()
     || $('coord-search')?.value?.trim()
     || 'Selected Area';
+  state.activeBoundaryName = focusLabel;
   if ($('focus-chip-text')) $('focus-chip-text').textContent = `Focus: ${focusLabel}`;
   $('focus-chip')?.classList.remove('hidden');
   const bSrc = map.getSource('arus-region-boundary');
@@ -831,6 +981,17 @@ async function setCustomBoundary(lon, lat, radiusKm = 5.0, shape = 'hex', runSim
 
 async function loadBoundaryByQuery(query, opts = {}) {
   if (!query) return false;
+  // Prefer instant land-only server catalog boundaries (no maritime sea wedge, zero Nominatim delay)
+  const qNorm = query.split(',')[0].trim().toLowerCase();
+  const catHit = state.catalogBoundaries.find((b) => {
+    const bn = b.name.toLowerCase();
+    return bn === qNorm || (qNorm === 'melaka' && bn === 'malacca') || (qNorm === 'malacca' && bn === 'melaka');
+  });
+  if (catHit) {
+    state.activeBoundaryName = catHit.name;
+    return applyBoundaryGeometry(catHit.geom, opts.runSim !== false);
+  }
+  state.activeBoundaryName = query.split(',')[0].trim();
   const cacheKey = `poly:${query.toLowerCase().trim()}`;
   try {
     let hit = readNominatimCache(cacheKey);
@@ -1324,6 +1485,7 @@ function lngLatToCell(lon, lat) {
 }
 
 function handleHover(lon, lat) {
+  updateHoverBoundary(lon, lat);
   const el = $('telemetry');
   const hit = lngLatToCell(lon, lat);
   if (!hit || !state.frames.length) {
@@ -1409,6 +1571,10 @@ function breachBund(lat, lon, radiusCells = 2) {
 }
 
 function handleMapClick(lon, lat) {
+  if (state.profile === 'public' && state.hoveredBoundary) {
+    activateCatalogBoundary(state.hoveredBoundary);
+    return;
+  }
   if (state.pickingStressSite) {
     state.pickingStressSite = false;
     document.body.classList.remove('picking-site');
@@ -2663,6 +2829,34 @@ function updateLiveMetrics() {
       }
       if (basinHits > 0) hitStates.add(formatStateName(basinId));
     }
+    // If zoomed tighter than 1 grid cell, sample the enclosing cell at map center so stats never drop to 0
+    if (totalCells === 0) {
+      const ctr = map.getCenter();
+      for (const [basinId, ov] of state.liveOverlays.entries()) {
+        const m = ov.grid?.metadata;
+        const e = ov.grid?.envelope;
+        if (!m || !ov.frames?.length) continue;
+        const [bMinLon, bMinLat, bMaxLon, bMaxLat] = m.wgs84_bounds;
+        if (ctr.lng < bMinLon || ctr.lng > bMaxLon || ctr.lat < bMinLat || ctr.lat > bMaxLat) continue;
+        const c = Math.min(m.cols - 1, Math.max(0, Math.floor(((ctr.lng - bMinLon) / (bMaxLon - bMinLon)) * m.cols)));
+        const r = Math.min(m.rows - 1, Math.max(0, Math.floor(((ctr.lat - bMinLat) / (bMaxLat - bMinLat)) * m.rows)));
+        const cellIdx = r * m.cols + c;
+        if (!m.active_mask[cellIdx]) continue;
+        const fIdx = Math.min(state.frameIdx, ov.frames.length - 1);
+        const dArr = (state.envelopeMode && e?.max_depth_m) ? e.max_depth_m : ov.frames[fIdx].depth;
+        const h = dArr[cellIdx];
+        totalCells = 1;
+        sumDepth = h > 0 ? h : 0;
+        peakDepth = h;
+        if (h >= cut) {
+          floodedCells = 1;
+          stagnantCells = 1;
+          stagnantKm2 = (m.dx_m * m.dx_m) / 1_000_000;
+        }
+        hitStates.add(formatStateName(basinId));
+        break;
+      }
+    }
     const statesArr = Array.from(hitStates);
     if (statesArr.length === 0) {
       viewportLabel = 'Current View';
@@ -3414,6 +3608,12 @@ function wireUi() {
     if ($('fb-play')) $('fb-play').textContent = icon;
   };
   if ($('fb-play')) $('fb-play').addEventListener('click', togglePlay);
+  const cycleSpeed = () => {
+    state.speed = state.speed === 0.5 ? 1 : state.speed === 1 ? 2 : state.speed === 2 ? 5 : 0.5;
+    if ($('btn-speed')) $('btn-speed').textContent = `${state.speed}x`;
+    if ($('fb-speed')) $('fb-speed').textContent = `${state.speed}x`;
+  };
+  if ($('fb-speed')) $('fb-speed').addEventListener('click', cycleSpeed);
   if ($('fb-track')) {
     const scrubForecast = (ev) => {
       if (!state.frames.length) return;
@@ -3422,15 +3622,35 @@ function wireUi() {
       state.playing = false;
       if ($('btn-play')) $('btn-play').textContent = '▶';
       if ($('fb-play')) $('fb-play').textContent = '▶';
-      state.frameIdx = Math.round(frac * (state.frames.length - 1));
-      $('scrubber').value = String(state.frameIdx);
-      updateTimeReadout();
-      renderFloodCanvas(true);
+      const nextIdx = Math.round(frac * (state.frames.length - 1));
+      if (nextIdx !== state.frameIdx) {
+        state.frameIdx = nextIdx;
+        $('scrubber').value = String(state.frameIdx);
+        updateTimeReadout();
+        renderFloodCanvas(true);
+      }
     };
     let dragging = false;
-    $('fb-track').addEventListener('pointerdown', (e) => { dragging = true; scrubForecast(e); });
-    window.addEventListener('pointermove', (e) => { if (dragging) scrubForecast(e); });
-    window.addEventListener('pointerup', () => { dragging = false; });
+    const startDrag = (e) => {
+      e.preventDefault();
+      dragging = true;
+      try { e.currentTarget.setPointerCapture(e.pointerId); } catch (_) {}
+      scrubForecast(e);
+    };
+    const moveDrag = (e) => {
+      if (!dragging) return;
+      e.preventDefault();
+      scrubForecast(e);
+    };
+    const endDrag = () => { dragging = false; };
+    for (const target of [$('fb-track'), $('fb-callout')].filter(Boolean)) {
+      target.addEventListener('pointerdown', startDrag);
+      target.addEventListener('pointermove', moveDrag);
+      target.addEventListener('pointerup', endDrag);
+      target.addEventListener('pointercancel', endDrag);
+    }
+    window.addEventListener('pointermove', moveDrag);
+    window.addEventListener('pointerup', endDrag);
   }
   if ($('fb-segments')) {
     $('fb-segments').addEventListener('click', (e) => {
@@ -3591,6 +3811,7 @@ function wireUi() {
   $('btn-speed').addEventListener('click', () => {
     state.speed = state.speed === 0.5 ? 1 : state.speed === 1 ? 2 : state.speed === 2 ? 5 : 0.5;
     $('btn-speed').textContent = `${state.speed}x`;
+    if ($('fb-speed')) $('fb-speed').textContent = `${state.speed}x`;
   });
 
   $('scrubber').addEventListener('input', (e) => {
@@ -4160,10 +4381,15 @@ function setUiProfile(profile, persist = false) {
     if (state.tool !== 'inspect') setTool('inspect');
     if (state.layer === 'diff') setLayer('depth');
     if ($('inspector')) $('inspector').classList.add('hidden');
-    if (map) { try { map.setTerrain(null); } catch (_) {} }
+    if (map) {
+      try { map.setTerrain(null); } catch (_) {}
+      map.setMaxZoom(14.5);
+      if (map.getZoom() > 14.5) map.setZoom(14.5);
+    }
     renderSecondaryLiveOverlays(true);
     refreshAlertsAndBeacons();
   } else {
+    if (map) map.setMaxZoom(17.5);
     if ($('site-verdict')) $('site-verdict').classList.add('hidden');
     renderSecondaryLiveOverlays(false);
     clearFloodBeacons();
@@ -5492,6 +5718,7 @@ async function fetchAndApplyServerConfig(qs) {
     if (!resp.ok) return;
     const cfg = await resp.json();
     state.serverConfig = cfg;
+    fetchCatalogBoundaries();
     if (cfg.instance_title) document.title = cfg.instance_title;
     if (Array.isArray(cfg.presets) && cfg.presets.length > 0) {
       SERVER_PRESETS = cfg.presets.map((p) => ({

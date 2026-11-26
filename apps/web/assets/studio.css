@@ -1124,6 +1124,38 @@ a.btn {
   font-weight: 600;
   color: var(--ink-1);
 }
+.fb-track {
+  touch-action: none;
+  user-select: none;
+  cursor: grab;
+  padding: 6px 0;
+  background-clip: content-box;
+}
+.fb-track:active, .fb-callout:active {
+  cursor: grabbing;
+}
+.fb-callout {
+  touch-action: none;
+  user-select: none;
+  cursor: grab;
+  pointer-events: auto;
+}
+.fb-fill {
+  position: relative;
+}
+.fb-fill::after {
+  content: "";
+  position: absolute;
+  right: -7px;
+  top: 50%;
+  width: 14px;
+  height: 14px;
+  margin-top: -7px;
+  border-radius: 999px;
+  background: var(--accent);
+  border: 2px solid #fff;
+  box-shadow: 0 1px 5px rgba(15, 23, 42, 0.35);
+}
 [data-profile="researcher"]:not([data-presentation="true"]) .public-outlook {
   display: none !important;
 }
