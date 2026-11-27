@@ -148,7 +148,12 @@ pub fn router(state: ApiState) -> Router {
         )
         .route("/api/v1/simulations", post(post_simulation))
         .route("/api/v1/compare", post(post_compare))
-        .route("/api/v1/jobs", get(list_jobs).post(post_job))
+        .route(
+            "/api/v1/jobs",
+            get(list_jobs)
+                .post(post_job)
+                .layer(DefaultBodyLimit::max(32 * 1024 * 1024)),
+        )
         .route("/api/v1/jobs/{job_id}", get(get_job))
         .route("/api/v1/jobs/{job_id}/cancel", post(cancel_job))
         .route(
