@@ -239,6 +239,8 @@ pub struct SurfacePhysicsOverrides<'a> {
     pub interval_loss_grids: Option<&'a [Vec<f64>]>,
     /// Scalar fallback `(evap_m_s, drain_m_s)` per interval when `interval_loss_grids` is `None`.
     pub interval_losses: Option<&'a [(f64, f64)]>,
+    /// Optional exact binary checkpoint bytes (`ARUSHYDR`) preserving `h`, `qx`, `qy`, and soil state.
+    pub initial_checkpoint: Option<&'a [u8]>,
 }
 
 impl SurfaceRunSpec {
@@ -333,47 +335,62 @@ impl SurfaceRunSpec {
         };
         let land = LandModel::new(&domain, land_cells)
             .map_err(|error| ModelError::InvalidInput(error.to_string()))?;
-        let soil = SoilState::initialized(&land)
-            .map_err(|error| ModelError::InvalidInput(error.to_string()))?;
 
-        if !self.initial_depth_m.is_finite() || self.initial_depth_m < 0.0 {
-            return Err(ModelError::InvalidInput(format!(
-                "initial_depth_m={} must be finite nonnegative",
-                self.initial_depth_m
-            )));
-        }
-        let flow_cells: Vec<CellState> = if let Some(per_cell) = initial_depths_m {
-            if per_cell.len() != n {
+        let (flow, soil) = if let Some(ckpt_bytes) = overrides.initial_checkpoint {
+            let pkg = crate::codec::package_from_bytes(ckpt_bytes.to_vec())?;
+            let data = crate::codec::decode_snapshot(&pkg)?;
+            let (ckpt_nx, ckpt_ny) = data.setup.domain.grid().dimensions();
+            let (dom_nx, dom_ny) = domain.grid().dimensions();
+            if ckpt_nx != dom_nx || ckpt_ny != dom_ny {
                 return Err(ModelError::InvalidInput(format!(
-                    "initial_depths_m len {} != grid cell count {n}",
-                    per_cell.len()
+                    "checkpoint grid {ckpt_nx}x{ckpt_ny} != requested {dom_nx}x{dom_ny}",
                 )));
             }
-            active
-                .iter()
-                .zip(per_cell.iter())
-                .map(|(&is_active, &h)| CellState {
-                    h: if is_active && h.is_finite() && h > 0.0 {
-                        h
-                    } else {
-                        0.0
-                    },
-                    qx: 0.0,
-                    qy: 0.0,
-                })
-                .collect()
+            (data.accepted.flow, data.accepted.soil)
         } else {
-            active
-                .iter()
-                .map(|&is_active| CellState {
-                    h: if is_active { self.initial_depth_m } else { 0.0 },
-                    qx: 0.0,
-                    qy: 0.0,
-                })
-                .collect()
+            let soil = SoilState::initialized(&land)
+                .map_err(|error| ModelError::InvalidInput(error.to_string()))?;
+
+            if !self.initial_depth_m.is_finite() || self.initial_depth_m < 0.0 {
+                return Err(ModelError::InvalidInput(format!(
+                    "initial_depth_m={} must be finite nonnegative",
+                    self.initial_depth_m
+                )));
+            }
+            let flow_cells: Vec<CellState> = if let Some(per_cell) = initial_depths_m {
+                if per_cell.len() != n {
+                    return Err(ModelError::InvalidInput(format!(
+                        "initial_depths_m len {} != grid cell count {n}",
+                        per_cell.len()
+                    )));
+                }
+                active
+                    .iter()
+                    .zip(per_cell.iter())
+                    .map(|(&is_active, &h)| CellState {
+                        h: if is_active && h.is_finite() && h > 0.0 {
+                            h
+                        } else {
+                            0.0
+                        },
+                        qx: 0.0,
+                        qy: 0.0,
+                    })
+                    .collect()
+            } else {
+                active
+                    .iter()
+                    .map(|&is_active| CellState {
+                        h: if is_active { self.initial_depth_m } else { 0.0 },
+                        qx: 0.0,
+                        qy: 0.0,
+                    })
+                    .collect()
+            };
+            let flow = FlowState::new(&domain, flow_cells)
+                .map_err(|error| ModelError::InvalidInput(error.to_string()))?;
+            (flow, soil)
         };
-        let flow = FlowState::new(&domain, flow_cells)
-            .map_err(|error| ModelError::InvalidInput(error.to_string()))?;
 
         let boundaries = if self.open_faces.is_empty() {
             BoundaryConditions::impermeable_walls()

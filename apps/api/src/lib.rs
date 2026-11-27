@@ -135,6 +135,10 @@ pub fn router(state: ApiState) -> Router {
         .route("/api/v1/runs/{run_id}/grid", get(get_run_grid))
         .route("/api/v1/runs/{run_id}/frames.bin", get(get_run_frames_bin))
         .route(
+            "/api/v1/runs/{run_id}/checkpoint.bin",
+            get(get_run_checkpoint_bin),
+        )
+        .route(
             "/api/v1/runs/{run_id}/export/max-depth.asc",
             get(export_run_max_depth_asc),
         )
@@ -533,6 +537,32 @@ async fn get_run_frames_bin(
         .status(StatusCode::OK)
         .header(header::CONTENT_TYPE, "application/octet-stream")
         .body(Body::from(sim.frames_bin.clone()))
+        .map_err(internal_error)
+}
+
+async fn get_run_checkpoint_bin(
+    State(state): State<ApiState>,
+    headers: axum::http::HeaderMap,
+    Path(run_id): Path<String>,
+) -> Result<Response, (StatusCode, Json<ErrorResponse>)> {
+    if !state.config.features.allow_async_jobs && !has_internal_token(&headers) {
+        return Err(forbidden(
+            "binary checkpoints are disabled on this hosted deployment",
+        ));
+    }
+    let sim = state
+        .interactive
+        .get(&run_id)
+        .ok_or_else(|| not_found(format!("checkpoint for run {run_id} not found")))?;
+    if sim.checkpoint_bin.is_empty() {
+        return Err(not_found(format!(
+            "binary checkpoint for run {run_id} unavailable"
+        )));
+    }
+    Response::builder()
+        .status(StatusCode::OK)
+        .header(header::CONTENT_TYPE, "application/octet-stream")
+        .body(Body::from(sim.checkpoint_bin.clone()))
         .map_err(internal_error)
 }
 
@@ -1349,6 +1379,54 @@ mod job_queue_tests {
         assert!(
             max_shore < 0.05,
             "shoreline cells should drain into masked sea instead of piling up: max_shore={max_shore:.4} m"
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn checkpoint_resume_matches_uninterrupted_run() -> Result<(), String> {
+        let state = ApiState::open(std::path::Path::new("/tmp/arus-ckpt-test-empty"))
+            .map_err(|e| e.to_string())?;
+        let base_json = r#"{"cols":12,"rows":12,"dx_m":100.0,"rainfall_mm_per_hr":80.0,"hyetograph":"uniform","duration_s":240.0,"drainage_mm_per_hr":1.0,"evaporation_mm_per_day":3.0,"start_dry":true,"tide_mode":"off","land":{"kind":"modified-green-ampt","suction_m":0.15,"conductivity_m_per_s":0.0000003,"maximum_deficit":0.05}}"#;
+        let full_req: CreateSimulationRequest =
+            serde_json::from_str(base_json).map_err(|e| e.to_string())?;
+        let full_sim = state
+            .interactive
+            .run_simulation(full_req, None)
+            .await
+            .map_err(|(_, m)| m)?;
+        assert!(!full_sim.checkpoint_bin.is_empty());
+
+        let mut half1: CreateSimulationRequest =
+            serde_json::from_str(base_json).map_err(|e| e.to_string())?;
+        half1.duration_s = 120.0;
+        let sim1 = state
+            .interactive
+            .run_simulation(half1, None)
+            .await
+            .map_err(|(_, m)| m)?;
+        assert!(!sim1.checkpoint_bin.is_empty());
+
+        let mut half2: CreateSimulationRequest =
+            serde_json::from_str(base_json).map_err(|e| e.to_string())?;
+        half2.duration_s = 120.0;
+        half2.resume_checkpoint_run_id = Some(sim1.summary.run_id.clone());
+        let sim2 = state
+            .interactive
+            .run_simulation(half2, None)
+            .await
+            .map_err(|(_, m)| m)?;
+
+        let d_full = &full_sim.series.frames.last().ok_or("missing full frame")?.depth_m;
+        let d_split = &sim2.series.frames.last().ok_or("missing split frame")?.depth_m;
+        let max_diff = d_full
+            .iter()
+            .zip(d_split.iter())
+            .map(|(a, b)| (a - b).abs())
+            .fold(0.0_f32, f32::max);
+        assert!(
+            max_diff < 1e-4,
+            "checkpoint resume must match uninterrupted run: max_diff={max_diff:.6} m"
         );
         Ok(())
     }

@@ -218,11 +218,20 @@ impl JobStore {
             let token_bg = token.clone();
             let target_dur = request.duration_s;
 
+            let initial_checkpoint = match resolve_resume_checkpoint(&request, &interactive) {
+                Ok(ckpt) => ckpt,
+                Err((_, msg)) => {
+                    store.mark_failed(&job_id_bg, msg);
+                    return;
+                }
+            };
+
             let join = tokio::task::spawn_blocking(move || {
                 let _permit = permit;
                 execute_blocking(
                     run_id_bg,
                     &request,
+                    initial_checkpoint,
                     &token_bg,
                     limits,
                     move |steps, accepted_s| {
@@ -577,6 +586,12 @@ pub struct CreateSimulationRequest {
     /// replacing `storm_drain_score` when real local drainage network survey or GIS data is supplied.
     #[serde(default)]
     pub storm_drain_grid: Option<Vec<f64>>,
+    /// Optional run ID whose exact binary checkpoint (`h`, `qx`, `qy`, soil state) seeds `t = 0`.
+    #[serde(default)]
+    pub resume_checkpoint_run_id: Option<String>,
+    /// Optional base64-encoded exact binary checkpoint (`ARUSHYDR`) persisted from an earlier cycle.
+    #[serde(default)]
+    pub resume_checkpoint_b64: Option<String>,
 }
 
 const fn default_storm_drain_score() -> f64 {
@@ -662,6 +677,7 @@ pub struct CachedSimulation {
     pub summary: SimulationSummaryResponse,
     pub series: FrameSeries,
     pub frames_bin: Vec<u8>,
+    pub checkpoint_bin: Vec<u8>,
 }
 
 /// Bounded in-memory LRU cache + concurrency limiter for interactive simulations.
@@ -798,6 +814,7 @@ impl InteractiveStore {
             }
         };
 
+        let initial_checkpoint = resolve_resume_checkpoint(&request, self)?;
         let run_id = fixed_id.unwrap_or_else(|| self.allocate_run_id());
         let token = CancellationToken::new();
         let cancel_handle = token.clone();
@@ -805,7 +822,14 @@ impl InteractiveStore {
 
         let join = tokio::task::spawn_blocking(move || {
             let _permit = permit;
-            execute_blocking(run_id_clone, &request, &token, limits, |_, _| {})
+            execute_blocking(
+                run_id_clone,
+                &request,
+                initial_checkpoint,
+                &token,
+                limits,
+                |_, _| {},
+            )
         });
 
         let result = tokio::time::timeout(Duration::from_secs(limits.timeout_secs), join).await;
@@ -1237,12 +1261,79 @@ fn compute_request_hash(req: &CreateSimulationRequest) -> [u8; 32] {
             TideMode::Off => 2u8,
         },
     ]);
+    if let Some(ref rid) = req.resume_checkpoint_run_id {
+        h.update([1u8]);
+        h.update(rid.as_bytes());
+    } else {
+        h.update([0u8]);
+    }
+    if let Some(ref b64) = req.resume_checkpoint_b64 {
+        h.update([1u8]);
+        h.update(b64.as_bytes());
+    } else {
+        h.update([0u8]);
+    }
     h.finalize().into()
+}
+
+fn decode_base64_std(input: &str) -> Result<Vec<u8>, String> {
+    let mut out = Vec::with_capacity(input.len() * 3 / 4);
+    let mut buf = 0u32;
+    let mut bits = 0u32;
+    for b in input.bytes() {
+        let val = match b {
+            b'A'..=b'Z' => (b - b'A') as u32,
+            b'a'..=b'z' => (b - b'a' + 26) as u32,
+            b'0'..=b'9' => (b - b'0' + 52) as u32,
+            b'+' => 62,
+            b'/' => 63,
+            b'=' | b'\n' | b'\r' | b' ' | b'\t' => continue,
+            _ => return Err(format!("invalid base64 byte: 0x{b:02x}")),
+        };
+        buf = (buf << 6) | val;
+        bits += 6;
+        if bits >= 8 {
+            bits -= 8;
+            out.push(((buf >> bits) & 0xFF) as u8);
+        }
+    }
+    Ok(out)
+}
+
+fn resolve_resume_checkpoint(
+    req: &CreateSimulationRequest,
+    interactive: &InteractiveStore,
+) -> Result<Option<Vec<u8>>, (u16, String)> {
+    if let Some(ref run_id) = req.resume_checkpoint_run_id {
+        let sim = interactive.get(run_id).ok_or_else(|| {
+            (
+                404,
+                format!("resume checkpoint run {run_id} not found in cache"),
+            )
+        })?;
+        if sim.checkpoint_bin.is_empty() {
+            return Err((
+                422,
+                format!("run {run_id} has no binary checkpoint available"),
+            ));
+        }
+        return Ok(Some(sim.checkpoint_bin.clone()));
+    }
+    if let Some(ref b64) = req.resume_checkpoint_b64 {
+        let bytes = decode_base64_std(b64)
+            .map_err(|e| (422, format!("invalid resume_checkpoint_b64: {e}")))?;
+        if bytes.is_empty() {
+            return Err((422, "resume_checkpoint_b64 decoded to empty payload".to_owned()));
+        }
+        return Ok(Some(bytes));
+    }
+    Ok(None)
 }
 
 fn execute_blocking<F>(
     run_id: String,
     req: &CreateSimulationRequest,
+    initial_checkpoint: Option<Vec<u8>>,
     token: &CancellationToken,
     limits: ExecutionLimits,
     mut on_progress: F,
@@ -1772,12 +1863,18 @@ where
                             max_drop = max_drop.max(z - nz);
                         }
                     }
-                    let slope = max_drop / terrain.grid().dx_m.max(1.0);
+                    let dx_m = terrain.grid().dx_m.max(1.0);
+                    let slope = max_drop / dx_m;
                     let relief_m = (z - low_z_cutoff).max(0.0);
+                    // Scale slope threshold for coarse grids (dx > 500 m) where DEM averaging
+                    // flattens steep upland gorges without reducing vertical relief per cell.
+                    let dx_slope_scale = (500.0 / dx_m).clamp(0.25, 1.0);
+                    let slope_cutoff = 0.015 * dx_slope_scale;
+                    let slope_span = 0.035 * dx_slope_scale;
                     // Only steep hillslopes get fast subsurface interflow; flat inland valleys
-                    // and closed depressions (e.g. Ijok, Kajang) keep valley-floor drainage.
-                    let upland_mm_hr = if !depression_mask[idx] && slope > 0.015 {
-                        ((slope - 0.015) / 0.035).clamp(0.0, 1.0) * 18.0
+                    // and closed depressions keep valley-floor drainage.
+                    let upland_mm_hr = if !depression_mask[idx] && slope > slope_cutoff {
+                        ((slope - slope_cutoff) / slope_span).clamp(0.0, 1.0) * 18.0
                             + ((relief_m - 20.0).max(0.0) / 80.0).clamp(0.0, 1.0) * 10.0
                     } else {
                         0.0
@@ -2019,6 +2116,7 @@ where
                 None
             },
             interval_losses: Some(&interval_losses),
+            initial_checkpoint: initial_checkpoint.as_deref(),
         })
         .map_err(|e| (422, e.to_string()))?;
     if warmup_s > 0.0 {
@@ -2055,6 +2153,10 @@ where
     let frames_bin = series
         .encode_frames_bin()
         .map_err(|e| (500, e.to_string()))?;
+    let checkpoint_bin = engine
+        .checkpoint()
+        .map(|pkg| pkg.payload)
+        .unwrap_or_default();
     let water_budget = engine.water_budget();
     let budget_assessment = assess_water_budget(water_budget);
 
@@ -2075,5 +2177,6 @@ where
         summary,
         series,
         frames_bin,
+        checkpoint_bin,
     })
 }
