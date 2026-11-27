@@ -4,7 +4,7 @@ use std::path::Path;
 
 use serde::{Deserialize, Serialize};
 
-use crate::sim::{MAX_INTERACTIVE_CELLS, MAX_JOB_CELLS, SIM_TIMEOUT_SECS};
+use crate::sim::{JOB_TIMEOUT_SECS, MAX_INTERACTIVE_CELLS, MAX_JOB_CELLS, SIM_TIMEOUT_SECS};
 
 /// Deployment mode distinguishing self-hosted power-user runs from public hosted servers.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
@@ -95,6 +95,8 @@ pub struct ServerLimits {
     pub max_job_cells: usize,
     #[serde(default = "default_sim_timeout_secs")]
     pub sim_timeout_secs: u64,
+    #[serde(default = "default_job_timeout_secs")]
+    pub job_timeout_secs: u64,
 }
 
 const fn default_max_interactive_cells() -> usize {
@@ -106,6 +108,9 @@ const fn default_max_job_cells() -> usize {
 const fn default_sim_timeout_secs() -> u64 {
     SIM_TIMEOUT_SECS
 }
+const fn default_job_timeout_secs() -> u64 {
+    JOB_TIMEOUT_SECS
+}
 
 impl Default for ServerLimits {
     fn default() -> Self {
@@ -113,6 +118,7 @@ impl Default for ServerLimits {
             max_interactive_cells: MAX_INTERACTIVE_CELLS,
             max_job_cells: MAX_JOB_CELLS,
             sim_timeout_secs: SIM_TIMEOUT_SECS,
+            job_timeout_secs: JOB_TIMEOUT_SECS,
         }
     }
 }
@@ -292,8 +298,11 @@ impl ServerConfig {
                 self.default_view.basemap
             ));
         }
-        if self.limits.max_interactive_cells < 16 || self.limits.sim_timeout_secs == 0 {
-            return Err("limits must specify positive cells and timeout".to_owned());
+        if self.limits.max_interactive_cells < 16
+            || self.limits.sim_timeout_secs == 0
+            || self.limits.job_timeout_secs == 0
+        {
+            return Err("limits must specify positive cells and timeouts".to_owned());
         }
         Ok(())
     }

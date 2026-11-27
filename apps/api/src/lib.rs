@@ -1048,9 +1048,12 @@ async fn post_job(
             "BYOD ASCII DEM upload is disabled on this server",
         ));
     }
+    let mut limits = sim::ExecutionLimits::async_job();
+    limits.max_cells = state.config.limits.max_job_cells;
+    limits.timeout_secs = state.config.limits.job_timeout_secs;
     let record = state
         .jobs
-        .submit(Arc::clone(&state.interactive), request)
+        .submit_with_limits(Arc::clone(&state.interactive), request, limits)
         .map_err(|(code, error)| {
             (
                 StatusCode::from_u16(code).unwrap_or(StatusCode::BAD_REQUEST),

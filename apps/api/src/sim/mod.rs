@@ -56,8 +56,8 @@ pub const MAX_JOB_CELLS: usize = 262_144;
 pub const MAX_JOB_STEPS: usize = 200_000;
 /// Maximum simulated duration (`s`) permitted in an async high-resolution basin job (12 h).
 pub const MAX_JOB_DURATION_S: f64 = 43_200.0;
-/// Maximum wall-clock duration (`s`) per async high-resolution basin job.
-pub const JOB_TIMEOUT_SECS: u64 = 300;
+/// Default maximum wall-clock duration (`s`) per async high-resolution basin job (30 min).
+pub const JOB_TIMEOUT_SECS: u64 = 1800;
 /// Maximum async job records retained in memory.
 pub const MAX_TRACKED_JOBS: usize = 64;
 
@@ -157,7 +157,16 @@ impl JobStore {
         interactive: Arc<InteractiveStore>,
         request: CreateSimulationRequest,
     ) -> Result<SimulationJobRecord, (u16, String)> {
-        let limits = ExecutionLimits::async_job();
+        self.submit_with_limits(interactive, request, ExecutionLimits::async_job())
+    }
+
+    /// Validates and enqueues an async basin simulation job with caller-configured execution limits.
+    pub fn submit_with_limits(
+        self: &Arc<Self>,
+        interactive: Arc<InteractiveStore>,
+        request: CreateSimulationRequest,
+        limits: ExecutionLimits,
+    ) -> Result<SimulationJobRecord, (u16, String)> {
         validate_request(&request, limits)?;
 
         let seq = self.next_id.fetch_add(1, Ordering::Relaxed);
