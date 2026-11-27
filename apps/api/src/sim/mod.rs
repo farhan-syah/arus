@@ -694,6 +694,7 @@ pub struct CachedSimulation {
 pub struct InteractiveStore {
     next_id: AtomicU64,
     semaphore: Arc<Semaphore>,
+    max_cached_runs: usize,
     cache: RwLock<LruRuns>,
 }
 
@@ -707,15 +708,20 @@ struct LruRuns {
 
 impl Default for InteractiveStore {
     fn default() -> Self {
-        Self {
-            next_id: AtomicU64::new(1),
-            semaphore: Arc::new(Semaphore::new(MAX_CONCURRENT_SIMS)),
-            cache: RwLock::new(LruRuns::default()),
-        }
+        Self::with_max_cached_runs(MAX_CACHED_RUNS)
     }
 }
 
 impl InteractiveStore {
+    /// Creates a bounded interactive run store with a configurable LRU capacity (minimum 1).
+    pub fn with_max_cached_runs(max_cached_runs: usize) -> Self {
+        Self {
+            next_id: AtomicU64::new(1),
+            semaphore: Arc::new(Semaphore::new(MAX_CONCURRENT_SIMS)),
+            max_cached_runs: max_cached_runs.max(1),
+            cache: RwLock::new(LruRuns::default()),
+        }
+    }
     /// Lists cached interactive run IDs in most-recent-last order.
     pub fn list_ids(&self) -> Vec<String> {
         self.cache
@@ -749,7 +755,7 @@ impl InteractiveStore {
                 if let Some(old_hash) = guard.run_id_to_hash.remove(&run_id) {
                     guard.hash_to_run_id.remove(&old_hash);
                 }
-            } else if guard.order.len() >= MAX_CACHED_RUNS
+            } else if guard.order.len() >= self.max_cached_runs
                 && let Some(oldest) = guard.order.pop_front()
             {
                 guard.entries.remove(&oldest);

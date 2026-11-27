@@ -4,7 +4,9 @@ use std::path::Path;
 
 use serde::{Deserialize, Serialize};
 
-use crate::sim::{JOB_TIMEOUT_SECS, MAX_INTERACTIVE_CELLS, MAX_JOB_CELLS, SIM_TIMEOUT_SECS};
+use crate::sim::{
+    JOB_TIMEOUT_SECS, MAX_CACHED_RUNS, MAX_INTERACTIVE_CELLS, MAX_JOB_CELLS, SIM_TIMEOUT_SECS,
+};
 
 /// Deployment mode distinguishing self-hosted power-user runs from public hosted servers.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
@@ -97,6 +99,8 @@ pub struct ServerLimits {
     pub sim_timeout_secs: u64,
     #[serde(default = "default_job_timeout_secs")]
     pub job_timeout_secs: u64,
+    #[serde(default = "default_max_cached_runs")]
+    pub max_cached_runs: usize,
 }
 
 const fn default_max_interactive_cells() -> usize {
@@ -111,6 +115,9 @@ const fn default_sim_timeout_secs() -> u64 {
 const fn default_job_timeout_secs() -> u64 {
     JOB_TIMEOUT_SECS
 }
+const fn default_max_cached_runs() -> usize {
+    MAX_CACHED_RUNS
+}
 
 impl Default for ServerLimits {
     fn default() -> Self {
@@ -119,6 +126,7 @@ impl Default for ServerLimits {
             max_job_cells: MAX_JOB_CELLS,
             sim_timeout_secs: SIM_TIMEOUT_SECS,
             job_timeout_secs: JOB_TIMEOUT_SECS,
+            max_cached_runs: MAX_CACHED_RUNS,
         }
     }
 }

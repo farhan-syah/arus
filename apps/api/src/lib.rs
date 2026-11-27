@@ -68,6 +68,9 @@ impl ApiState {
     /// Attaches a validated runtime `ServerConfig` enforced on API routes and exposed at `/api/v1/config`.
     #[must_use]
     pub fn with_config(mut self, config: ServerConfig) -> Self {
+        self.interactive = Arc::new(InteractiveStore::with_max_cached_runs(
+            config.limits.max_cached_runs,
+        ));
         self.config = Arc::new(config);
         self
     }
