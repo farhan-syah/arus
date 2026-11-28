@@ -2029,13 +2029,31 @@ function lookupPointAcrossBasins(lon, lat) {
     const idx = row * meta.cols + col;
     return { grid, frames, basinId, rainGrid: rainGrid || null, col, row, idx, active: Boolean(meta.active_mask[idx]) };
   };
+  let best = null;
+  let bestDepth = -1;
+  let bestPeak = -1;
   let fallback = null;
+  const scoreHit = (hit) => {
+    const fIdx = Math.min(state.frameIdx, hit.frames.length - 1);
+    const cur = hit.frames[fIdx]?.depth?.[hit.idx] || 0;
+    const pk = hit.grid?.envelope?.max_depth_m?.[hit.idx] || 0;
+    return [cur, pk];
+  };
   if (state.profile === 'public' && state.liveOverlays.size > 0) {
     for (const [basinId, ov] of state.liveOverlays.entries()) {
       const hit = tryGrid(ov.grid, ov.frames, basinId, ov.rainGrid);
-      if (hit && hit.active) return hit;
-      if (hit && !fallback) fallback = hit;
+      if (hit && hit.active) {
+        const [cur, pk] = scoreHit(hit);
+        if (!best || cur > bestDepth + 1e-6 || (Math.abs(cur - bestDepth) <= 1e-6 && pk > bestPeak)) {
+          best = hit;
+          bestDepth = cur;
+          bestPeak = pk;
+        }
+      } else if (hit && !fallback) {
+        fallback = hit;
+      }
     }
+    if (best) return best;
   }
   const primaryRain = state.liveOverlays.get(state.liveBasinId)?.rainGrid || state.spatialRainGrid || null;
   const primary = tryGrid(state.grid, state.frames, state.liveBasinId, primaryRain);
