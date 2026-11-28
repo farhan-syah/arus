@@ -9,7 +9,7 @@ use hydr::soil::{LandCell, LandModel, ModifiedGreenAmptParameters, SoilState};
 use hydr::solver::{
     Axis, BoundaryConditions, BoundaryFace, BoundaryForcing, CoastalForcing, DischargeBoundary,
     ExteriorBoundary, ExteriorState, FluxPort, ForcingInterval, ForcingSchedule, InitialState,
-    SolverConfig, SolverSetup, StageBoundary,
+    SolverConfig, SolverSetup, StageBoundary, SubgridTerrain,
 };
 use serde::{Deserialize, Serialize};
 
@@ -241,6 +241,8 @@ pub struct SurfacePhysicsOverrides<'a> {
     pub interval_losses: Option<&'a [(f64, f64)]>,
     /// Optional exact binary checkpoint bytes (`ARUSHYDR`) preserving `h`, `qx`, `qy`, and soil state.
     pub initial_checkpoint: Option<&'a [u8]>,
+    /// Optional fine-resolution DEM `(fine_cols, fine_rows, fine_elevations_m)` for subgrid 2D hydraulics.
+    pub subgrid_fine_dem: Option<(usize, usize, &'a [f64])>,
 }
 
 impl SurfaceRunSpec {
@@ -492,7 +494,15 @@ impl SurfaceRunSpec {
             max_cumulative_water_adjustment_m3: (domain_area_m2 * 1e-12).max(1e-9),
             ..SolverConfig::default()
         };
-        let engine = SurfaceEngine::new(
+        let subgrid = if let Some((fine_nx, fine_ny, fine_bed)) = overrides.subgrid_fine_dem {
+            Some(
+                SubgridTerrain::from_fine_dem(domain.grid(), fine_nx, fine_ny, fine_bed)
+                    .map_err(|error| ModelError::InvalidInput(error.to_string()))?,
+            )
+        } else {
+            None
+        };
+        let mut engine = SurfaceEngine::new(
             SolverSetup {
                 domain,
                 land,
@@ -506,6 +516,9 @@ impl SurfaceRunSpec {
                 soil,
             },
         )?;
+        if let Some(sg) = subgrid {
+            engine = engine.with_subgrid_terrain(sg)?;
+        }
         match self.coastal {
             Some(coastal) => engine.with_coastal_forcing(coastal.to_hydr()),
             None => Ok(engine),

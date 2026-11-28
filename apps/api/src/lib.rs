@@ -530,6 +530,8 @@ async fn get_run_grid(
         earthwork: sim.summary.earthwork,
         metadata: sim.series.metadata.clone(),
         envelope: sim.series.envelope.clone(),
+        subgrid_wet_fraction: sim.subgrid_wet_fraction.clone(),
+        subgrid_wse_m: sim.subgrid_wse_m.clone(),
     }))
 }
 

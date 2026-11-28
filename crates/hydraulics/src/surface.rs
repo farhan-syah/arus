@@ -10,7 +10,7 @@ use hydr::grid::CartesianGrid;
 use hydr::model::{CellState, Domain, SpatialReference as HydrSpatialReference};
 use hydr::solver::{
     AdvanceReport, AdvanceStatus, CellResult, CoastalForcing, ForcingSchedule, InitialState,
-    Solver, SolverConfig, SolverSetup, WaterLedger,
+    Solver, SolverConfig, SolverSetup, SubgridTerrain, WaterLedger,
 };
 
 use crate::codec::{decode_snapshot, encode_snapshot};
@@ -78,6 +78,29 @@ impl SurfaceEngine {
             .with_coastal_forcing(coastal)
             .map_err(|error| ModelError::InvalidInput(error.to_string()))?;
         Ok(self)
+    }
+
+    /// Attaches opt-in subgrid terrain storage-elevation and face-conveyance tables.
+    pub fn with_subgrid_terrain(mut self, subgrid: SubgridTerrain) -> Result<Self> {
+        self.solver = self
+            .solver
+            .with_subgrid_terrain(subgrid)
+            .map_err(|error| ModelError::InvalidInput(error.to_string()))?;
+        Ok(self)
+    }
+
+    /// Computes per-cell water-surface elevation (`m`) using subgrid stage inversion when attached.
+    pub fn water_surface_elevation(&self) -> Result<Vec<f64>> {
+        self.solver
+            .water_surface_elevation()
+            .map_err(|error| ModelError::Engine(error.to_string()))
+    }
+
+    /// Computes per-cell inundated area fraction in `[0.0, 1.0]` using subgrid curves when attached.
+    pub fn wet_fraction(&self) -> Result<Vec<f64>> {
+        self.solver
+            .wet_fraction()
+            .map_err(|error| ModelError::Engine(error.to_string()))
     }
 
     /// Builds a synthetic 5x5 closed-basin demonstration engine (60 s constant rain) without

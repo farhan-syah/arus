@@ -601,6 +601,17 @@ pub struct CreateSimulationRequest {
     /// Optional base64-encoded exact binary checkpoint (`ARUSHYDR`) persisted from an earlier cycle.
     #[serde(default)]
     pub resume_checkpoint_b64: Option<String>,
+    /// Optional fine-resolution DEM (`fine_cols x fine_rows`) for subgrid 2D hydraulics.
+    #[serde(default)]
+    pub subgrid_fine_dem: Option<SubgridFineDemSpec>,
+}
+
+/// Fine-resolution DEM payload for subgrid storage-elevation and face-conveyance tables.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SubgridFineDemSpec {
+    pub fine_cols: usize,
+    pub fine_rows: usize,
+    pub elevations_m: Vec<f64>,
 }
 
 const fn default_storm_drain_score() -> f64 {
@@ -663,6 +674,12 @@ pub struct RunGridResponse {
     pub earthwork: EarthworkSummary,
     pub metadata: GridMetadata,
     pub envelope: EnvelopeSummary,
+    /// Optional per-cell subgrid inundated area fraction (`0.0..=1.0`) at final accepted state.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub subgrid_wet_fraction: Option<Vec<f32>>,
+    /// Optional per-cell subgrid water-surface elevation (`m`) at final accepted state.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub subgrid_wse_m: Option<Vec<f32>>,
 }
 
 /// Paired baseline vs intervention response returned by `POST /api/v1/compare`.
@@ -687,6 +704,8 @@ pub struct CachedSimulation {
     pub series: FrameSeries,
     pub frames_bin: Vec<u8>,
     pub checkpoint_bin: Vec<u8>,
+    pub subgrid_wet_fraction: Option<Vec<f32>>,
+    pub subgrid_wse_m: Option<Vec<f32>>,
 }
 
 /// Bounded in-memory LRU cache + concurrency limiter for interactive simulations.
@@ -1285,6 +1304,16 @@ fn compute_request_hash(req: &CreateSimulationRequest) -> [u8; 32] {
     if let Some(ref b64) = req.resume_checkpoint_b64 {
         h.update([1u8]);
         h.update(b64.as_bytes());
+    } else {
+        h.update([0u8]);
+    }
+    if let Some(ref sg) = req.subgrid_fine_dem {
+        h.update([1u8]);
+        h.update((sg.fine_cols as u64).to_le_bytes());
+        h.update((sg.fine_rows as u64).to_le_bytes());
+        for &v in &sg.elevations_m {
+            h.update(v.to_le_bytes());
+        }
     } else {
         h.update([0u8]);
     }
@@ -2132,6 +2161,10 @@ where
             },
             interval_losses: Some(&interval_losses),
             initial_checkpoint: initial_checkpoint.as_deref(),
+            subgrid_fine_dem: req
+                .subgrid_fine_dem
+                .as_ref()
+                .map(|sg| (sg.fine_cols, sg.fine_rows, sg.elevations_m.as_slice())),
         })
         .map_err(|e| (422, e.to_string()))?;
     if warmup_s > 0.0 {
@@ -2188,10 +2221,26 @@ where
         wgs84_bounds,
     };
 
+    let (subgrid_wet_fraction, subgrid_wse_m) = if req.subgrid_fine_dem.is_some() {
+        let wf = engine
+            .wet_fraction()
+            .ok()
+            .map(|v| v.into_iter().map(|x| x as f32).collect());
+        let wse = engine
+            .water_surface_elevation()
+            .ok()
+            .map(|v| v.into_iter().map(|x| x as f32).collect());
+        (wf, wse)
+    } else {
+        (None, None)
+    };
+
     Ok(CachedSimulation {
         summary,
         series,
         frames_bin,
         checkpoint_bin,
+        subgrid_wet_fraction,
+        subgrid_wse_m,
     })
 }
