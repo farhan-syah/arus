@@ -5714,8 +5714,9 @@ function computeAllLiveFloodClusters() {
           }
         }
 
-        // Suppress isolated 1-cell DEM pits (< 0.60 m) from generating alert noise
-        if (count < 2 && peakDepth < 0.60) continue;
+        const areaKm2 = count * cellAreaKm2;
+        // Drop isolated 1-cell micro-pockets regardless of grid dx; keep real multi-cell flood zones
+        if (count < 2 || (areaKm2 < 0.40 && peakDepth < 1.00)) continue;
 
         const cLat = peakDepth > 0 ? peakLat : sumLat / count;
         const cLon = peakDepth > 0 ? peakLon : sumLon / count;
@@ -5723,7 +5724,6 @@ function computeAllLiveFloodClusters() {
           const [aMinLon, aMinLat, aMaxLon, aMaxLat] = alertBounds;
           if (cLon < aMinLon || cLon > aMaxLon || cLat < aMinLat || cLat > aMaxLat) continue;
         }
-        const areaKm2 = count * cellAreaKm2;
         const placeKey = `spot:${cLat.toFixed(2)},${cLon.toFixed(2)}`;
         const cachedPlace = state.serverAlertPlaces.get(placeKey) || readNominatimCache(placeKey);
         clusters.push({
@@ -5741,33 +5741,8 @@ function computeAllLiveFloodClusters() {
     }
   }
 
-  // Merge nearby flood pockets within ~8 km (0.075 deg) in the same basin into one alert zone
   clusters.sort((a, b) => (severityRank(b.severity) - severityRank(a.severity)) || (b.peakDepthM - a.peakDepthM) || (b.areaKm2 - a.areaKm2));
-  const merged = [];
-  const mergeRadSq = 0.075 * 0.075;
-  for (const c of clusters) {
-    let hit = null;
-    for (const m of merged) {
-      if (m.basinId !== c.basinId) continue;
-      const dLat = m.lat - c.lat;
-      const dLon = m.lon - c.lon;
-      if (dLat * dLat + dLon * dLon <= mergeRadSq) {
-        hit = m;
-        break;
-      }
-    }
-    if (hit) {
-      hit.areaKm2 += c.areaKm2;
-      if (c.peakDepthM > hit.peakDepthM) {
-        hit.peakDepthM = c.peakDepthM;
-        hit.severity = depthToSeverity(hit.peakDepthM);
-      }
-    } else {
-      merged.push({ ...c });
-    }
-  }
-  merged.sort((a, b) => (severityRank(b.severity) - severityRank(a.severity)) || (b.areaKm2 - a.areaKm2));
-  return merged;
+  return clusters;
 }
 
 function formatClusterLabel(item) {
