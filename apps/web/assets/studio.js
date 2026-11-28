@@ -1529,7 +1529,7 @@ function updateSmoothWaterImage(meta, env, frame) {
 
 function renderSecondaryLiveOverlays(forceRaster) {
   if (!map || !layersReady) return;
-  const showSecondary = state.profile === 'public' && !state.boundaryGeoJson && state.displayPrefs.showFlood;
+  const showSecondary = state.profile === 'public' && state.displayPrefs.showFlood;
   const anchor = map.getLayer('arus-river-halo') ? 'arus-river-halo' : (findFloodInsertBeforeId() || (map.getLayer('arus-particles-line') ? 'arus-particles-line' : undefined));
   const vb = map.getBounds();
   const vMinLon = vb.getWest();
@@ -1552,7 +1552,8 @@ function renderSecondaryLiveOverlays(forceRaster) {
     const env = ov.grid.envelope;
     const fIdx = Math.min(state.frameIdx, ov.frames.length - 1);
     const frame = ov.frames[fIdx];
-    const key = `sec:${basinId}:${ov.grid.run_id || ''}:${fIdx}:${state.layer}:${state.envelopeMode}:${state.displayPrefs.depthCutoffM}`;
+    const bTag = state.boundaryGeoJson ? (state.activeBoundaryName || 'b') : '';
+    const key = `sec:${basinId}:${ov.grid.run_id || ''}:${fIdx}:${state.layer}:${state.envelopeMode}:${state.displayPrefs.depthCutoffM}:${bTag}`;
     if (forceRaster || ov.lastKey !== key || !map.getSource(srcId)) {
       ov.lastKey = key;
       let url = state.frameRasterCache.get(key);
@@ -1606,6 +1607,31 @@ function renderSecondaryLiveOverlays(forceRaster) {
           }
         }
         rasterCtx.putImageData(img, 0, 0);
+        if (state.boundaryGeoJson) {
+          rasterCtx.save();
+          rasterCtx.globalCompositeOperation = 'destination-in';
+          rasterCtx.beginPath();
+          const traceRing = (ring) => {
+            for (let i = 0; i < ring.length; i++) {
+              const x = ((ring[i][0] - bMinLon) / (bMaxLon - bMinLon)) * W;
+              const y = ((bMaxLat - ring[i][1]) / (bMaxLat - bMinLat)) * H;
+              if (i === 0) rasterCtx.moveTo(x, y);
+              else rasterCtx.lineTo(x, y);
+            }
+            rasterCtx.closePath();
+          };
+          const geom = state.boundaryGeoJson;
+          if (geom.type === 'Polygon' && Array.isArray(geom.coordinates?.[0])) {
+            traceRing(geom.coordinates[0]);
+          } else if (geom.type === 'MultiPolygon' && Array.isArray(geom.coordinates)) {
+            for (const poly of geom.coordinates) {
+              if (Array.isArray(poly?.[0])) traceRing(poly[0]);
+            }
+          }
+          rasterCtx.fillStyle = '#000000';
+          rasterCtx.fill('evenodd');
+          rasterCtx.restore();
+        }
         url = rasterCanvas.toDataURL('image/png');
         if (state.frameRasterCache.size >= 512) {
           const oldestKey = state.frameRasterCache.keys().next().value;
@@ -3377,8 +3403,8 @@ function updateLiveMetrics() {
   let stagnantKm2 = 0;
   let viewportLabel = null;
 
-  // In Live mode without a locked boundary, compute stats adaptively across the current viewport
-  if (state.profile === 'public' && !state.boundaryGeoJson && map && state.liveOverlays.size > 0) {
+  // In Live mode, aggregate stats across all loaded basins in the current viewport (clipped to focused boundary if set)
+  if (state.profile === 'public' && map && state.liveOverlays.size > 0) {
     const vb = map.getBounds();
     const vMinLon = vb.getWest();
     const vMaxLon = vb.getEast();
@@ -3406,6 +3432,7 @@ function updateLiveMetrics() {
           if (lon < vMinLon || lon > vMaxLon) continue;
           const cellIdx = r * cols + c;
           if (!aMask[cellIdx]) continue;
+          if (state.boundaryGeoJson && !pointInGeom(lon, lat, state.boundaryGeoJson)) continue;
           basinHits++;
           totalCells++;
           const h = dArr[cellIdx];
@@ -3423,40 +3450,44 @@ function updateLiveMetrics() {
     // If zoomed tighter than 1 grid cell, sample the enclosing cell at map center so stats never drop to 0
     if (totalCells === 0) {
       const ctr = map.getCenter();
-      for (const [basinId, ov] of state.liveOverlays.entries()) {
-        const m = ov.grid?.metadata;
-        const e = ov.grid?.envelope;
-        if (!m || !ov.frames?.length) continue;
-        const [bMinLon, bMinLat, bMaxLon, bMaxLat] = m.wgs84_bounds;
-        if (ctr.lng < bMinLon || ctr.lng > bMaxLon || ctr.lat < bMinLat || ctr.lat > bMaxLat) continue;
-        const c = Math.min(m.cols - 1, Math.max(0, Math.floor(((ctr.lng - bMinLon) / (bMaxLon - bMinLon)) * m.cols)));
-        const r = Math.min(m.rows - 1, Math.max(0, Math.floor(((ctr.lat - bMinLat) / (bMaxLat - bMinLat)) * m.rows)));
-        const cellIdx = r * m.cols + c;
-        if (!m.active_mask[cellIdx]) continue;
-        const fIdx = Math.min(state.frameIdx, ov.frames.length - 1);
-        const dArr = (state.envelopeMode && e?.max_depth_m) ? e.max_depth_m : ov.frames[fIdx].depth;
-        const h = dArr[cellIdx];
-        totalCells = 1;
-        sumDepth = h > 0 ? h : 0;
-        peakDepth = h;
-        if (h >= cut) {
-          floodedCells = 1;
-          stagnantCells = 1;
-          stagnantKm2 = (m.dx_m * m.dx_m) / 1_000_000;
+      if (!state.boundaryGeoJson || pointInGeom(ctr.lng, ctr.lat, state.boundaryGeoJson)) {
+        for (const [basinId, ov] of state.liveOverlays.entries()) {
+          const m = ov.grid?.metadata;
+          const e = ov.grid?.envelope;
+          if (!m || !ov.frames?.length) continue;
+          const [bMinLon, bMinLat, bMaxLon, bMaxLat] = m.wgs84_bounds;
+          if (ctr.lng < bMinLon || ctr.lng > bMaxLon || ctr.lat < bMinLat || ctr.lat > bMaxLat) continue;
+          const c = Math.min(m.cols - 1, Math.max(0, Math.floor(((ctr.lng - bMinLon) / (bMaxLon - bMinLon)) * m.cols)));
+          const r = Math.min(m.rows - 1, Math.max(0, Math.floor(((ctr.lat - bMinLat) / (bMaxLat - bMinLat)) * m.rows)));
+          const cellIdx = r * m.cols + c;
+          if (!m.active_mask[cellIdx]) continue;
+          const fIdx = Math.min(state.frameIdx, ov.frames.length - 1);
+          const dArr = (state.envelopeMode && e?.max_depth_m) ? e.max_depth_m : ov.frames[fIdx].depth;
+          const h = dArr[cellIdx];
+          totalCells = 1;
+          sumDepth = h > 0 ? h : 0;
+          peakDepth = h;
+          if (h >= cut) {
+            floodedCells = 1;
+            stagnantCells = 1;
+            stagnantKm2 = (m.dx_m * m.dx_m) / 1_000_000;
+          }
+          hitStates.add(formatStateName(basinId));
+          break;
         }
-        hitStates.add(formatStateName(basinId));
-        break;
       }
     }
-    const statesArr = Array.from(hitStates);
-    if (statesArr.length === 0) {
-      viewportLabel = 'Current View';
-    } else if (statesArr.length === 1) {
-      viewportLabel = map.getZoom() >= 9.8 ? `Local View · ${statesArr[0]}` : statesArr[0];
-    } else if (statesArr.length <= 2) {
-      viewportLabel = statesArr.join(' & ');
-    } else {
-      viewportLabel = `Malaysia (${statesArr.length} states in view)`;
+    if (!state.boundaryGeoJson) {
+      const statesArr = Array.from(hitStates);
+      if (statesArr.length === 0) {
+        viewportLabel = 'Current View';
+      } else if (statesArr.length === 1) {
+        viewportLabel = map.getZoom() >= 9.8 ? `Local View · ${statesArr[0]}` : statesArr[0];
+      } else if (statesArr.length <= 2) {
+        viewportLabel = statesArr.join(' & ');
+      } else {
+        viewportLabel = `Malaysia (${statesArr.length} states in view)`;
+      }
     }
   } else {
     const meta = state.grid.metadata;
