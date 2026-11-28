@@ -595,6 +595,9 @@ pub struct CreateSimulationRequest {
     /// replacing `storm_drain_score` when real local drainage network survey or GIS data is supplied.
     #[serde(default)]
     pub storm_drain_grid: Option<Vec<f64>>,
+    /// Optional per-cell saturated soil conductivity grid (`cols * rows`, `mm/hr`, `>= 0.0`; `0.0` = impervious).
+    #[serde(default)]
+    pub soil_conductivity_grid_mm_per_hr: Option<Vec<f64>>,
     /// Optional run ID whose exact binary checkpoint (`h`, `qx`, `qy`, soil state) seeds `t = 0`.
     #[serde(default)]
     pub resume_checkpoint_run_id: Option<String>,
@@ -612,6 +615,9 @@ pub struct SubgridFineDemSpec {
     pub fine_cols: usize,
     pub fine_rows: usize,
     pub elevations_m: Vec<f64>,
+    /// Optional per-coarse-cell sub-pixel river channels `[width_m, depth_m]`.
+    #[serde(default)]
+    pub channels_wd_m: Option<Vec<Option<[f64; 2]>>>,
 }
 
 const fn default_storm_drain_score() -> f64 {
@@ -982,6 +988,24 @@ fn validate_request(
             "storm_drain_grid values must be finite in [0.0, 1.0]".to_owned(),
         ));
     }
+    if let Some(kg) = &req.soil_conductivity_grid_mm_per_hr {
+        if kg.len() != req.cols * req.rows {
+            return Err((
+                422,
+                format!(
+                    "soil_conductivity_grid_mm_per_hr length ({}) != cols*rows ({})",
+                    kg.len(),
+                    req.cols * req.rows
+                ),
+            ));
+        }
+        if kg.iter().any(|v| !v.is_finite() || *v < 0.0) {
+            return Err((
+                422,
+                "soil_conductivity_grid_mm_per_hr values must be finite nonnegative".to_owned(),
+            ));
+        }
+    }
     if !req.evaporation_mm_per_day.is_finite() || req.evaporation_mm_per_day < 0.0 {
         return Err((
             422,
@@ -1263,6 +1287,16 @@ fn compute_request_hash(req: &CreateSimulationRequest) -> [u8; 32] {
             h.update([1u8]);
             hash_usize(&mut h, dg.len());
             for &v in dg {
+                hash_f64(&mut h, v);
+            }
+        }
+    }
+    match &req.soil_conductivity_grid_mm_per_hr {
+        None => h.update([0u8]),
+        Some(kg) => {
+            h.update([1u8]);
+            hash_usize(&mut h, kg.len());
+            for &v in kg {
                 hash_f64(&mut h, v);
             }
         }
@@ -2103,11 +2137,24 @@ where
             suction_m,
             conductivity_m_per_s,
             maximum_deficit,
-        } => LandSpec::UniformModifiedGreenAmpt {
-            suction_m,
-            conductivity_m_per_s: conductivity_m_per_s * effective_time_compression,
-            maximum_deficit,
-        },
+        } => {
+            if let Some(kg) = &req.soil_conductivity_grid_mm_per_hr {
+                LandSpec::SpatiallyVaryingModifiedGreenAmpt {
+                    suction_m,
+                    conductivity_m_per_s: kg
+                        .iter()
+                        .map(|&k_mm| (k_mm / 3_600_000.0) * effective_time_compression)
+                        .collect(),
+                    maximum_deficit,
+                }
+            } else {
+                LandSpec::UniformModifiedGreenAmpt {
+                    suction_m,
+                    conductivity_m_per_s: conductivity_m_per_s * effective_time_compression,
+                    maximum_deficit,
+                }
+            }
+        }
     };
 
     let initial_depth_m = if req.start_dry || terrain_provenance == "BrowserTerrariumScreening" {
@@ -2145,6 +2192,11 @@ where
         },
     };
 
+    let subgrid_channels_vec: Option<Vec<Option<(f64, f64)>>> = req
+        .subgrid_fine_dem
+        .as_ref()
+        .and_then(|sg| sg.channels_wd_m.as_ref())
+        .map(|chs| chs.iter().map(|opt| opt.map(|[w, d]| (w, d))).collect());
     let mut engine = spec
         .build_engine_with_overrides(SurfacePhysicsOverrides {
             manning_n_per_cell: manning_per_cell.as_deref(),
@@ -2165,6 +2217,7 @@ where
                 .subgrid_fine_dem
                 .as_ref()
                 .map(|sg| (sg.fine_cols, sg.fine_rows, sg.elevations_m.as_slice())),
+            subgrid_channels: subgrid_channels_vec.as_deref(),
         })
         .map_err(|e| (422, e.to_string()))?;
     if warmup_s > 0.0 {

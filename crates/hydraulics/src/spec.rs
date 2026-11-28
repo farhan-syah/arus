@@ -26,6 +26,11 @@ pub enum LandSpec {
         conductivity_m_per_s: f64,
         maximum_deficit: f64,
     },
+    SpatiallyVaryingModifiedGreenAmpt {
+        suction_m: f64,
+        conductivity_m_per_s: Vec<f64>,
+        maximum_deficit: f64,
+    },
 }
 
 /// Grid face normal direction for an open exterior boundary.
@@ -243,6 +248,8 @@ pub struct SurfacePhysicsOverrides<'a> {
     pub initial_checkpoint: Option<&'a [u8]>,
     /// Optional fine-resolution DEM `(fine_cols, fine_rows, fine_elevations_m)` for subgrid 2D hydraulics.
     pub subgrid_fine_dem: Option<(usize, usize, &'a [f64])>,
+    /// Optional per-coarse-cell sub-pixel river channels `(width_m, depth_m)` incised into `subgrid_fine_dem`.
+    pub subgrid_channels: Option<&'a [Option<(f64, f64)>]>,
 }
 
 impl SurfaceRunSpec {
@@ -277,7 +284,8 @@ impl SurfaceRunSpec {
         let interval_losses = overrides.interval_losses;
         let required_sources = match self.land {
             LandSpec::UniformImpervious => [SourceKind::Rain, SourceKind::ImperviousLand],
-            LandSpec::UniformModifiedGreenAmpt { .. } => {
+            LandSpec::UniformModifiedGreenAmpt { .. }
+            | LandSpec::SpatiallyVaryingModifiedGreenAmpt { .. } => {
                 [SourceKind::Rain, SourceKind::ModifiedGreenAmpt]
             }
         };
@@ -310,7 +318,7 @@ impl SurfaceRunSpec {
         let domain = domain_from_terrain(&self.terrain, manning_cells)?;
         let active = domain.active();
 
-        let land_cells = match self.land {
+        let land_cells = match &self.land {
             LandSpec::UniformImpervious => vec![LandCell::Impervious; n],
             LandSpec::UniformModifiedGreenAmpt {
                 suction_m,
@@ -318,9 +326,9 @@ impl SurfaceRunSpec {
                 maximum_deficit,
             } => {
                 let params = ModifiedGreenAmptParameters::from_si(
-                    suction_m,
-                    conductivity_m_per_s,
-                    maximum_deficit,
+                    *suction_m,
+                    *conductivity_m_per_s,
+                    *maximum_deficit,
                 )
                 .map_err(|error| ModelError::InvalidInput(error.to_string()))?;
                 active
@@ -333,6 +341,33 @@ impl SurfaceRunSpec {
                         }
                     })
                     .collect()
+            }
+            LandSpec::SpatiallyVaryingModifiedGreenAmpt {
+                suction_m,
+                conductivity_m_per_s,
+                maximum_deficit,
+            } => {
+                if conductivity_m_per_s.len() != n {
+                    return Err(ModelError::InvalidInput(format!(
+                        "spatially varying conductivity length ({}) != grid cell count ({n})",
+                        conductivity_m_per_s.len()
+                    )));
+                }
+                let mut cells = Vec::with_capacity(n);
+                for (&is_active, &k) in active.iter().zip(conductivity_m_per_s.iter()) {
+                    if !is_active || k <= 0.0 {
+                        cells.push(LandCell::Impervious);
+                    } else {
+                        let params = ModifiedGreenAmptParameters::from_si(
+                            *suction_m,
+                            k,
+                            *maximum_deficit,
+                        )
+                        .map_err(|error| ModelError::InvalidInput(error.to_string()))?;
+                        cells.push(LandCell::ModifiedGreenAmpt(params));
+                    }
+                }
+                cells
             }
         };
         let land = LandModel::new(&domain, land_cells)
@@ -495,10 +530,14 @@ impl SurfaceRunSpec {
             ..SolverConfig::default()
         };
         let subgrid = if let Some((fine_nx, fine_ny, fine_bed)) = overrides.subgrid_fine_dem {
-            Some(
-                SubgridTerrain::from_fine_dem(domain.grid(), fine_nx, fine_ny, fine_bed)
-                    .map_err(|error| ModelError::InvalidInput(error.to_string()))?,
-            )
+            let mut sg = SubgridTerrain::from_fine_dem(domain.grid(), fine_nx, fine_ny, fine_bed)
+                .map_err(|error| ModelError::InvalidInput(error.to_string()))?;
+            if let Some(channels) = overrides.subgrid_channels {
+                sg = sg
+                    .with_channels(channels)
+                    .map_err(|error| ModelError::InvalidInput(error.to_string()))?;
+            }
+            Some(sg)
         } else {
             None
         };
